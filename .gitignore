@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Bun / Node logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Build outputs
+dist/
+build/
+out/
+
+# Native Zig artifacts
+src/native/.zig-cache/
+src/native/zig-out/
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Optional: large local dependency checkouts
+deps/
