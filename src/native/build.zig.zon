@@ -1,0 +1,14 @@
+.{
+    .name = .ghostty_vt_bridge,
+    .version = "0.0.0",
+    .fingerprint = 0x6687d7adc77437a6,
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .ghostty = .{ .path = "../../deps/ghostty" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "ghostty_bridge.zig",
+    },
+}
