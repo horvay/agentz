@@ -1,3 +1,5 @@
+import { dirname } from "node:path";
+
 function parseFlags(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
   for (const item of argv) {
@@ -41,7 +43,7 @@ const flags = parseFlags(process.argv.slice(2));
 const screenshotPath =
   typeof flags.out === "string" && flags.out.trim().length > 0
     ? flags.out.trim()
-    : ".tmp-app-window-opencode-hi.png";
+    : "screenshots/opencode-hi.png";
 const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(500, Number(flags["wait-ms"]))
@@ -95,6 +97,8 @@ try {
   runChecked(["xdotool", "type", "--window", windowId, "--delay", "80", "hi"]);
   runChecked(["xdotool", "key", "--window", windowId, "Return"]);
   await sleep(3200);
+  runChecked(["mkdir", "-p", dirname(screenshotPath)]);
+  runChecked(["rm", "-f", screenshotPath]);
   runChecked(["import", "-window", windowId, screenshotPath]);
   console.log(`opencode-screenshot: saved ${screenshotPath}`);
 } catch (error) {

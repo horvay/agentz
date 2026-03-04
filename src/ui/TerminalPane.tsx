@@ -87,14 +87,6 @@ export function TerminalPane({ id, title, rpc, frame, active, status, onActivate
       });
     };
 
-    const scheduleRenderFlush = () => {
-      if (renderTimerRef.current) return;
-      renderTimerRef.current = window.setTimeout(() => {
-        renderTimerRef.current = null;
-        flushPendingRender();
-      }, 50);
-    };
-
     const terminal = new Terminal({
       fontFamily: "JetBrainsMonoNerdFontMonoLocal, JetBrainsMono Nerd Font Mono, monospace",
       fontSize: 14,

@@ -1,3 +1,5 @@
+import { dirname } from "node:path";
+
 function parseFlags(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
   for (const item of argv) {
@@ -68,7 +70,7 @@ const flags = parseFlags(process.argv.slice(2));
 const screenshotPath =
   typeof flags.out === "string" && flags.out.trim().length > 0
     ? flags.out.trim()
-    : ".tmp-app-window-opencode-enter-on-load.png";
+    : "screenshots/enter-on-load-shell.png";
 const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(500, Number(flags["wait-ms"]))
@@ -122,6 +124,8 @@ try {
   await sendInputViaRpc("term-a", "test");
   await sleep(3200);
 
+  runChecked(["mkdir", "-p", dirname(screenshotPath)]);
+  runChecked(["rm", "-f", screenshotPath]);
   runChecked(["import", "-window", windowId, screenshotPath]);
   console.log(`opencode-enter-on-load-screenshot: saved ${screenshotPath}`);
 } catch (error) {

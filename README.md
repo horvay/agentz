@@ -59,8 +59,10 @@ Run the visual screenshot test (launches pane A with `opencode`, types `hi`, the
 ```bash
 bun run test:opencode:screenshot
 # optional output path:
-bun run test:opencode:screenshot -- --out=.tmp-app-window-opencode-hi.png
+bun run test:opencode:screenshot -- --out=screenshots/opencode-hi-custom.png
 ```
+
+By default screenshots are written to `screenshots/` with stable filenames. Re-running the same test overwrites the existing file instead of creating extra screenshots.
 
 Expected result:
 - command exits successfully,

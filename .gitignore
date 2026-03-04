@@ -1,3 +1,6 @@
+.tmp-*.png
+.tmp-check-*.png
+screenshots/*.png
 # Dependencies
 node_modules/
 
