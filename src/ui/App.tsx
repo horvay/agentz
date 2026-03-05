@@ -222,6 +222,10 @@ function App() {
   const avatarStripRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ id: string; startX: number; startWidth: number } | null>(null);
+  const bootstrappedRef = useRef(false);
+  const hasLaunchConfigRef = useRef(false);
+  const hasDashboardConfigRef = useRef(false);
+  const bootstrapFallbackTimerRef = useRef<number | null>(null);
   const shortcuts = dashboardConfig.shortcuts;
   const defaultPaneWidth = dashboardConfig.defaultPaneWidth;
   const defaultPaneWidthRef = useRef(defaultPaneWidth);
@@ -325,6 +329,30 @@ function App() {
     });
   }, [createTerminal, setActivePaneCentered]);
 
+  const maybeBootstrapTerminals = useCallback(
+    (force = false) => {
+      if (bootstrappedRef.current) return;
+      if (!force && (!hasLaunchConfigRef.current || !hasDashboardConfigRef.current)) return;
+      bootstrappedRef.current = true;
+      if (bootstrapFallbackTimerRef.current) {
+        window.clearTimeout(bootstrapFallbackTimerRef.current);
+        bootstrapFallbackTimerRef.current = null;
+      }
+      ensureBootstrapTerminals();
+    },
+    [ensureBootstrapTerminals],
+  );
+
+  const armBootstrapFallback = useCallback(() => {
+    if (bootstrapFallbackTimerRef.current) {
+      window.clearTimeout(bootstrapFallbackTimerRef.current);
+    }
+    bootstrapFallbackTimerRef.current = window.setTimeout(() => {
+      bootstrapFallbackTimerRef.current = null;
+      maybeBootstrapTerminals(true);
+    }, 1200);
+  }, [maybeBootstrapTerminals]);
+
   const addTerminalPane = useCallback(() => {
     if (paneIdsRef.current.length >= MAX_AVATAR_PANES) {
       setStatus(`Maximum ${MAX_AVATAR_PANES} panes reached`);
@@ -378,15 +406,18 @@ function App() {
       setStatus("Connected");
       rpc.send({ type: "launch-config" });
       rpc.send({ type: "get-config" });
-      // Fallback if server does not reply for any reason.
-      window.setTimeout(ensureBootstrapTerminals, 200);
+      armBootstrapFallback();
     });
     const disposeConfig = rpc.onConfig((config) => {
+      defaultPaneWidthRef.current = config.defaultPaneWidth;
+      hasDashboardConfigRef.current = true;
       setDashboardConfig(config);
+      maybeBootstrapTerminals();
     });
     const disposeLaunchConfig = rpc.onLaunchConfig((config) => {
       launchConfigRef.current = config;
-      ensureBootstrapTerminals();
+      hasLaunchConfigRef.current = true;
+      maybeBootstrapTerminals();
     });
     const disposeCreated = rpc.onCreated((id) => {
       setPaneStatus((prev) => ({ ...prev, [id]: "running" }));
@@ -437,9 +468,13 @@ function App() {
 
     rpc.send({ type: "launch-config" });
     rpc.send({ type: "get-config" });
-    window.setTimeout(ensureBootstrapTerminals, 250);
+    armBootstrapFallback();
 
     return () => {
+      if (bootstrapFallbackTimerRef.current) {
+        window.clearTimeout(bootstrapFallbackTimerRef.current);
+        bootstrapFallbackTimerRef.current = null;
+      }
       disposeReady();
       disposeConfig();
       disposeLaunchConfig();
@@ -448,7 +483,7 @@ function App() {
       disposeError();
       disposeExit();
     };
-  }, [ensureBootstrapTerminals, setActivePaneCentered]);
+  }, [armBootstrapFallback, maybeBootstrapTerminals, setActivePaneCentered]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
