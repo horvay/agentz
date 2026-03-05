@@ -5,6 +5,8 @@ import { RpcClient } from "./rpcClient";
 import { TerminalPane } from "./TerminalPane";
 import type { AvatarDefinition, AvatarId, AvatarVisualState } from "./avatarCatalog";
 import { avatarCatalog } from "./avatarCatalog";
+import idleIconUrl from "../../assets/icons/idle.svg";
+import questionIconUrl from "../../assets/icons/question.svg";
 
 const rpc = new RpcClient("ws://127.0.0.1:4599");
 const FIRST_ID = "term-1";
@@ -685,11 +687,19 @@ function App() {
                 aria-label={`Focus ${paneTitle(index)}`}
                 title={`${avatar?.label ?? "Unassigned"} - ${paneTitle(index)}`}
               >
-                {avatar ? (
-                  <img src={avatarSrcForState(avatar, avatarState)} alt={avatar.label} className="avatar-image" />
-                ) : (
-                  <span className="avatar-fallback">{paneTitle(index).slice(-1)}</span>
-                )}
+                <span className="avatar-image-wrap">
+                  {avatar ? (
+                    <img src={avatarSrcForState(avatar, avatarState)} alt={avatar.label} className="avatar-image" />
+                  ) : (
+                    <span className="avatar-fallback">{paneTitle(index).slice(-1)}</span>
+                  )}
+                  {avatarState === "idle" && (
+                    <img src={idleIconUrl} alt="" className="avatar-state-badge avatar-badge-idle" />
+                  )}
+                  {avatarState === "question" && (
+                    <img src={questionIconUrl} alt="" className="avatar-state-badge avatar-badge-question" />
+                  )}
+                </span>
                 <span className="avatar-name">{avatar?.label ?? "Unassigned"}</span>
               </button>
             );
