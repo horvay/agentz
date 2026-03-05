@@ -1,18 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { LaunchConfig, PaneLaunchConfig, TerminalFrame } from "../shared/protocol";
+import {
+  cloneDashboardConfig,
+  DEFAULT_DASHBOARD_CONFIG,
+  MAX_PANE_WIDTH,
+  MIN_PANE_WIDTH,
+  type DashboardConfig,
+} from "../shared/config";
 import { RpcClient } from "./rpcClient";
+import { SettingsModal } from "./SettingsModal";
 import { TerminalPane } from "./TerminalPane";
 import type { AvatarDefinition, AvatarId, AvatarVisualState } from "./avatarCatalog";
 import { avatarCatalog } from "./avatarCatalog";
+import { doesEventMatchShortcut } from "./shortcuts";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
 
 const rpc = new RpcClient("ws://127.0.0.1:4599");
 const FIRST_ID = "term-1";
-const MIN_PANE_WIDTH = 420;
-const MAX_PANE_WIDTH = 1400;
-const DEFAULT_PANE_WIDTH = 780;
 const WIDTH_STORAGE_KEY = "ghostty.dashboard.paneWidths.v1";
 const MAX_AVATAR_PANES = avatarCatalog.length;
 const AVATAR_IDS = avatarCatalog.map((avatar) => avatar.id);
@@ -189,52 +195,6 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
   );
 }
 
-function keydownToTerminalInput(event: KeyboardEvent): string | null {
-  if (event.isComposing) return null;
-  if (event.ctrlKey || event.altKey || event.metaKey) return null;
-
-  switch (event.key) {
-    case "Enter":
-      return "\r";
-    case "Backspace":
-      return "\x7f";
-    case "Tab":
-      return event.shiftKey ? "\x1b[Z" : "\t";
-    case "Escape":
-      return "\x1b";
-    case "ArrowUp":
-      return "\x1b[A";
-    case "ArrowDown":
-      return "\x1b[B";
-    case "ArrowRight":
-      return "\x1b[C";
-    case "ArrowLeft":
-      return "\x1b[D";
-    case "Home":
-      return "\x1b[H";
-    case "End":
-      return "\x1b[F";
-    case "Delete":
-      return "\x1b[3~";
-    case "PageUp":
-      return "\x1b[5~";
-    case "PageDown":
-      return "\x1b[6~";
-    default:
-      break;
-  }
-
-  if (event.key.length === 1) {
-    return event.key;
-  }
-  return null;
-}
-
-function isXtermTextareaFocused(): boolean {
-  const active = document.activeElement;
-  return active instanceof HTMLElement && Boolean(active.closest(".xterm-helper-textarea"));
-}
-
 function App() {
   const [paneIds, setPaneIds] = useState<string[]>([FIRST_ID]);
   const [frames, setFrames] = useState<Record<string, TerminalFrame>>({});
@@ -242,6 +202,10 @@ function App() {
   const [paneStatus, setPaneStatus] = useState<Record<string, "booting" | "running" | "exited" | "error">>({
     [FIRST_ID]: "booting",
   });
+  const [dashboardConfig, setDashboardConfig] = useState<DashboardConfig>(() =>
+    cloneDashboardConfig(DEFAULT_DASHBOARD_CONFIG),
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [activePane, setActivePane] = useState(FIRST_ID);
   const [paneWidths, setPaneWidths] = useState<Record<string, number>>(() => loadStoredPaneWidths());
   const [paneAvatarIds, setPaneAvatarIds] = useState<Record<string, AvatarId>>(() =>
@@ -249,7 +213,6 @@ function App() {
   );
   const [stripWidth, setStripWidth] = useState(0);
   const [avatarStripWidth, setAvatarStripWidth] = useState(0);
-  const [focusRequestSeq, setFocusRequestSeq] = useState(0);
   const activePaneRef = useRef(FIRST_ID);
   const paneIdsRef = useRef<string[]>([FIRST_ID]);
   const nextPaneOrdinalRef = useRef(2);
@@ -259,6 +222,9 @@ function App() {
   const avatarStripRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ id: string; startX: number; startWidth: number } | null>(null);
+  const shortcuts = dashboardConfig.shortcuts;
+  const defaultPaneWidth = dashboardConfig.defaultPaneWidth;
+  const defaultPaneWidthRef = useRef(defaultPaneWidth);
 
   const centerNode = useCallback((container: HTMLElement | null, node: HTMLElement | null, behavior: ScrollBehavior) => {
     if (!container || !node) return;
@@ -313,6 +279,10 @@ function App() {
     paneIdsRef.current = paneIds;
   }, [paneIds]);
 
+  useEffect(() => {
+    defaultPaneWidthRef.current = defaultPaneWidth;
+  }, [defaultPaneWidth]);
+
   const createTerminal = useCallback((id: string, launch?: PaneLaunchConfig) => {
     if (createdIdsRef.current.has(id)) return;
     createdIdsRef.current.add(id);
@@ -340,14 +310,16 @@ function App() {
     nextPaneOrdinalRef.current = ids.length + 1;
     setPaneIds(ids);
     setPaneStatus(statusInit);
+    setPaneWidths((prev) => {
+      const next: Record<string, number> = {};
+      for (const id of ids) {
+        next[id] = prev[id] ?? defaultPaneWidthRef.current;
+      }
+      return next;
+    });
     setPaneAvatarIds(assignUniqueAvatars(ids));
     const firstId = ids[0] ?? FIRST_ID;
     setActivePaneCentered(firstId, "auto");
-    setFocusRequestSeq((prev) => prev + 1);
-    window.setTimeout(() => {
-      setActivePaneCentered(firstId, "auto");
-      setFocusRequestSeq((prev) => prev + 1);
-    }, 120);
     safeLaunchPanes.forEach((launch, index) => {
       createTerminal(ids[index], launch);
     });
@@ -367,7 +339,7 @@ function App() {
     nextPaneOrdinalRef.current = nextOrdinal + 1;
     setPaneIds((prev) => [...prev, id]);
     setPaneStatus((prev) => ({ ...prev, [id]: "booting" }));
-    setPaneWidths((prev) => ({ ...prev, [id]: DEFAULT_PANE_WIDTH }));
+    setPaneWidths((prev) => ({ ...prev, [id]: defaultPaneWidth }));
     setPaneAvatarIds((prev) => {
       const used = new Set(Object.values(prev));
       const avatarId = pickAvailableAvatar(used);
@@ -376,7 +348,7 @@ function App() {
     });
     setActivePaneCentered(id);
     createTerminal(id);
-  }, [createTerminal, setActivePaneCentered]);
+  }, [createTerminal, defaultPaneWidth, setActivePaneCentered]);
 
   const moveActivePane = useCallback(
     (direction: "left" | "right") => {
@@ -391,12 +363,26 @@ function App() {
     [setActivePaneCentered],
   );
 
+  const openSettings = useCallback(() => {
+    setSettingsOpen(true);
+  }, []);
+
+  const saveDashboardConfig = useCallback((nextConfig: DashboardConfig) => {
+    setDashboardConfig(nextConfig);
+    rpc.send({ type: "set-config", config: nextConfig });
+    setStatus("Settings saved");
+  }, []);
+
   useEffect(() => {
     const disposeReady = rpc.onReady(() => {
       setStatus("Connected");
       rpc.send({ type: "launch-config" });
+      rpc.send({ type: "get-config" });
       // Fallback if server does not reply for any reason.
       window.setTimeout(ensureBootstrapTerminals, 200);
+    });
+    const disposeConfig = rpc.onConfig((config) => {
+      setDashboardConfig(config);
     });
     const disposeLaunchConfig = rpc.onLaunchConfig((config) => {
       launchConfigRef.current = config;
@@ -437,6 +423,11 @@ function App() {
         delete next[id];
         return next;
       });
+      setPaneWidths((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       setFrames((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -445,10 +436,12 @@ function App() {
     });
 
     rpc.send({ type: "launch-config" });
+    rpc.send({ type: "get-config" });
     window.setTimeout(ensureBootstrapTerminals, 250);
 
     return () => {
       disposeReady();
+      disposeConfig();
       disposeLaunchConfig();
       disposeCreated();
       disposeFrame();
@@ -459,122 +452,33 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat) return;
+      if (settingsOpen) return;
       if (isEditableEventTarget(event.target)) return;
-      if (event.repeat) return;
-      if (!event.ctrlKey || !event.shiftKey) return;
-      const key = event.key.toLowerCase();
-      if (key === "n") {
+
+      if (doesEventMatchShortcut(event, shortcuts.openSettings)) {
+        event.preventDefault();
+        openSettings();
+        return;
+      }
+      if (doesEventMatchShortcut(event, shortcuts.addPane)) {
         event.preventDefault();
         addTerminalPane();
         return;
       }
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      event.preventDefault();
-      moveActivePane(event.key === "ArrowRight" ? "right" : "left");
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [addTerminalPane, moveActivePane]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      if (isEditableEventTarget(event.target)) return;
-      const activeElement = document.activeElement;
-      if (activeElement instanceof HTMLElement && activeElement.closest(".xterm-helper-textarea")) return;
-
-      const data = keydownToTerminalInput(event);
-      if (!data) return;
-
-      const activeId = activePaneRef.current;
-      if (!activeId || !paneIdsRef.current.includes(activeId)) return;
-
-      event.preventDefault();
-      rpc.send({ type: "input", id: activeId, data });
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  useEffect(() => {
-    const requestFocusRefresh = () => {
-      setFocusRequestSeq((prev) => prev + 1);
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        requestFocusRefresh();
-      }
-    };
-    const timeoutA = window.setTimeout(requestFocusRefresh, 0);
-    const timeoutB = window.setTimeout(requestFocusRefresh, 260);
-    window.addEventListener("focus", requestFocusRefresh);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      window.clearTimeout(timeoutA);
-      window.clearTimeout(timeoutB);
-      window.removeEventListener("focus", requestFocusRefresh);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, []);
-
-  useEffect(() => {
-    let settled = false;
-    let sawKeyboardEvent = false;
-
-    const requestDocumentFocus = () => {
-      if (settled) return;
-      if (!document.hasFocus()) return;
-      if (isXtermTextareaFocused()) {
-        settled = true;
+      if (doesEventMatchShortcut(event, shortcuts.focusPrevPane)) {
+        event.preventDefault();
+        moveActivePane("left");
         return;
       }
-      window.focus();
-      if (document.documentElement) {
-        document.documentElement.tabIndex = -1;
-        document.documentElement.focus({ preventScroll: true });
-      }
-      if (document.body) {
-        document.body.tabIndex = -1;
-        document.body.focus({ preventScroll: true });
-      }
-      if (sawKeyboardEvent) {
-        settled = true;
+      if (doesEventMatchShortcut(event, shortcuts.focusNextPane)) {
+        event.preventDefault();
+        moveActivePane("right");
       }
     };
-
-    const onKeyDownCapture = () => {
-      sawKeyboardEvent = true;
-      settled = true;
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        requestDocumentFocus();
-      }
-    };
-
-    const timers = [0, 70, 160, 320, 640, 1200, 2200].map((delay) =>
-      window.setTimeout(requestDocumentFocus, delay),
-    );
-    const interval = window.setInterval(requestDocumentFocus, 380);
-    const stopIntervalTimer = window.setTimeout(() => {
-      settled = true;
-      window.clearInterval(interval);
-    }, 5200);
-
-    window.addEventListener("focus", requestDocumentFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("keydown", onKeyDownCapture, true);
-
-    return () => {
-      for (const timer of timers) window.clearTimeout(timer);
-      window.clearTimeout(stopIntervalTimer);
-      window.clearInterval(interval);
-      window.removeEventListener("focus", requestDocumentFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("keydown", onKeyDownCapture, true);
-    };
-  }, []);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [addTerminalPane, moveActivePane, openSettings, settingsOpen, shortcuts]);
 
   useEffect(() => {
     centerPane(activePane, "smooth");
@@ -621,15 +525,15 @@ function App() {
   const leadSpacerWidth = useMemo(() => {
     if (paneIds.length === 0) return 0;
     const firstId = paneIds[0];
-    const firstWidth = paneWidths[firstId] ?? DEFAULT_PANE_WIDTH;
+    const firstWidth = paneWidths[firstId] ?? defaultPaneWidth;
     return Math.max(0, Math.round(stripWidth / 2 - firstWidth / 2));
-  }, [paneIds, paneWidths, stripWidth]);
+  }, [defaultPaneWidth, paneIds, paneWidths, stripWidth]);
   const trailSpacerWidth = useMemo(() => {
     if (paneIds.length === 0) return 0;
     const lastId = paneIds[paneIds.length - 1];
-    const lastWidth = paneWidths[lastId] ?? DEFAULT_PANE_WIDTH;
+    const lastWidth = paneWidths[lastId] ?? defaultPaneWidth;
     return Math.max(0, Math.round(stripWidth / 2 - lastWidth / 2));
-  }, [paneIds, paneWidths, stripWidth]);
+  }, [defaultPaneWidth, paneIds, paneWidths, stripWidth]);
   const activeAvatarIndex = useMemo(() => {
     const index = paneIds.indexOf(activePane);
     return index >= 0 ? index : 0;
@@ -650,8 +554,17 @@ function App() {
       <header className="topbar topbar-compact">
         <span className="status-chip">{connectedLabel}</span>
         <span className="status-metric">
-          {paneIds.length} panes · {frameCount} active frames · Ctrl+Shift+N add · Ctrl+Shift+Left/Right focus
+          {paneIds.length} panes · {frameCount} active frames · {shortcuts.addPane} add ·{" "}
+          {shortcuts.focusPrevPane}/{shortcuts.focusNextPane} focus
         </span>
+        <span className="topbar-spacer" />
+        <button type="button" className="topbar-settings-button" onClick={openSettings}>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M19.14 12.94c.04-.3.06-.62.06-.94s-.02-.64-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.16 7.16 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.11.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.7 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94L2.82 14.52a.5.5 0 0 0-.12.63l1.92 3.32c.13.23.4.32.64.22l2.35-.95c.5.4 1.05.73 1.65.97l.36 2.5a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.5c.6-.24 1.15-.57 1.65-.97l2.35.95c.24.1.51.01.64-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z" />
+          </svg>
+          <span>Settings</span>
+          <kbd>{shortcuts.openSettings}</kbd>
+        </button>
       </header>
 
       <section className="avatar-strip" ref={avatarStripRef} aria-label="Terminal avatars">
@@ -716,18 +629,22 @@ function App() {
             ref={(node) => {
               paneSlotsRef.current[id] = node;
             }}
-            style={{ width: `${paneWidths[id] ?? DEFAULT_PANE_WIDTH}px` }}
+            style={{ width: `${paneWidths[id] ?? defaultPaneWidth}px` }}
           >
             <TerminalPane
               id={id}
               rpc={rpc}
               frame={frames[id]}
               active={activePane === id}
-              focusRequestSeq={focusRequestSeq}
+              shortcuts={shortcuts}
               onActivate={(nextId) => setActivePaneCentered(nextId)}
               onShortcut={(shortcut) => {
                 if (shortcut === "new-pane") {
                   addTerminalPane();
+                  return;
+                }
+                if (shortcut === "open-settings") {
+                  openSettings();
                   return;
                 }
                 moveActivePane(shortcut === "focus-right" ? "right" : "left");
@@ -743,7 +660,7 @@ function App() {
                 resizeDragRef.current = {
                   id,
                   startX: event.clientX,
-                  startWidth: paneWidths[id] ?? DEFAULT_PANE_WIDTH,
+                  startWidth: paneWidths[id] ?? defaultPaneWidth,
                 };
                 document.body.classList.add("pane-resize-active");
               }}
@@ -752,6 +669,12 @@ function App() {
         ))}
         <div className="pane-edge-spacer" style={{ width: `${trailSpacerWidth}px` }} aria-hidden />
       </section>
+      <SettingsModal
+        open={settingsOpen}
+        config={dashboardConfig}
+        onClose={() => setSettingsOpen(false)}
+        onSave={saveDashboardConfig}
+      />
     </main>
   );
 }

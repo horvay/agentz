@@ -1,3 +1,5 @@
+import type { DashboardConfig } from "./config";
+
 export type TerminalId = string;
 
 export interface PaneLaunchConfig {
@@ -60,12 +62,20 @@ export type ClientMessage =
       type: "launch-config";
     }
   | {
+      type: "get-config";
+    }
+  | {
+      type: "set-config";
+      config: DashboardConfig;
+    }
+  | {
       type: "kill";
       id: TerminalId;
     };
 
 export type ServerMessage =
   | { type: "ready"; serverVersion: string }
+  | { type: "config"; config: DashboardConfig }
   | { type: "terminal-created"; id: TerminalId }
   | { type: "terminal-exited"; id: TerminalId; exitCode: number }
   | { type: "terminal-frame"; frame: TerminalFrame }

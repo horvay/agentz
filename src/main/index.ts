@@ -1,5 +1,6 @@
 import { BrowserWindow, Updater } from "electrobun/bun";
 import { startTerminalRpcServer } from "./server";
+import { createDashboardConfigManager } from "./configManager";
 import type { LaunchConfig } from "../shared/protocol";
 
 const DEV_SERVER_PORT = 5173;
@@ -59,7 +60,8 @@ async function getMainViewUrl(): Promise<string> {
 }
 
 const launchConfig = parseLaunchConfigFromEnv();
-const { host, port } = startTerminalRpcServer(launchConfig ?? {});
+const configManager = createDashboardConfigManager();
+const { host, port } = startTerminalRpcServer(launchConfig ?? {}, configManager);
 const url = await getMainViewUrl();
 
 const mainWindow = new BrowserWindow({
@@ -72,30 +74,7 @@ const mainWindow = new BrowserWindow({
     y: 80,
   },
 });
-
-const focusWebviewInput = () => {
-  try {
-    mainWindow.webview.executeJavascript(`(() => {
-      try {
-        window.focus();
-        if (document?.documentElement) {
-          document.documentElement.tabIndex = -1;
-          document.documentElement.focus({ preventScroll: true });
-        }
-        if (document?.body) {
-          document.body.tabIndex = -1;
-          document.body.focus({ preventScroll: true });
-        }
-        const helper = document.querySelector(".xterm-helper-textarea");
-        if (helper instanceof HTMLElement) {
-          helper.focus({ preventScroll: true });
-        }
-      } catch {}
-    })();`);
-  } catch {
-    // Webview may not be ready yet.
-  }
-};
+const WINDOW_TITLE = "Ghostty Multi-Terminal Dashboard";
 
 const requestWindowFocus = () => {
   mainWindow.show();
@@ -106,37 +85,76 @@ const runFocusBurst = (delaysMs: number[]) => {
   for (const delay of delaysMs) {
     setTimeout(() => {
       requestWindowFocus();
-      focusWebviewInput();
     }, delay);
   }
 };
 
-let observedWindowFocus = false;
-let lastFocusBoostAt = 0;
-mainWindow.on("focus", () => {
-  observedWindowFocus = true;
-  const now = Date.now();
-  if (now - lastFocusBoostAt < 500) return;
-  lastFocusBoostAt = now;
-  runFocusBurst([0, 70, 180]);
-});
-
 // Initial startup activation attempts.
-runFocusBurst([0, 80, 200, 420, 900, 1600]);
+runFocusBurst([0, 120, 260]);
 
 // Re-assert focus once renderer is actually interactive.
 mainWindow.webview.on("dom-ready", () => {
-  runFocusBurst([0, 80, 200, 450, 900]);
+  runFocusBurst([0, 120, 260]);
+  setTimeout(runX11InputNudge, 420);
 });
 
-// Last-resort nudge for window managers that ignore early focus requests.
-setTimeout(() => {
-  if (observedWindowFocus) return;
-  mainWindow.setAlwaysOnTop(true);
-  requestWindowFocus();
-  setTimeout(() => {
-    mainWindow.setAlwaysOnTop(false);
-  }, 320);
-}, 2200);
+let x11InputNudged = false;
+const runX11InputNudge = () => {
+  if (x11InputNudged) return;
+  if (process.platform !== "linux") return;
+  if (!process.env.DISPLAY) return;
+  if (process.env.GHOSTTY_DASHBOARD_DISABLE_X11_INPUT_NUDGE === "1") return;
+
+  const run = (args: string[]) =>
+    Bun.spawnSync(args, {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+  const search = run(["xdotool", "search", "--onlyvisible", "--name", WINDOW_TITLE]);
+  if (search.exitCode !== 0) return;
+  const windowId = search.stdout
+    .toString()
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .at(-1);
+  if (!windowId) return;
+
+  x11InputNudged = true;
+  const mouseLocation = run(["xdotool", "getmouselocation", "--shell"]);
+  const originalX = Number(mouseLocation.stdout.toString().match(/X=(\d+)/)?.[1] ?? "");
+  const originalY = Number(mouseLocation.stdout.toString().match(/Y=(\d+)/)?.[1] ?? "");
+  const geometry = run(["xdotool", "getwindowgeometry", "--shell", windowId]).stdout.toString();
+  const width = Number(geometry.match(/WIDTH=(\d+)/)?.[1] ?? "");
+  const height = Number(geometry.match(/HEIGHT=(\d+)/)?.[1] ?? "");
+  const clickX = Number.isFinite(width) && width > 0 ? Math.max(24, Math.floor(width * 0.5)) : 360;
+  const clickY = Number.isFinite(height) && height > 0 ? Math.max(24, Math.floor(height * 0.78)) : 280;
+
+  run(["xdotool", "windowactivate", "--sync", windowId]);
+  run(["xdotool", "windowfocus", "--sync", windowId]);
+  run([
+    "xdotool",
+    "keyup",
+    "Control_L",
+    "Control_R",
+    "Shift_L",
+    "Shift_R",
+    "Alt_L",
+    "Alt_R",
+    "Super_L",
+    "Super_R",
+  ]);
+  // Work around an Electrobun/X11 quirk where keyboard events do not flow
+  // into the webview until it receives the first pointer interaction.
+  // Aim the synthetic click into the lower-middle area where the first
+  // terminal pane is expected, so startup also focuses terminal input.
+  run(["xdotool", "mousemove", "--window", windowId, `${clickX}`, `${clickY}`, "click", "1"]);
+  if (Number.isFinite(originalX) && Number.isFinite(originalY)) {
+    run(["xdotool", "mousemove", `${originalX}`, `${originalY}`]);
+  }
+};
+
+setTimeout(runX11InputNudge, 2600);
 
 console.log(`RPC listening on ws://${host}:${port}`);

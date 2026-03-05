@@ -1,5 +1,6 @@
 import type { ServerWebSocket } from "bun";
 import { TerminalManager } from "./terminalManager";
+import type { DashboardConfigManager } from "./configManager";
 import type { ClientMessage, LaunchConfig, ServerMessage } from "../shared/protocol";
 
 const HOST = "127.0.0.1";
@@ -17,7 +18,10 @@ function parseMessage(raw: string): ClientMessage | null {
   }
 }
 
-export function startTerminalRpcServer(launchConfig: LaunchConfig): { host: string; port: number } {
+export function startTerminalRpcServer(
+  launchConfig: LaunchConfig,
+  configManager: DashboardConfigManager,
+): { host: string; port: number } {
   const terminals = new TerminalManager();
   const clients = new Set<ServerWebSocket<WsData>>();
 
@@ -43,6 +47,7 @@ export function startTerminalRpcServer(launchConfig: LaunchConfig): { host: stri
       open(ws) {
         clients.add(ws);
         send(ws, { type: "ready", serverVersion: "mvp-0.1.0" });
+        send(ws, { type: "config", config: configManager.getConfig() });
       },
       close(ws) {
         clients.delete(ws);
@@ -101,6 +106,15 @@ export function startTerminalRpcServer(launchConfig: LaunchConfig): { host: stri
             }
             case "launch-config": {
               send(ws, { type: "launch-config", config: launchConfig });
+              break;
+            }
+            case "get-config": {
+              send(ws, { type: "config", config: configManager.getConfig() });
+              break;
+            }
+            case "set-config": {
+              const nextConfig = configManager.setConfig(parsed.config);
+              broadcast({ type: "config", config: nextConfig });
               break;
             }
             case "kill": {

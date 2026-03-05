@@ -1,4 +1,5 @@
 import type { ClientMessage, LaunchConfig, ServerMessage, TerminalFrame } from "../shared/protocol";
+import type { DashboardConfig } from "../shared/config";
 
 type FrameHandler = (frame: TerminalFrame) => void;
 type ExitHandler = (id: string, exitCode: number) => void;
@@ -6,6 +7,7 @@ type ErrorHandler = (message: string) => void;
 type CreatedHandler = (id: string) => void;
 type ReadyHandler = () => void;
 type LaunchConfigHandler = (config: LaunchConfig) => void;
+type ConfigHandler = (config: DashboardConfig) => void;
 
 export class RpcClient {
   private readonly ws: WebSocket;
@@ -15,6 +17,7 @@ export class RpcClient {
   private createdHandlers = new Set<CreatedHandler>();
   private readyHandlers = new Set<ReadyHandler>();
   private launchConfigHandlers = new Set<LaunchConfigHandler>();
+  private configHandlers = new Set<ConfigHandler>();
 
   constructor(url: string) {
     this.ws = new WebSocket(url);
@@ -38,6 +41,9 @@ export class RpcClient {
         break;
       case "launch-config":
         this.launchConfigHandlers.forEach((cb) => cb(message.config));
+        break;
+      case "config":
+        this.configHandlers.forEach((cb) => cb(message.config));
         break;
       case "error":
         this.errorHandlers.forEach((cb) => cb(message.message));
@@ -89,5 +95,10 @@ export class RpcClient {
   onLaunchConfig(cb: LaunchConfigHandler): () => void {
     this.launchConfigHandlers.add(cb);
     return () => this.launchConfigHandlers.delete(cb);
+  }
+
+  onConfig(cb: ConfigHandler): () => void {
+    this.configHandlers.add(cb);
+    return () => this.configHandlers.delete(cb);
   }
 }

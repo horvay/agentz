@@ -1,20 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { TerminalFrame } from "../shared/protocol";
+import type { DashboardShortcuts } from "../shared/config";
 import type { RpcClient } from "./rpcClient";
+import { doesEventMatchShortcut } from "./shortcuts";
 
 interface Props {
   id: string;
   rpc: RpcClient;
   frame?: TerminalFrame;
   active: boolean;
-  focusRequestSeq: number;
+  shortcuts: DashboardShortcuts;
   onActivate: (id: string) => void;
-  onShortcut: (shortcut: "new-pane" | "focus-left" | "focus-right") => void;
+  onShortcut: (shortcut: "new-pane" | "focus-left" | "focus-right" | "open-settings") => void;
 }
 
-export function TerminalPane({ id, rpc, frame, active, focusRequestSeq, onActivate, onShortcut }: Props) {
+export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, onShortcut }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -31,11 +33,15 @@ export function TerminalPane({ id, rpc, frame, active, focusRequestSeq, onActiva
   const lastAppliedRenderRef = useRef<string>("");
   const altBufferActiveRef = useRef(false);
   const shortcutHandlerRef = useRef(onShortcut);
-  const [terminalMountSeq, setTerminalMountSeq] = useState(0);
+  const shortcutsRef = useRef(shortcuts);
 
   useEffect(() => {
     shortcutHandlerRef.current = onShortcut;
   }, [onShortcut]);
+
+  useEffect(() => {
+    shortcutsRef.current = shortcuts;
+  }, [shortcuts]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -132,21 +138,25 @@ export function TerminalPane({ id, rpc, frame, active, focusRequestSeq, onActiva
     }
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
-      if (!event.ctrlKey || !event.shiftKey) return true;
-      const key = event.key.toLowerCase();
-      if (key === "n") {
+      const bindings = shortcutsRef.current;
+      if (doesEventMatchShortcut(event, bindings.addPane)) {
         event.preventDefault();
         shortcutHandlerRef.current("new-pane");
         return false;
       }
-      if (event.key === "ArrowLeft") {
+      if (doesEventMatchShortcut(event, bindings.focusPrevPane)) {
         event.preventDefault();
         shortcutHandlerRef.current("focus-left");
         return false;
       }
-      if (event.key === "ArrowRight") {
+      if (doesEventMatchShortcut(event, bindings.focusNextPane)) {
         event.preventDefault();
         shortcutHandlerRef.current("focus-right");
+        return false;
+      }
+      if (doesEventMatchShortcut(event, bindings.openSettings)) {
+        event.preventDefault();
+        shortcutHandlerRef.current("open-settings");
         return false;
       }
       return true;
@@ -177,7 +187,6 @@ export function TerminalPane({ id, rpc, frame, active, focusRequestSeq, onActiva
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     syncedSizeRef.current = false;
-    setTerminalMountSeq((prev) => prev + 1);
 
     const onWindowResize = () => fitAndSync();
     const resizeObserver = new ResizeObserver(() => fitAndSync());
@@ -341,47 +350,18 @@ export function TerminalPane({ id, rpc, frame, active, focusRequestSeq, onActiva
   useEffect(() => {
     if (!terminalRef.current) return;
     if (active) {
-      const focusTerminal = () => {
-        if (!terminalRef.current) return;
-        window.focus();
-        terminalRef.current.focus();
-        const helperTextarea = hostRef.current?.querySelector(
-          ".xterm-helper-textarea",
-        ) as HTMLTextAreaElement | null;
-        helperTextarea?.focus({ preventScroll: true });
-        terminalRef.current.write("\x1b[?25h");
-      };
-      focusTerminal();
+      terminalRef.current.focus();
+      terminalRef.current.write("\x1b[?25h");
       const focusRaf = requestAnimationFrame(() => {
-        focusTerminal();
+        terminalRef.current?.focus();
       });
-      const focusTimeoutA = window.setTimeout(() => {
-        focusTerminal();
-      }, 120);
-      const focusTimeoutB = window.setTimeout(() => {
-        focusTerminal();
-      }, 320);
-      const onWindowFocus = () => {
-        focusTerminal();
-      };
-      const onVisibilityChange = () => {
-        if (document.visibilityState === "visible") {
-          focusTerminal();
-        }
-      };
-      window.addEventListener("focus", onWindowFocus);
-      document.addEventListener("visibilitychange", onVisibilityChange);
       return () => {
-        window.removeEventListener("focus", onWindowFocus);
-        document.removeEventListener("visibilitychange", onVisibilityChange);
         cancelAnimationFrame(focusRaf);
-        window.clearTimeout(focusTimeoutA);
-        window.clearTimeout(focusTimeoutB);
       };
     }
     terminalRef.current.write("\x1b[?25l");
     terminalRef.current.blur();
-  }, [active, focusRequestSeq, terminalMountSeq]);
+  }, [active]);
 
   return (
     <section className={`pane-shell ${active ? "pane-active" : ""}`}>

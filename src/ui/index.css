@@ -107,6 +107,56 @@ h1 {
   text-overflow: ellipsis;
 }
 
+.topbar-spacer {
+  flex: 1 1 auto;
+}
+
+.topbar-settings-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(162, 230, 255, 0.36);
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: linear-gradient(140deg, rgba(18, 49, 74, 0.9), rgba(8, 80, 103, 0.86));
+  color: #d8f7ff;
+  font: 600 11px/1 "Sora", sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease;
+}
+
+.topbar-settings-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(176, 244, 255, 0.6);
+  box-shadow: 0 8px 20px rgba(11, 32, 49, 0.5);
+}
+
+.topbar-settings-button:focus-visible {
+  outline: 2px solid rgba(135, 232, 255, 0.85);
+  outline-offset: 2px;
+}
+
+.topbar-settings-button svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+}
+
+.topbar-settings-button kbd {
+  border: 1px solid rgba(168, 230, 255, 0.42);
+  border-radius: 7px;
+  background: rgba(5, 18, 30, 0.82);
+  color: #9de4fb;
+  font: 600 10px/1 "JetBrainsMonoNerdFontMonoLocal", monospace;
+  letter-spacing: 0.02em;
+  padding: 4px 6px;
+}
+
 .avatar-strip {
   position: relative;
   overflow: hidden;
@@ -463,6 +513,225 @@ body.pane-resize-active .pane-resize-handle::before {
 .xterm-viewport {
   scrollbar-width: thin;
   scrollbar-color: rgba(116, 191, 226, 0.6) rgba(4, 17, 29, 0.7);
+}
+
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(35, 176, 226, 0.08), transparent 48%),
+    radial-gradient(circle at 82% 74%, rgba(124, 214, 255, 0.1), transparent 45%),
+    rgba(1, 6, 12, 0.74);
+  backdrop-filter: blur(8px);
+}
+
+.settings-modal {
+  width: min(760px, calc(100vw - 48px));
+  max-height: min(760px, calc(100vh - 60px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(130, 205, 236, 0.34);
+  background:
+    linear-gradient(150deg, rgba(5, 20, 35, 0.95), rgba(5, 16, 28, 0.97)),
+    radial-gradient(circle at 12% 10%, rgba(83, 208, 255, 0.14), transparent 36%);
+  box-shadow:
+    0 22px 56px rgba(0, 0, 0, 0.56),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 22px 22px 18px;
+  border-bottom: 1px solid rgba(121, 187, 218, 0.24);
+}
+
+.settings-eyebrow {
+  margin: 0 0 5px;
+  color: #7fd5f2;
+  font: 600 11px/1 "Sora", sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.settings-header h2 {
+  margin: 0;
+  color: #e9f9ff;
+  font: 700 24px/1.15 "Sora", sans-serif;
+}
+
+.settings-subtitle {
+  margin: 6px 0 0;
+  color: #8fb7c8;
+  font-size: 12px;
+}
+
+.settings-close-button {
+  border: 1px solid rgba(161, 224, 246, 0.34);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(8, 26, 41, 0.84);
+  color: #b9e5f7;
+  font: 600 11px/1 "Sora", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.settings-form {
+  display: grid;
+  gap: 16px;
+  padding: 18px 22px 22px;
+  overflow: auto;
+}
+
+.settings-section {
+  border: 1px solid rgba(109, 176, 206, 0.22);
+  border-radius: 14px;
+  background: rgba(6, 22, 36, 0.6);
+  padding: 15px 16px;
+}
+
+.settings-section h3 {
+  margin: 0 0 14px;
+  color: #d4f5ff;
+  font: 700 13px/1 "Sora", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-width-controls {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 14px;
+  align-items: center;
+}
+
+.settings-width-controls input[type="range"] {
+  width: 100%;
+  accent-color: #63d8ff;
+}
+
+.settings-width-input-wrap {
+  display: grid;
+  gap: 6px;
+  color: #9dc9da;
+  font: 600 10px/1 "Sora", sans-serif;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.settings-width-input-wrap input {
+  width: 110px;
+  border: 1px solid rgba(121, 203, 236, 0.34);
+  border-radius: 10px;
+  background: rgba(3, 16, 28, 0.9);
+  color: #deeff6;
+  font: 600 13px/1 "JetBrainsMonoNerdFontMonoLocal", monospace;
+  padding: 9px 10px;
+}
+
+.settings-shortcut-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-shortcut-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-shortcut-row span {
+  color: #bde5f5;
+  font-size: 13px;
+}
+
+.settings-shortcut-capture {
+  min-width: 214px;
+  border: 1px solid rgba(140, 211, 240, 0.34);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(9, 33, 52, 0.88), rgba(8, 20, 36, 0.86));
+  color: #d7f2ff;
+  font: 600 12px/1 "JetBrainsMonoNerdFontMonoLocal", monospace;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    box-shadow 200ms ease;
+}
+
+.settings-shortcut-capture:hover {
+  border-color: rgba(167, 235, 255, 0.56);
+  box-shadow: 0 8px 18px rgba(6, 22, 35, 0.44);
+}
+
+.settings-shortcut-capture-recording {
+  border-color: rgba(140, 252, 206, 0.72);
+  box-shadow:
+    0 0 0 1px rgba(139, 255, 206, 0.32),
+    0 10px 24px rgba(13, 38, 26, 0.46);
+  color: #e2ffee;
+}
+
+.settings-note {
+  margin: 10px 0 0;
+  color: #86b4c6;
+  font-size: 11px;
+}
+
+.settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.settings-actions {
+  display: inline-flex;
+  gap: 10px;
+}
+
+.settings-button {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 9px 14px;
+  font: 600 11px/1 "Sora", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.settings-button-muted {
+  border-color: rgba(145, 204, 229, 0.36);
+  background: rgba(9, 30, 47, 0.8);
+  color: #c5e5f2;
+}
+
+.settings-button-primary {
+  border-color: rgba(140, 246, 255, 0.45);
+  background: linear-gradient(145deg, rgba(17, 112, 133, 0.94), rgba(16, 79, 103, 0.9));
+  color: #e5fcff;
+}
+
+.settings-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-error {
+  color: #ffd1d1;
+  font-size: 12px;
 }
 
 body.pane-resize-active {

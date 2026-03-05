@@ -17,6 +17,18 @@ bun run native:build:bridge
 bun run dev
 ```
 
+### Linux/X11 input focus note
+
+On some Linux/X11 setups, Electrobun may not forward keyboard input to the app
+until the first pointer interaction. The app applies a one-time startup nudge
+using `xdotool` to simulate that first click automatically.
+
+To disable this workaround:
+
+```bash
+GHOSTTY_DASHBOARD_DISABLE_X11_INPUT_NUDGE=1 bun run dev
+```
+
 ### Dynamic Terminals + Navigation
 
 - The app starts with one or more terminal panes based on launch config (defaults to one).
