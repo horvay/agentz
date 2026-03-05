@@ -1,6 +1,10 @@
 .tmp-*.png
 .tmp-check-*.png
 screenshots/*.png
+
+# Generated images (Cursor image tool output)
+????????-????-????-????-????????????.jpg
+
 # Dependencies
 node_modules/
 
@@ -19,6 +23,10 @@ out/
 # Native Zig artifacts
 src/native/.zig-cache/
 src/native/zig-out/
+
+# Local toolchain installs (keep the setup script)
+.tools/*
+!.tools/setup.ts
 
 # Environment and local config
 .env
