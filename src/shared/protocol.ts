@@ -7,6 +7,8 @@ export interface PaneLaunchConfig {
 }
 
 export interface LaunchConfig {
+  panes?: PaneLaunchConfig[];
+  // Legacy shape kept for backward compatibility.
   paneA?: PaneLaunchConfig;
   paneB?: PaneLaunchConfig;
 }

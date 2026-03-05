@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { TerminalFrame } from "../shared/protocol";
@@ -6,22 +6,15 @@ import type { RpcClient } from "./rpcClient";
 
 interface Props {
   id: string;
-  title: string;
   rpc: RpcClient;
   frame?: TerminalFrame;
   active: boolean;
-  status: "booting" | "running" | "exited" | "error";
+  focusRequestSeq: number;
   onActivate: (id: string) => void;
+  onShortcut: (shortcut: "new-pane" | "focus-left" | "focus-right") => void;
 }
 
-const statusLabel: Record<Props["status"], string> = {
-  booting: "Booting",
-  running: "Running",
-  exited: "Exited",
-  error: "Error",
-};
-
-export function TerminalPane({ id, title, rpc, frame, active, status, onActivate }: Props) {
+export function TerminalPane({ id, rpc, frame, active, focusRequestSeq, onActivate, onShortcut }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -37,7 +30,12 @@ export function TerminalPane({ id, title, rpc, frame, active, status, onActivate
   const renderInFlightRef = useRef(false);
   const lastAppliedRenderRef = useRef<string>("");
   const altBufferActiveRef = useRef(false);
-  const [selectionMessage, setSelectionMessage] = useState("");
+  const shortcutHandlerRef = useRef(onShortcut);
+  const [terminalMountSeq, setTerminalMountSeq] = useState(0);
+
+  useEffect(() => {
+    shortcutHandlerRef.current = onShortcut;
+  }, [onShortcut]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -129,6 +127,30 @@ export function TerminalPane({ id, title, rpc, frame, active, status, onActivate
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(host);
+    if (active) {
+      requestAnimationFrame(() => terminal.focus());
+    }
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown") return true;
+      if (!event.ctrlKey || !event.shiftKey) return true;
+      const key = event.key.toLowerCase();
+      if (key === "n") {
+        event.preventDefault();
+        shortcutHandlerRef.current("new-pane");
+        return false;
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        shortcutHandlerRef.current("focus-left");
+        return false;
+      }
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        shortcutHandlerRef.current("focus-right");
+        return false;
+      }
+      return true;
+    });
 
     let raf = 0;
     const fitAndSync = () => {
@@ -155,6 +177,7 @@ export function TerminalPane({ id, title, rpc, frame, active, status, onActivate
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     syncedSizeRef.current = false;
+    setTerminalMountSeq((prev) => prev + 1);
 
     const onWindowResize = () => fitAndSync();
     const resizeObserver = new ResizeObserver(() => fitAndSync());
@@ -318,61 +341,55 @@ export function TerminalPane({ id, title, rpc, frame, active, status, onActivate
   useEffect(() => {
     if (!terminalRef.current) return;
     if (active) {
-      terminalRef.current.focus();
-      terminalRef.current.write("\x1b[?25h");
-      return;
+      const focusTerminal = () => {
+        if (!terminalRef.current) return;
+        window.focus();
+        terminalRef.current.focus();
+        const helperTextarea = hostRef.current?.querySelector(
+          ".xterm-helper-textarea",
+        ) as HTMLTextAreaElement | null;
+        helperTextarea?.focus({ preventScroll: true });
+        terminalRef.current.write("\x1b[?25h");
+      };
+      focusTerminal();
+      const focusRaf = requestAnimationFrame(() => {
+        focusTerminal();
+      });
+      const focusTimeoutA = window.setTimeout(() => {
+        focusTerminal();
+      }, 120);
+      const focusTimeoutB = window.setTimeout(() => {
+        focusTerminal();
+      }, 320);
+      const onWindowFocus = () => {
+        focusTerminal();
+      };
+      const onVisibilityChange = () => {
+        if (document.visibilityState === "visible") {
+          focusTerminal();
+        }
+      };
+      window.addEventListener("focus", onWindowFocus);
+      document.addEventListener("visibilitychange", onVisibilityChange);
+      return () => {
+        window.removeEventListener("focus", onWindowFocus);
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+        cancelAnimationFrame(focusRaf);
+        window.clearTimeout(focusTimeoutA);
+        window.clearTimeout(focusTimeoutB);
+      };
     }
     terminalRef.current.write("\x1b[?25l");
     terminalRef.current.blur();
-  }, [active]);
-
-  const subtitle = useMemo(() => {
-    if (!frame) return "booting";
-    return `${frame.cols}x${frame.rows} · seq ${frame.seq}`;
-  }, [frame]);
+  }, [active, focusRequestSeq, terminalMountSeq]);
 
   return (
     <section className={`pane-shell ${active ? "pane-active" : ""}`}>
-      <header className="pane-header">
-        <div className="pane-title-wrap">
-          <h2>{title}</h2>
-          <p>{subtitle}</p>
-        </div>
-        <div className="pane-controls">
-          <span className={`pane-status pane-status-${status}`}>{statusLabel[status]}</span>
-          <button
-            className="pane-action pane-copy"
-            onClick={async () => {
-              const selection = terminalRef.current?.getSelection() ?? "";
-              if (!selection) {
-                setSelectionMessage("No selection");
-                return;
-              }
-              try {
-                await navigator.clipboard.writeText(selection);
-                setSelectionMessage("Copied");
-              } catch {
-                setSelectionMessage("Clipboard denied");
-              }
-              window.setTimeout(() => setSelectionMessage(""), 1400);
-            }}
-          >
-            {selectionMessage || "Copy"}
-          </button>
-          <button
-            className="pane-action"
-            onClick={() => rpc.send({ type: "input", id, data: "opencode\n" })}
-          >
-            Run opencode
-          </button>
-        </div>
-      </header>
-
       <div
         ref={stageRef}
         className="terminal-stage"
         onClick={() => {
-          onActivate(id);
+          if (!active) onActivate(id);
           terminalRef.current?.focus();
         }}
         role="presentation"

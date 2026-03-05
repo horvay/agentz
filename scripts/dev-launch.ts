@@ -5,6 +5,8 @@ interface PaneLaunchConfig {
 }
 
 interface LaunchConfig {
+  panes?: PaneLaunchConfig[];
+  // Legacy shape still accepted by app for compatibility.
   paneA?: PaneLaunchConfig;
   paneB?: PaneLaunchConfig;
 }
@@ -33,24 +35,56 @@ function parseFlags(argv: string[]): Record<string, string | boolean> {
   return out;
 }
 
+function buildPaneFromFlags(
+  flags: Record<string, string | boolean>,
+  prefix: string,
+): PaneLaunchConfig | undefined {
+  const pane: PaneLaunchConfig = {};
+  if (typeof flags[`${prefix}-cmd`] === "string") pane.command = flags[`${prefix}-cmd`];
+  if (typeof flags[`${prefix}-args`] === "string") pane.args = parseCsv(flags[`${prefix}-args`]);
+  if (typeof flags[`${prefix}-cwd`] === "string") pane.cwd = flags[`${prefix}-cwd`];
+  if (flags[`${prefix}-opencode`] === true) pane.command = "opencode";
+  return Object.keys(pane).length > 0 ? pane : undefined;
+}
+
 function getLaunchConfig(flags: Record<string, string | boolean>): LaunchConfig {
-  const paneA: PaneLaunchConfig = {};
-  const paneB: PaneLaunchConfig = {};
+  const panesByIndex = new Map<number, PaneLaunchConfig>();
+  const indexedPattern = /^pane-(\d+)-(cmd|args|cwd|opencode)$/;
+  for (const [key, value] of Object.entries(flags)) {
+    const match = key.match(indexedPattern);
+    if (!match) continue;
+    const paneIndex = Number(match[1]);
+    if (!Number.isFinite(paneIndex) || paneIndex < 1) continue;
+    const field = match[2];
+    const pane = panesByIndex.get(paneIndex) ?? {};
+    if (field === "cmd" && typeof value === "string") pane.command = value;
+    if (field === "args" && typeof value === "string") pane.args = parseCsv(value);
+    if (field === "cwd" && typeof value === "string") pane.cwd = value;
+    if (field === "opencode" && value === true) pane.command = "opencode";
+    panesByIndex.set(paneIndex, pane);
+  }
+  const indexedPanes = [...panesByIndex.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, pane]) => pane)
+    .filter((pane) => Object.keys(pane).length > 0);
+  if (indexedPanes.length > 0) {
+    return { panes: indexedPanes };
+  }
 
-  if (typeof flags["pane-a-cmd"] === "string") paneA.command = flags["pane-a-cmd"];
-  if (typeof flags["pane-a-args"] === "string") paneA.args = parseCsv(flags["pane-a-args"]);
-  if (typeof flags["pane-a-cwd"] === "string") paneA.cwd = flags["pane-a-cwd"];
-
-  if (typeof flags["pane-b-cmd"] === "string") paneB.command = flags["pane-b-cmd"];
-  if (typeof flags["pane-b-args"] === "string") paneB.args = parseCsv(flags["pane-b-args"]);
-  if (typeof flags["pane-b-cwd"] === "string") paneB.cwd = flags["pane-b-cwd"];
-
-  if (flags["pane-a-opencode"] === true) paneA.command = "opencode";
-  if (flags["pane-b-opencode"] === true) paneB.command = "opencode";
-
+  const paneA = buildPaneFromFlags(flags, "pane-a");
+  const paneB = buildPaneFromFlags(flags, "pane-b");
+  const legacyPanes = [paneA, paneB].filter(
+    (pane): pane is PaneLaunchConfig => Boolean(pane),
+  );
+  if (legacyPanes.length > 0) {
+    return {
+      panes: legacyPanes,
+      paneA,
+      paneB,
+    };
+  }
   return {
-    paneA: Object.keys(paneA).length > 0 ? paneA : undefined,
-    paneB: Object.keys(paneB).length > 0 ? paneB : undefined,
+    panes: [{}],
   };
 }
 

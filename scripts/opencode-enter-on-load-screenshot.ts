@@ -66,6 +66,51 @@ async function sendInputViaRpc(id: string, data: string): Promise<void> {
   });
 }
 
+async function getFirstTerminalId(): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const ws = new WebSocket("ws://127.0.0.1:4599");
+    const timeout = setTimeout(() => {
+      try {
+        ws.close();
+      } catch {}
+      reject(new Error("RPC terminal list timeout"));
+    }, 6000);
+
+    ws.addEventListener("open", () => {
+      ws.send(JSON.stringify({ type: "list" }));
+    });
+
+    ws.addEventListener("message", (event) => {
+      let message: { type?: string; ids?: unknown } | null = null;
+      try {
+        message = JSON.parse(String(event.data)) as { type?: string; ids?: unknown };
+      } catch {
+        return;
+      }
+      if (message.type !== "terminal-list" || !Array.isArray(message.ids)) return;
+      const first = message.ids.find((entry): entry is string => typeof entry === "string");
+      if (!first) {
+        clearTimeout(timeout);
+        try {
+          ws.close();
+        } catch {}
+        reject(new Error("No terminals available"));
+        return;
+      }
+      clearTimeout(timeout);
+      try {
+        ws.close();
+      } catch {}
+      resolve(first);
+    });
+
+    ws.addEventListener("error", () => {
+      clearTimeout(timeout);
+      reject(new Error("RPC terminal list websocket error"));
+    });
+  });
+}
+
 const flags = parseFlags(process.argv.slice(2));
 const screenshotPath =
   typeof flags.out === "string" && flags.out.trim().length > 0
@@ -119,9 +164,10 @@ try {
   await sleep(2200);
   runChecked(["xdotool", "mousemove", "--window", windowId, "90", "135", "click", "1"]);
   await sleep(120);
-  await sendInputViaRpc("term-a", "\n");
+  const firstTerminalId = await getFirstTerminalId();
+  await sendInputViaRpc(firstTerminalId, "\n");
   await sleep(120);
-  await sendInputViaRpc("term-a", "test");
+  await sendInputViaRpc(firstTerminalId, "test");
   await sleep(3200);
 
   runChecked(["mkdir", "-p", dirname(screenshotPath)]);
