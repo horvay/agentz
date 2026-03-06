@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { CanvasAddon } from "@xterm/addon-canvas";
 import type { TerminalFrame } from "../shared/protocol";
 import type { DashboardShortcuts } from "../shared/config";
 import type { RpcClient } from "./rpcClient";
@@ -21,6 +22,7 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
   const stageRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const canvasAddonRef = useRef<CanvasAddon | null>(null);
   const syncedSizeRef = useRef(false);
   const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const refreshRafRef = useRef<number | null>(null);
@@ -105,7 +107,6 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
       convertEol: false,
       scrollback: 8000,
       minimumContrastRatio: 4.5,
-      rendererType: "dom",
       theme: {
         background: "#0a0f1a",
         foreground: "#d9e6ff",
@@ -131,7 +132,9 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
       },
     });
     const fitAddon = new FitAddon();
+    const canvasAddon = new CanvasAddon();
     terminal.loadAddon(fitAddon);
+    terminal.loadAddon(canvasAddon);
     terminal.open(host);
     if (active) {
       requestAnimationFrame(() => terminal.focus());
@@ -186,6 +189,7 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    canvasAddonRef.current = canvasAddon;
     syncedSizeRef.current = false;
 
     const onWindowResize = () => fitAndSync();
@@ -209,6 +213,7 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      canvasAddonRef.current = null;
     };
   }, [id, rpc]);
 
