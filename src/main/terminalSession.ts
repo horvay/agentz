@@ -1,8 +1,12 @@
+import { dirname, join } from "node:path";
+import { ptyToText } from "ghostty-opentui";
+
 import type { TerminalFrame } from "../shared/protocol";
 
 const MAX_VT_CHARS = 250_000;
 const MAX_PREVIEW_LINES = 200;
 const MAX_BRIDGE_LINE_CHARS = 12_000_000;
+let hasWarnedMissingBridge = false;
 const PTY_WORKER_SOURCE = `
 const readline = require("node:readline");
 const pty = require("node-pty");
@@ -76,13 +80,34 @@ rl.on("line", (line) => {
 });
 `;
 
-function toPreviewLines(vt: string): string[] {
-  // Minimal ANSI scrub for preview rendering; full VT state remains in vt stream.
-  const noAnsi = vt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-  return noAnsi
-    .split(/\r?\n/)
-    .slice(-MAX_PREVIEW_LINES)
-    .map((line) => line.slice(0, 512));
+function resolveBridgePath(rootCwd: string): string {
+  const direct = `${rootCwd}/src/native/zig-out/bin/ghostty-vt-bridge`;
+  if (Bun.file(direct).size > 0) return direct;
+
+  const execDir = dirname(process.execPath);
+  const packaged = join(execDir, "..", "Resources", "app", "bin", "ghostty-vt-bridge");
+  if (Bun.file(packaged).size > 0) return packaged;
+
+  return direct;
+}
+
+function toPreviewLines(vt: string, cols: number, rows: number): string[] {
+  try {
+    const plain = ptyToText(vt, {
+      cols: Math.max(40, cols),
+      rows: Math.max(MAX_PREVIEW_LINES, rows),
+    });
+    return plain
+      .split(/\r?\n/)
+      .slice(-MAX_PREVIEW_LINES)
+      .map((line) => line.slice(0, 512));
+  } catch {
+    const noAnsi = vt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    return noAnsi
+      .split(/\r?\n/)
+      .slice(-MAX_PREVIEW_LINES)
+      .map((line) => line.slice(0, 512));
+  }
 }
 
 export class TerminalSession {
@@ -110,10 +135,36 @@ export class TerminalSession {
     this.rows = rows;
 
     const rootCwd = process.env.GHOSTTY_DASHBOARD_ROOT ?? process.cwd();
-    const launchCwd = cwd ?? rootCwd;
+    const launchCwd = cwd ?? process.env.HOME ?? process.cwd();
     const shell = command ?? process.env.SHELL ?? (process.platform === "win32" ? "pwsh.exe" : "bash");
     const shellArgs = args ?? [];
-    const bridgePath = `${rootCwd}/src/native/zig-out/bin/ghostty-vt-bridge`;
+    const bridgePath = resolveBridgePath(rootCwd);
+    const bridgeDisabled = process.env.GHOSTTY_DASHBOARD_DISABLE_BRIDGE === "1";
+    const bridgeBinaryPresent = Bun.file(bridgePath).size > 0;
+
+    if (!bridgeDisabled && bridgeBinaryPresent) {
+      this.ghosttyBridgeHandle = Bun.spawn(
+        [bridgePath, String(cols), String(rows)],
+        {
+          cwd: rootCwd,
+          env: {
+            ...process.env,
+          },
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      this.sendBridge({ type: "snapshot" });
+    } else {
+      this.ghosttyBridgeHandle = null;
+      if (!bridgeDisabled && !bridgeBinaryPresent && !hasWarnedMissingBridge) {
+        hasWarnedMissingBridge = true;
+        console.warn(
+          `[terminal:${this.id}] ghostty bridge missing at ${bridgePath}; running stream mode (no native bridge build needed).`,
+        );
+      }
+    }
 
     this.processHandle = Bun.spawn(
       [
@@ -138,25 +189,6 @@ export class TerminalSession {
       },
     );
 
-    if (Bun.file(bridgePath).size <= 0) {
-      throw new Error(
-        `Missing ghostty bridge binary at ${bridgePath}. Run: bun run native:build:bridge`,
-      );
-    }
-    this.ghosttyBridgeHandle = Bun.spawn(
-      [bridgePath, String(cols), String(rows)],
-      {
-        cwd: rootCwd,
-        env: {
-          ...process.env,
-        },
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    this.sendBridge({ type: "snapshot" });
-
     void this.processHandle.exited.then((code) => {
       this.emitExit(code);
     });
@@ -164,7 +196,6 @@ export class TerminalSession {
 
   onData(cb: (frame: TerminalFrame) => void): void {
     this.frameHandler = cb;
-
     const handleWorkerLine = (line: string) => {
       if (!line.trim()) return;
       let message: { type: string; data?: string; code?: number } | null = null;
@@ -267,41 +298,59 @@ export class TerminalSession {
       );
     };
 
-    const pumpBridgeStdout = async (stream: ReadableStream<Uint8Array> | null) => {
+    const pumpBridgeStdout = async (stream: ReadableStream<Uint8Array> | null | undefined) => {
       if (!stream) return;
+      const reader = stream.getReader();
       const decoder = new TextDecoder();
-      for await (const chunk of stream) {
-        this.bridgeLineBuffer += decoder.decode(chunk, { stream: true });
-        if (this.bridgeLineBuffer.length > MAX_BRIDGE_LINE_CHARS) {
-          this.bridgeLineBuffer = this.bridgeLineBuffer.slice(-MAX_BRIDGE_LINE_CHARS);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          this.bridgeLineBuffer += decoder.decode(value, { stream: true });
+          if (this.bridgeLineBuffer.length > MAX_BRIDGE_LINE_CHARS) {
+            this.bridgeLineBuffer = this.bridgeLineBuffer.slice(-MAX_BRIDGE_LINE_CHARS);
+          }
+          let newlineIndex = this.bridgeLineBuffer.indexOf("\n");
+          while (newlineIndex >= 0) {
+            const line = this.bridgeLineBuffer.slice(0, newlineIndex);
+            this.bridgeLineBuffer = this.bridgeLineBuffer.slice(newlineIndex + 1);
+            handleBridgeLine(line);
+            newlineIndex = this.bridgeLineBuffer.indexOf("\n");
+          }
         }
-        let newlineIndex = this.bridgeLineBuffer.indexOf("\n");
-        while (newlineIndex >= 0) {
-          const line = this.bridgeLineBuffer.slice(0, newlineIndex);
-          this.bridgeLineBuffer = this.bridgeLineBuffer.slice(newlineIndex + 1);
-          handleBridgeLine(line);
-          newlineIndex = this.bridgeLineBuffer.indexOf("\n");
-        }
+      } finally {
+        reader.releaseLock();
       }
     };
 
-    const pumpBridgeStderr = async (stream: ReadableStream<Uint8Array> | null) => {
+    const pumpBridgeStderr = async (stream: ReadableStream<Uint8Array> | null | undefined) => {
       if (!stream) return;
+      const reader = stream.getReader();
       const decoder = new TextDecoder();
-      for await (const chunk of stream) {
-        const decoded = decoder.decode(chunk, { stream: true });
-        if (decoded.trim()) {
-          console.error(`[terminal:${this.id}:ghostty-bridge] ${decoded.trim()}`);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          const decoded = decoder.decode(value, { stream: true });
+          if (decoded.trim()) {
+            console.error(`[terminal:${this.id}:ghostty-bridge] ${decoded.trim()}`);
+          }
         }
+      } finally {
+        reader.releaseLock();
       }
     };
 
+    if (this.ghosttyBridgeHandle) {
+      const bridgeOut = this.ghosttyBridgeHandle.stdout;
+      const bridgeErr = this.ghosttyBridgeHandle.stderr;
+      void pumpBridgeStdout(typeof bridgeOut === "number" ? null : bridgeOut);
+      void pumpBridgeStderr(typeof bridgeErr === "number" ? null : bridgeErr);
+    }
     void pumpStdout(this.processHandle.stdout);
     void pumpStderr(this.processHandle.stderr);
-    if (this.ghosttyBridgeHandle) {
-      void pumpBridgeStdout(this.ghosttyBridgeHandle.stdout);
-      void pumpBridgeStderr(this.ghosttyBridgeHandle.stderr);
-    }
   }
 
   onExit(cb: (exitCode: number) => void): void {
@@ -355,17 +404,21 @@ export class TerminalSession {
       altScreen,
       chunk,
       vt: this.vtBuffer,
-      previewLines: previewLines ?? toPreviewLines(this.vtBuffer),
+      previewLines: previewLines ?? toPreviewLines(this.vtBuffer, this.cols, this.rows),
     };
   }
 
   private sendWorker(message: object): void {
-    this.processHandle.stdin.write(`${JSON.stringify(message)}\n`);
+    const stdin = this.processHandle.stdin;
+    if (typeof stdin === "number" || !stdin) return;
+    stdin.write(`${JSON.stringify(message)}\n`);
   }
 
   private sendBridge(message: object): void {
     if (!this.ghosttyBridgeHandle) return;
-    this.ghosttyBridgeHandle.stdin.write(`${JSON.stringify(message)}\n`);
+    const stdin = this.ghosttyBridgeHandle.stdin;
+    if (typeof stdin === "number" || !stdin) return;
+    stdin.write(`${JSON.stringify(message)}\n`);
   }
 
   private emitExit(exitCode: number): void {

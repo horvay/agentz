@@ -11,9 +11,9 @@ export default {
 		copy: {
 			"dist/index.html": "views/mainview/index.html",
 			"dist/assets": "views/mainview/assets",
+			"node_modules/node-pty/prebuilds/linux-x64/pty.node": "bun/prebuilds/linux-x64/pty.node",
+			"src/native/zig-out/bin/ghostty-vt-bridge": "bin/ghostty-vt-bridge",
 		},
-		// Ignore Vite output in watch mode — HMR handles view rebuilds separately
-		watchIgnore: ["dist/**"],
 		mac: {
 			bundleCEF: false,
 		},

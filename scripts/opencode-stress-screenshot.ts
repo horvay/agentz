@@ -114,7 +114,13 @@ class RpcSession {
 function capture(windowId: string, path: string): void {
   runChecked(["mkdir", "-p", dirname(path)]);
   runChecked(["rm", "-f", path]);
-  runChecked(["import", "-window", windowId, path]);
+  try {
+    runChecked(["import", "-window", windowId, path]);
+  } catch (error) {
+    const grimProbe = Bun.spawnSync(["which", "grim"], { stdout: "pipe", stderr: "pipe" });
+    if (grimProbe.exitCode !== 0) throw error;
+    runChecked(["grim", path]);
+  }
 }
 
 const flags = parseFlags(process.argv.slice(2));

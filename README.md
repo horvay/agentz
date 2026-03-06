@@ -17,6 +17,17 @@ bun run native:build:bridge
 bun run dev
 ```
 
+## Build Portable Release
+
+```bash
+bun run release:portable
+```
+
+Outputs are written to `artifacts/`:
+
+- `canary-linux-x64-ghostty-dashboard-mvp-canary.tar.zst` (portable app bundle)
+- `canary-linux-x64-ghostty-dashboard-mvp-canary-Setup.tar.gz` (installer bundle)
+
 ### Linux/X11 input focus note
 
 On some Linux/X11 setups, Electrobun may not forward keyboard input to the app

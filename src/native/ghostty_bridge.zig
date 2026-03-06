@@ -282,13 +282,20 @@ fn emitFrame(
         previous_rows.items.len != current_rows.items.len;
 
     var dirty_rows: usize = 0;
+    var dirty_row_index: ?usize = null;
     if (!use_full) {
         for (current_rows.items, 0..) |row, idx| {
-            if (!std.mem.eql(u8, previous_rows.items[idx], row)) dirty_rows += 1;
+            if (!std.mem.eql(u8, previous_rows.items[idx], row)) {
+                dirty_rows += 1;
+                dirty_row_index = idx;
+            }
         }
-        // Keep the incremental path only for cursor/state-only updates.
-        // Any visible text change falls back to the canonical full-frame replay.
-        if (dirty_rows > 0) {
+
+        const cursor_row: usize = @intCast(term.screens.active.cursor.y);
+        const patchable_single_row = dirty_rows == 1 and dirty_row_index != null and dirty_row_index.? == cursor_row;
+
+        // Only patch when the current cursor row changes in place.
+        if (!patchable_single_row and dirty_rows > 0) {
             use_full = true;
         }
     }
