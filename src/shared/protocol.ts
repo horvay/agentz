@@ -22,6 +22,8 @@ export interface TerminalFrame {
   seq: number;
   // Canonical full-frame VT snapshot from libghostty-vt (if available).
   renderVt?: string;
+  // Incremental VT patch from libghostty-vt for changed rows/cursor state.
+  renderPatchVt?: string;
   // Whether Ghostty VT is currently on alternate screen buffer.
   altScreen?: boolean;
   chunk: string;

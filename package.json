@@ -14,7 +14,8 @@
 		"native:build:bridge": "cd src/native && ../../.tools/zig-x86_64-linux-0.15.2/zig build -Doptimize=ReleaseFast",
 		"test:opencode": "bun run scripts/opencode-smoke.ts",
 		"test:opencode:screenshot": "bun run scripts/opencode-screenshot.ts",
-		"test:opencode:enter:onload:screenshot": "bun run scripts/opencode-enter-on-load-screenshot.ts"
+		"test:opencode:enter:onload:screenshot": "bun run scripts/opencode-enter-on-load-screenshot.ts",
+		"test:opencode:stress:screenshot": "bun run scripts/opencode-stress-screenshot.ts"
 	},
 	"dependencies": {
 		"@xterm/addon-canvas": "^0.7.0",

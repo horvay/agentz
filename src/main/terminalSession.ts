@@ -231,6 +231,7 @@ export class TerminalSession {
             cols: number;
             rows: number;
             alt_screen?: boolean;
+            mode?: "full" | "patch";
           }
         | null = null;
       try {
@@ -241,12 +242,13 @@ export class TerminalSession {
           cols: number;
           rows: number;
           alt_screen?: boolean;
+          mode?: "full" | "patch";
         };
       } catch {
         return;
       }
       if (message.type !== "frame" || !this.frameHandler) return;
-      const renderVt = Buffer.from(message.vt_b64, "base64").toString("utf8");
+      const renderedVt = Buffer.from(message.vt_b64, "base64").toString("utf8");
       const plain = Buffer.from(message.plain_b64, "base64").toString("utf8");
       const previewLines = plain
         .split(/\r?\n/)
@@ -254,7 +256,15 @@ export class TerminalSession {
         .map((entry) => entry.slice(0, 512));
       this.cols = Math.max(2, Math.trunc(message.cols));
       this.rows = Math.max(2, Math.trunc(message.rows));
-      this.frameHandler(this.snapshot("", renderVt, previewLines, message.alt_screen === true));
+      this.frameHandler(
+        this.snapshot(
+          "",
+          message.mode === "patch" ? undefined : renderedVt,
+          previewLines,
+          message.alt_screen === true,
+          message.mode === "patch" ? renderedVt : undefined,
+        ),
+      );
     };
 
     const pumpBridgeStdout = async (stream: ReadableStream<Uint8Array> | null) => {
@@ -327,7 +337,13 @@ export class TerminalSession {
     this.processHandle.kill();
   }
 
-  snapshot(chunk = "", renderVt?: string, previewLines?: string[], altScreen?: boolean): TerminalFrame {
+  snapshot(
+    chunk = "",
+    renderVt?: string,
+    previewLines?: string[],
+    altScreen?: boolean,
+    renderPatchVt?: string,
+  ): TerminalFrame {
     this.seq += 1;
     return {
       id: this.id,
@@ -335,6 +351,7 @@ export class TerminalSession {
       rows: this.rows,
       seq: this.seq,
       renderVt,
+      renderPatchVt,
       altScreen,
       chunk,
       vt: this.vtBuffer,

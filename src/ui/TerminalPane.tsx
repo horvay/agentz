@@ -29,8 +29,11 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
   const syncOutputActiveRef = useRef(false);
   const syncOutputBufferRef = useRef("");
   const syncOutputTimeoutRef = useRef<number | null>(null);
-  const pendingRenderVtRef = useRef<{ vt: string; active: boolean; altScreen: boolean } | null>(null);
-  const renderTimerRef = useRef<number | null>(null);
+  const renderQueueRef = useRef<Array<{ payload: string; reset: boolean; dedupeKey?: string }>>([]);
+  const flushRenderQueueRef = useRef<() => void>(() => {});
+  const enqueueRenderRef = useRef<
+    (payload: string, options?: { reset?: boolean; dedupeKey?: string; replaceQueuedFull?: boolean }) => void
+  >(() => {});
   const renderInFlightRef = useRef(false);
   const lastAppliedRenderRef = useRef<string>("");
   const altBufferActiveRef = useRef(false);
@@ -58,40 +61,43 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
       });
     };
 
-    const flushPendingRender = () => {
+    const flushRenderQueue = () => {
       if (!terminalRef.current) return;
       if (renderInFlightRef.current) return;
-      const pending = pendingRenderVtRef.current;
-      if (!pending) return;
-
-      let transition = "";
-      if (pending.altScreen !== altBufferActiveRef.current) {
-        transition = pending.altScreen ? "\x1b[?1049h\x1b[H\x1b[2J" : "\x1b[?1049l\x1b[H\x1b[2J";
-        altBufferActiveRef.current = pending.altScreen;
-      }
-      const payload = `${transition}${pending.vt}${pending.active ? "\x1b[?25h" : "\x1b[?25l"}`;
-      if (payload === lastAppliedRenderRef.current) {
-        if (pending.active) terminalRef.current.write("\x1b[?25h");
-        else terminalRef.current.write("\x1b[?25l");
-        pendingRenderVtRef.current = null;
-        return;
-      }
-
-      pendingRenderVtRef.current = null;
+      const next = renderQueueRef.current.shift();
+      if (!next) return;
       renderInFlightRef.current = true;
-      terminalRef.current.reset();
-      terminalRef.current.write(payload, () => {
+      if (next.reset) {
+        terminalRef.current.reset();
+      }
+      terminalRef.current.write(next.payload, () => {
         renderInFlightRef.current = false;
-        lastAppliedRenderRef.current = payload;
-        if (pendingRenderVtRef.current) {
-          if (renderTimerRef.current) window.clearTimeout(renderTimerRef.current);
-          renderTimerRef.current = window.setTimeout(() => {
-            renderTimerRef.current = null;
-            flushPendingRender();
-          }, 50);
+        if (next.dedupeKey) {
+          lastAppliedRenderRef.current = next.dedupeKey;
+        } else {
+          lastAppliedRenderRef.current = "";
         }
+        flushRenderQueue();
       });
     };
+
+    const enqueueRender = (
+      payload: string,
+      options?: { reset?: boolean; dedupeKey?: string; replaceQueuedFull?: boolean },
+    ) => {
+      if (options?.dedupeKey && payload === lastAppliedRenderRef.current) return;
+      if (options?.replaceQueuedFull) {
+        renderQueueRef.current = renderQueueRef.current.filter((entry) => !entry.dedupeKey);
+      }
+      renderQueueRef.current.push({
+        payload,
+        reset: options?.reset === true,
+        dedupeKey: options?.dedupeKey,
+      });
+      flushRenderQueue();
+    };
+    flushRenderQueueRef.current = flushRenderQueue;
+    enqueueRenderRef.current = enqueueRender;
 
     const terminal = new Terminal({
       fontFamily: "JetBrainsMonoNerdFontMonoLocal, JetBrainsMono Nerd Font Mono, monospace",
@@ -191,6 +197,9 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
     fitAddonRef.current = fitAddon;
     canvasAddonRef.current = canvasAddon;
     syncedSizeRef.current = false;
+    renderQueueRef.current = [];
+    lastAppliedRenderRef.current = "";
+    altBufferActiveRef.current = false;
 
     const onWindowResize = () => fitAndSync();
     const resizeObserver = new ResizeObserver(() => fitAndSync());
@@ -208,12 +217,13 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
       resizeObserver.disconnect();
       if (raf) cancelAnimationFrame(raf);
       if (refreshRafRef.current) cancelAnimationFrame(refreshRafRef.current);
-      if (renderTimerRef.current) window.clearTimeout(renderTimerRef.current);
       if (syncOutputTimeoutRef.current) window.clearTimeout(syncOutputTimeoutRef.current);
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
       canvasAddonRef.current = null;
+      flushRenderQueueRef.current = () => {};
+      enqueueRenderRef.current = () => {};
     };
   }, [id, rpc]);
 
@@ -221,64 +231,21 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
     if (!frame || !terminalRef.current) return;
     const terminal = terminalRef.current;
 
-    if (frame.renderVt) {
-      // Coalesce high-frequency full-frame updates to reduce visible flashing.
-      pendingRenderVtRef.current = { vt: frame.renderVt, active, altScreen: frame.altScreen === true };
-      if (!renderTimerRef.current) {
-        renderTimerRef.current = window.setTimeout(() => {
-          renderTimerRef.current = null;
-          if (!terminalRef.current) return;
-          if (renderInFlightRef.current) return;
-          if (!pendingRenderVtRef.current) return;
-          const pending = pendingRenderVtRef.current;
-          const framePayload = pending.vt;
-          let transition = "";
-          if (pending.altScreen !== altBufferActiveRef.current) {
-            transition = pending.altScreen ? "\x1b[?1049h\x1b[H\x1b[2J" : "\x1b[?1049l\x1b[H\x1b[2J";
-            altBufferActiveRef.current = pending.altScreen;
-          }
-          const payload = `${transition}${framePayload}${pending.active ? "\x1b[?25h" : "\x1b[?25l"}`;
-          if (payload === lastAppliedRenderRef.current) {
-            pendingRenderVtRef.current = null;
-            return;
-          }
-          pendingRenderVtRef.current = null;
-          renderInFlightRef.current = true;
-          if (!pending.altScreen) {
-            terminalRef.current.reset();
-          }
-          terminalRef.current.write(payload, () => {
-            renderInFlightRef.current = false;
-            lastAppliedRenderRef.current = payload;
-            if (!pendingRenderVtRef.current || renderTimerRef.current) return;
-            renderTimerRef.current = window.setTimeout(() => {
-              renderTimerRef.current = null;
-              if (!terminalRef.current || renderInFlightRef.current || !pendingRenderVtRef.current) return;
-              const next = pendingRenderVtRef.current;
-              const nextFramePayload = next.vt;
-              let nextTransition = "";
-              if (next.altScreen !== altBufferActiveRef.current) {
-                nextTransition = next.altScreen ? "\x1b[?1049h\x1b[H\x1b[2J" : "\x1b[?1049l\x1b[H\x1b[2J";
-                altBufferActiveRef.current = next.altScreen;
-              }
-              const nextPayload = `${nextTransition}${nextFramePayload}${next.active ? "\x1b[?25h" : "\x1b[?25l"}`;
-              if (nextPayload === lastAppliedRenderRef.current) {
-                pendingRenderVtRef.current = null;
-                return;
-              }
-              pendingRenderVtRef.current = null;
-              renderInFlightRef.current = true;
-              if (!next.altScreen) {
-                terminalRef.current.reset();
-              }
-              terminalRef.current.write(nextPayload, () => {
-                renderInFlightRef.current = false;
-                lastAppliedRenderRef.current = nextPayload;
-              });
-            }, 50);
-          });
-        }, 50);
+    if (frame.renderPatchVt) {
+      enqueueRenderRef.current(`${frame.renderPatchVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`);
+    } else if (frame.renderVt) {
+      let transition = "";
+      const altScreen = frame.altScreen === true;
+      if (altScreen !== altBufferActiveRef.current) {
+        transition = altScreen ? "\x1b[?1049h\x1b[H\x1b[2J" : "\x1b[?1049l\x1b[H\x1b[2J";
+        altBufferActiveRef.current = altScreen;
       }
+      const payload = `${transition}${frame.renderVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`;
+      enqueueRenderRef.current(payload, {
+        reset: !altScreen,
+        dedupeKey: payload,
+        replaceQueuedFull: true,
+      });
     } else if (frame.chunk) {
       const syncStart = "\x1b[?2026h";
       const syncEnd = "\x1b[?2026l";

@@ -8,8 +8,14 @@ const Command = struct {
     rows: ?u16 = null,
 };
 
+const FrameMode = enum {
+    full,
+    patch,
+};
+
 const FrameMessage = struct {
     type: []const u8 = "frame",
+    mode: FrameMode,
     vt_b64: []const u8,
     plain_b64: []const u8,
     cols: u16,
@@ -17,38 +23,157 @@ const FrameMessage = struct {
     alt_screen: bool,
 };
 
-fn writeFrame(
-    alloc: std.mem.Allocator,
-    stdout_writer: *std.Io.Writer,
-    term: *ghostty_vt.Terminal,
-) !void {
-    const is_alt_screen = term.modes.get(.alt_screen_save_cursor_clear_enter) or
+const OwnedRows = std.ArrayList([]u8);
+
+fn isAltScreen(term: *ghostty_vt.Terminal) bool {
+    return term.modes.get(.alt_screen_save_cursor_clear_enter) or
         term.modes.get(.alt_screen) or
         term.modes.get(.alt_screen_legacy);
+}
 
-    // Emit only cursor-position-relevant modes. Avoid replaying all terminal modes.
-    var mode_prefix_builder: std.Io.Writer.Allocating = .init(alloc);
-    defer mode_prefix_builder.deinit();
-    {
-        const writer = &mode_prefix_builder.writer;
-        if (term.modes.get(.origin)) {
-            try writer.writeAll("\x1b[?6h");
-        } else {
-            try writer.writeAll("\x1b[?6l");
-        }
-        if (term.modes.get(.enable_left_and_right_margin)) {
-            try writer.writeAll("\x1b[?69h");
-        } else {
-            try writer.writeAll("\x1b[?69l");
-        }
+fn writeModePrefix(
+    writer: *std.Io.Writer,
+    term: *ghostty_vt.Terminal,
+) !void {
+    if (term.modes.get(.origin)) {
+        try writer.writeAll("\x1b[?6h");
+    } else {
+        try writer.writeAll("\x1b[?6l");
     }
-    const mode_prefix = mode_prefix_builder.writer.buffered();
+    if (term.modes.get(.enable_left_and_right_margin)) {
+        try writer.writeAll("\x1b[?69h");
+    } else {
+        try writer.writeAll("\x1b[?69l");
+    }
+}
 
-    // Pass A: emit screen state/content, but defer cursor placement.
+fn writeScrollingRegion(
+    writer: *std.Io.Writer,
+    term: *ghostty_vt.Terminal,
+) !void {
+    var formatter: ghostty_vt.formatter.TerminalFormatter = .init(term, .{ .emit = .vt });
+    formatter.content = .none;
+    formatter.extra = .{
+        .palette = false,
+        .modes = false,
+        .scrolling_region = true,
+        .tabstops = false,
+        .pwd = false,
+        .keyboard = false,
+        .screen = .none,
+    };
+    try formatter.format(writer);
+}
+
+fn writeCursorState(
+    writer: *std.Io.Writer,
+    term: *ghostty_vt.Terminal,
+) !void {
+    var formatter: ghostty_vt.formatter.ScreenFormatter = .init(term.screens.active, .{ .emit = .vt });
+    formatter.content = .none;
+    formatter.extra = .all;
+    try formatter.format(writer);
+}
+
+fn formatRow(
+    alloc: std.mem.Allocator,
+    term: *ghostty_vt.Terminal,
+    row_index: usize,
+    emit: ghostty_vt.formatter.Format,
+) ![]u8 {
+    const screen = term.screens.active;
+    const cols: usize = @intCast(term.cols);
+    if (cols == 0) return try alloc.dupe(u8, "");
+
+    const y: ghostty_vt.size.CellCountInt = @intCast(row_index);
+    const start_pin = screen.pages.pin(.{ .active = .{
+        .x = 0,
+        .y = y,
+    } }) orelse return try alloc.dupe(u8, "");
+    const end_pin = screen.pages.pin(.{ .active = .{
+        .x = @intCast(cols - 1),
+        .y = y,
+    } }) orelse return try alloc.dupe(u8, "");
+
+    const selection = ghostty_vt.Selection.init(start_pin, end_pin, true);
+
+    var formatter: ghostty_vt.formatter.ScreenFormatter = .init(screen, .{
+        .emit = emit,
+        .trim = false,
+        .unwrap = false,
+    });
+    formatter.content = .{ .selection = selection };
+    formatter.extra = .none;
+
+    var builder: std.Io.Writer.Allocating = .init(alloc);
+    defer builder.deinit();
+    try formatter.format(&builder.writer);
+    return try alloc.dupe(u8, builder.writer.buffered());
+}
+
+fn capturePlainRows(
+    alloc: std.mem.Allocator,
+    term: *ghostty_vt.Terminal,
+) !OwnedRows {
+    var rows: OwnedRows = .empty;
+    errdefer {
+        for (rows.items) |row| alloc.free(row);
+        rows.deinit(alloc);
+    }
+
+    for (0..@as(usize, @intCast(term.rows))) |row_index| {
+        const row = try formatRow(alloc, term, row_index, .plain);
+        try rows.append(alloc, row);
+    }
+
+    return rows;
+}
+
+fn freeOwnedRows(
+    alloc: std.mem.Allocator,
+    rows: *OwnedRows,
+) void {
+    for (rows.items) |row| alloc.free(row);
+    rows.clearRetainingCapacity();
+}
+
+fn replaceOwnedRows(
+    alloc: std.mem.Allocator,
+    dest: *OwnedRows,
+    src: *OwnedRows,
+) void {
+    freeOwnedRows(alloc, dest);
+    dest.* = src.*;
+    src.* = .empty;
+}
+
+fn joinRows(
+    alloc: std.mem.Allocator,
+    rows: []const []u8,
+) ![]u8 {
+    var builder: std.Io.Writer.Allocating = .init(alloc);
+    defer builder.deinit();
+    for (rows, 0..) |row, idx| {
+        if (idx > 0) try builder.writer.writeByte('\n');
+        try builder.writer.writeAll(row);
+    }
+    return try alloc.dupe(u8, builder.writer.buffered());
+}
+
+fn buildFullVt(
+    alloc: std.mem.Allocator,
+    term: *ghostty_vt.Terminal,
+    alt_screen: bool,
+) ![]u8 {
+    var builder: std.Io.Writer.Allocating = .init(alloc);
+    defer builder.deinit();
+
+    try writeModePrefix(&builder.writer, term);
+
     var formatter_state: ghostty_vt.formatter.TerminalFormatter = .init(term, .{ .emit = .vt });
     formatter_state.extra = .{
         .palette = false,
-        .modes = is_alt_screen,
+        .modes = alt_screen,
         .scrolling_region = true,
         .tabstops = false,
         .pwd = false,
@@ -56,33 +181,53 @@ fn writeFrame(
         .screen = .all,
     };
     formatter_state.extra.screen.cursor = false;
+    try formatter_state.format(&builder.writer);
 
-    var vt_state_builder: std.Io.Writer.Allocating = .init(alloc);
-    defer vt_state_builder.deinit();
-    try formatter_state.format(&vt_state_builder.writer);
-    const vt_state = vt_state_builder.writer.buffered();
-
-    // Pass B: emit final cursor position last so margins/origin modes cannot shift it afterwards.
     var formatter_cursor: ghostty_vt.formatter.TerminalFormatter = .init(term, .{ .emit = .vt });
     formatter_cursor.content = .none;
     formatter_cursor.extra = .none;
     formatter_cursor.extra.screen.cursor = true;
+    try formatter_cursor.format(&builder.writer);
 
-    var vt_cursor_builder: std.Io.Writer.Allocating = .init(alloc);
-    defer vt_cursor_builder.deinit();
-    try formatter_cursor.format(&vt_cursor_builder.writer);
-    const vt_cursor = vt_cursor_builder.writer.buffered();
+    return try alloc.dupe(u8, builder.writer.buffered());
+}
 
-    const vt = try std.mem.concat(alloc, u8, &[_][]const u8{
-        mode_prefix,
-        vt_state,
-        vt_cursor,
-    });
-    defer alloc.free(vt);
+fn buildPatchVt(
+    alloc: std.mem.Allocator,
+    term: *ghostty_vt.Terminal,
+    previous_rows: []const []u8,
+    current_rows: []const []u8,
+) ![]u8 {
+    var builder: std.Io.Writer.Allocating = .init(alloc);
+    defer builder.deinit();
 
-    const plain = try term.plainString(alloc);
-    defer alloc.free(plain);
+    try writeModePrefix(&builder.writer, term);
+    try writeScrollingRegion(&builder.writer, term);
 
+    for (current_rows, 0..) |row, row_index| {
+        if (std.mem.eql(u8, previous_rows[row_index], row)) continue;
+
+        try builder.writer.print("\x1b[{d};1H\x1b[2K", .{row_index + 1});
+        if (row.len == 0) continue;
+
+        const row_vt = try formatRow(alloc, term, row_index, .vt);
+        defer alloc.free(row_vt);
+        try builder.writer.writeAll(row_vt);
+    }
+
+    try writeCursorState(&builder.writer, term);
+    return try alloc.dupe(u8, builder.writer.buffered());
+}
+
+fn writeFrame(
+    alloc: std.mem.Allocator,
+    stdout_writer: *std.Io.Writer,
+    mode: FrameMode,
+    vt: []const u8,
+    plain: []const u8,
+    term: *ghostty_vt.Terminal,
+    alt_screen: bool,
+) !void {
     const vt_b64_len = std.base64.standard.Encoder.calcSize(vt.len);
     const plain_b64_len = std.base64.standard.Encoder.calcSize(plain.len);
 
@@ -96,17 +241,71 @@ fn writeFrame(
 
     try std.json.Stringify.value(
         FrameMessage{
+            .mode = mode,
             .vt_b64 = vt_b64,
             .plain_b64 = plain_b64,
             .cols = @as(u16, @intCast(term.cols)),
             .rows = @as(u16, @intCast(term.rows)),
-            .alt_screen = is_alt_screen,
+            .alt_screen = alt_screen,
         },
         .{},
         stdout_writer,
     );
     try stdout_writer.writeByte('\n');
     try stdout_writer.flush();
+}
+
+fn emitFrame(
+    alloc: std.mem.Allocator,
+    stdout_writer: *std.Io.Writer,
+    term: *ghostty_vt.Terminal,
+    previous_rows: *OwnedRows,
+    previous_alt_screen: *bool,
+    has_snapshot: *bool,
+    force_full: bool,
+) !void {
+    const alt_screen = isAltScreen(term);
+    var current_rows = try capturePlainRows(alloc, term);
+    defer {
+        freeOwnedRows(alloc, &current_rows);
+        current_rows.deinit(alloc);
+    }
+
+    const plain = try joinRows(alloc, current_rows.items);
+    defer alloc.free(plain);
+
+    var mode: FrameMode = .patch;
+    var use_full = force_full or
+        !has_snapshot.* or
+        alt_screen or
+        previous_alt_screen.* != alt_screen or
+        previous_rows.items.len != current_rows.items.len;
+
+    var dirty_rows: usize = 0;
+    if (!use_full) {
+        for (current_rows.items, 0..) |row, idx| {
+            if (!std.mem.eql(u8, previous_rows.items[idx], row)) dirty_rows += 1;
+        }
+        // Keep the incremental path only for cursor/state-only updates.
+        // Any visible text change falls back to the canonical full-frame replay.
+        if (dirty_rows > 0) {
+            use_full = true;
+        }
+    }
+
+    const vt = if (use_full) blk: {
+        mode = .full;
+        break :blk try buildFullVt(alloc, term, alt_screen);
+    } else blk: {
+        mode = .patch;
+        break :blk try buildPatchVt(alloc, term, previous_rows.items, current_rows.items);
+    };
+    defer alloc.free(vt);
+
+    try writeFrame(alloc, stdout_writer, mode, vt, plain, term, alt_screen);
+    replaceOwnedRows(alloc, previous_rows, &current_rows);
+    previous_alt_screen.* = alt_screen;
+    has_snapshot.* = true;
 }
 
 pub fn main() !void {
@@ -117,7 +316,7 @@ pub fn main() !void {
     var args = try std.process.argsWithAllocator(alloc);
     defer args.deinit();
 
-    _ = args.next(); // binary name
+    _ = args.next();
     const cols_arg = args.next() orelse "120";
     const rows_arg = args.next() orelse "36";
     const init_cols = std.fmt.parseInt(u16, cols_arg, 10) catch 120;
@@ -131,6 +330,14 @@ pub fn main() !void {
 
     var stream = term.vtStream();
     defer stream.deinit();
+
+    var previous_rows: OwnedRows = .empty;
+    defer {
+        freeOwnedRows(alloc, &previous_rows);
+        previous_rows.deinit(alloc);
+    }
+    var previous_alt_screen = false;
+    var has_snapshot = false;
 
     var stdin_file = std.fs.File.stdin();
     var stdout_file = std.fs.File.stdout();
@@ -156,7 +363,7 @@ pub fn main() !void {
             defer alloc.free(decoded);
             _ = std.base64.standard.Decoder.decode(decoded, encoded) catch continue;
             try stream.nextSlice(decoded);
-            try writeFrame(alloc, stdout_writer, &term);
+            try emitFrame(alloc, stdout_writer, &term, &previous_rows, &previous_alt_screen, &has_snapshot, false);
             continue;
         }
 
@@ -164,12 +371,12 @@ pub fn main() !void {
             const next_cols = cmd.cols orelse init_cols;
             const next_rows = cmd.rows orelse init_rows;
             try term.resize(alloc, next_cols, next_rows);
-            try writeFrame(alloc, stdout_writer, &term);
+            try emitFrame(alloc, stdout_writer, &term, &previous_rows, &previous_alt_screen, &has_snapshot, true);
             continue;
         }
 
         if (std.mem.eql(u8, cmd.type, "snapshot")) {
-            try writeFrame(alloc, stdout_writer, &term);
+            try emitFrame(alloc, stdout_writer, &term, &previous_rows, &previous_alt_screen, &has_snapshot, true);
             continue;
         }
     }
