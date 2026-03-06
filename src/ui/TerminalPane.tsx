@@ -10,14 +10,24 @@ import { doesEventMatchShortcut } from "./shortcuts";
 interface Props {
   id: string;
   rpc: RpcClient;
-  frame?: TerminalFrame;
+  pendingFrames?: TerminalFrame[];
   active: boolean;
   shortcuts: DashboardShortcuts;
   onActivate: (id: string) => void;
   onShortcut: (shortcut: "new-pane" | "focus-left" | "focus-right" | "open-settings") => void;
+  onFramesQueued: (id: string, lastSeq: number) => void;
 }
 
-export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, onShortcut }: Props) {
+export function TerminalPane({
+  id,
+  rpc,
+  pendingFrames,
+  active,
+  shortcuts,
+  onActivate,
+  onShortcut,
+  onFramesQueued,
+}: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -228,83 +238,87 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
   }, [id, rpc]);
 
   useEffect(() => {
-    if (!frame || !terminalRef.current) return;
+    if (!pendingFrames?.length || !terminalRef.current) return;
     const terminal = terminalRef.current;
 
-    if (frame.renderPatchVt) {
-      enqueueRenderRef.current(`${frame.renderPatchVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`);
-    } else if (frame.renderVt) {
-      let transition = "";
-      const altScreen = frame.altScreen === true;
-      if (altScreen !== altBufferActiveRef.current) {
-        transition = altScreen ? "\x1b[?1049h\x1b[H\x1b[2J" : "\x1b[?1049l\x1b[H\x1b[2J";
-        altBufferActiveRef.current = altScreen;
-      }
-      const payload = `${transition}${frame.renderVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`;
-      enqueueRenderRef.current(payload, {
-        reset: !altScreen,
-        dedupeKey: payload,
-        replaceQueuedFull: true,
-      });
-    } else if (frame.chunk) {
-      const syncStart = "\x1b[?2026h";
-      const syncEnd = "\x1b[?2026l";
-      let chunk = frame.chunk;
-      const writes: string[] = [];
+    for (const frame of pendingFrames) {
+      if (frame.renderPatchVt) {
+        enqueueRenderRef.current(`${frame.renderPatchVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`);
+      } else if (frame.renderVt) {
+        let transition = "";
+        const altScreen = frame.altScreen === true;
+        if (altScreen !== altBufferActiveRef.current) {
+          transition = altScreen ? "\x1b[?1049h\x1b[H\x1b[2J" : "\x1b[?1049l\x1b[H\x1b[2J";
+          altBufferActiveRef.current = altScreen;
+        }
+        const payload = `${transition}${frame.renderVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`;
+        enqueueRenderRef.current(payload, {
+          reset: !altScreen,
+          dedupeKey: payload,
+          replaceQueuedFull: true,
+        });
+      } else if (frame.chunk) {
+        const syncStart = "\x1b[?2026h";
+        const syncEnd = "\x1b[?2026l";
+        let chunk = frame.chunk;
+        const writes: string[] = [];
 
-      const armSyncTimeout = () => {
-        if (syncOutputTimeoutRef.current) window.clearTimeout(syncOutputTimeoutRef.current);
-        // Match ghostty's safety net: never hang rendering forever.
-        syncOutputTimeoutRef.current = window.setTimeout(() => {
-          if (!terminalRef.current || !syncOutputActiveRef.current) return;
-          syncOutputActiveRef.current = false;
-          const buffered = syncOutputBufferRef.current;
-          syncOutputBufferRef.current = "";
-          if (buffered) terminalRef.current.write(buffered);
-        }, 200);
-      };
+        const armSyncTimeout = () => {
+          if (syncOutputTimeoutRef.current) window.clearTimeout(syncOutputTimeoutRef.current);
+          // Match ghostty's safety net: never hang rendering forever.
+          syncOutputTimeoutRef.current = window.setTimeout(() => {
+            if (!terminalRef.current || !syncOutputActiveRef.current) return;
+            syncOutputActiveRef.current = false;
+            const buffered = syncOutputBufferRef.current;
+            syncOutputBufferRef.current = "";
+            if (buffered) terminalRef.current.write(buffered);
+          }, 200);
+        };
 
-      while (chunk.length > 0) {
-        if (syncOutputActiveRef.current) {
-          const endIdx = chunk.indexOf(syncEnd);
-          if (endIdx < 0) {
-            syncOutputBufferRef.current += chunk;
-            armSyncTimeout();
+        while (chunk.length > 0) {
+          if (syncOutputActiveRef.current) {
+            const endIdx = chunk.indexOf(syncEnd);
+            if (endIdx < 0) {
+              syncOutputBufferRef.current += chunk;
+              armSyncTimeout();
+              chunk = "";
+              break;
+            }
+            syncOutputBufferRef.current += chunk.slice(0, endIdx);
+            const buffered = syncOutputBufferRef.current;
+            syncOutputBufferRef.current = "";
+            syncOutputActiveRef.current = false;
+            if (syncOutputTimeoutRef.current) {
+              window.clearTimeout(syncOutputTimeoutRef.current);
+              syncOutputTimeoutRef.current = null;
+            }
+            if (buffered) writes.push(buffered);
+            chunk = chunk.slice(endIdx + syncEnd.length);
+            continue;
+          }
+
+          const startIdx = chunk.indexOf(syncStart);
+          if (startIdx < 0) {
+            writes.push(chunk);
             chunk = "";
             break;
           }
-          syncOutputBufferRef.current += chunk.slice(0, endIdx);
-          const buffered = syncOutputBufferRef.current;
+
+          const before = chunk.slice(0, startIdx);
+          if (before) writes.push(before);
+          syncOutputActiveRef.current = true;
           syncOutputBufferRef.current = "";
-          syncOutputActiveRef.current = false;
-          if (syncOutputTimeoutRef.current) {
-            window.clearTimeout(syncOutputTimeoutRef.current);
-            syncOutputTimeoutRef.current = null;
-          }
-          if (buffered) writes.push(buffered);
-          chunk = chunk.slice(endIdx + syncEnd.length);
-          continue;
+          armSyncTimeout();
+          chunk = chunk.slice(startIdx + syncStart.length);
         }
 
-        const startIdx = chunk.indexOf(syncStart);
-        if (startIdx < 0) {
-          writes.push(chunk);
-          chunk = "";
-          break;
+        if (writes.length > 0) {
+          terminal.write(writes.join(""));
         }
-
-        const before = chunk.slice(0, startIdx);
-        if (before) writes.push(before);
-        syncOutputActiveRef.current = true;
-        syncOutputBufferRef.current = "";
-        armSyncTimeout();
-        chunk = chunk.slice(startIdx + syncStart.length);
-      }
-
-      if (writes.length > 0) {
-        terminal.write(writes.join(""));
       }
     }
+
+    onFramesQueued(id, pendingFrames[pendingFrames.length - 1]?.seq ?? 0);
 
     if (!syncedSizeRef.current && fitAddonRef.current && terminalRef.current) {
       fitAddonRef.current.fit();
@@ -317,7 +331,7 @@ export function TerminalPane({ id, rpc, frame, active, shortcuts, onActivate, on
       });
       syncedSizeRef.current = true;
     }
-  }, [frame?.seq, active]);
+  }, [pendingFrames, active, id, onFramesQueued, rpc]);
 
   useEffect(() => {
     if (!terminalRef.current) return;

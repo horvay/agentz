@@ -282,20 +282,28 @@ fn emitFrame(
         previous_rows.items.len != current_rows.items.len;
 
     var dirty_rows: usize = 0;
-    var dirty_row_index: ?usize = null;
+    var first_dirty_row: ?usize = null;
+    var last_dirty_row: ?usize = null;
     if (!use_full) {
         for (current_rows.items, 0..) |row, idx| {
             if (!std.mem.eql(u8, previous_rows.items[idx], row)) {
                 dirty_rows += 1;
-                dirty_row_index = idx;
+                if (first_dirty_row == null) first_dirty_row = idx;
+                last_dirty_row = idx;
             }
         }
 
-        const cursor_row: usize = @intCast(term.screens.active.cursor.y);
-        const patchable_single_row = dirty_rows == 1 and dirty_row_index != null and dirty_row_index.? == cursor_row;
+        const dirty_span = if (first_dirty_row != null and last_dirty_row != null)
+            (last_dirty_row.? - first_dirty_row.?) + 1
+        else
+            0;
 
-        // Only patch when the current cursor row changes in place.
-        if (!patchable_single_row and dirty_rows > 0) {
+        // Keep patch mode narrow: allow only short contiguous row edits.
+        const patchable_contiguous_block = dirty_rows > 0 and
+            dirty_rows <= 4 and
+            dirty_span == dirty_rows;
+
+        if (!patchable_contiguous_block and dirty_rows > 0) {
             use_full = true;
         }
     }

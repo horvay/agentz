@@ -198,6 +198,7 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
 function App() {
   const [paneIds, setPaneIds] = useState<string[]>([FIRST_ID]);
   const [frames, setFrames] = useState<Record<string, TerminalFrame>>({});
+  const [frameQueues, setFrameQueues] = useState<Record<string, TerminalFrame[]>>({});
   const [status, setStatus] = useState("Connecting...");
   const [paneStatus, setPaneStatus] = useState<Record<string, "booting" | "running" | "exited" | "error">>({
     [FIRST_ID]: "booting",
@@ -425,6 +426,10 @@ function App() {
     });
     const disposeFrame = rpc.onFrame((frame) => {
       setFrames((prev) => ({ ...prev, [frame.id]: frame }));
+      setFrameQueues((prev) => ({
+        ...prev,
+        [frame.id]: [...(prev[frame.id] ?? []), frame],
+      }));
       setPaneStatus((prev) => ({ ...prev, [frame.id]: "running" }));
       setStatus("Connected");
     });
@@ -464,6 +469,11 @@ function App() {
         delete next[id];
         return next;
       });
+      setFrameQueues((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     });
 
     rpc.send({ type: "launch-config" });
@@ -484,6 +494,21 @@ function App() {
       disposeExit();
     };
   }, [armBootstrapFallback, maybeBootstrapTerminals, setActivePaneCentered]);
+
+  const handleFramesQueued = useCallback((id: string, lastSeq: number) => {
+    setFrameQueues((prev) => {
+      const pending = prev[id];
+      if (!pending?.length) return prev;
+      const nextPending = pending.filter((frame) => frame.seq > lastSeq);
+      if (nextPending.length === pending.length) return prev;
+      if (nextPending.length === 0) {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      }
+      return { ...prev, [id]: nextPending };
+    });
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -669,10 +694,11 @@ function App() {
             <TerminalPane
               id={id}
               rpc={rpc}
-              frame={frames[id]}
+              pendingFrames={frameQueues[id]}
               active={activePane === id}
               shortcuts={shortcuts}
               onActivate={(nextId) => setActivePaneCentered(nextId)}
+              onFramesQueued={handleFramesQueued}
               onShortcut={(shortcut) => {
                 if (shortcut === "new-pane") {
                   addTerminalPane();

@@ -183,7 +183,7 @@ try {
   const terminalId = await rpc.listFirstTerminalId();
   await rpc.sendInput(
     terminalId,
-    "echo stress-one; echo stress-two; echo stress-three; printf 'alpha beta gamma delta\\n'\n",
+    "echo stress-one; echo stress-two; echo stress-three; echo stress-four; echo stress-five; echo stress-six; printf 'alpha beta gamma delta epsilon zeta\\n'\n",
   );
   await sleep(2200);
   capture(windowId, beforePath);
