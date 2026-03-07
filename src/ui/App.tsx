@@ -22,6 +22,9 @@ const rpc = new RpcClient("ws://127.0.0.1:4599");
 const FIRST_ID = "term-1";
 const WIDTH_STORAGE_KEY = "ghostty.dashboard.paneWidths.v1";
 const MAX_AVATAR_PANES = avatarCatalog.length;
+const MAX_FRAME_QUEUE_PER_PANE = 24;
+const MAX_ACTIVITY_CHUNK_CHARS = 4_000;
+const MAX_ACTIVITY_VT_CHARS = 4_000;
 const AVATAR_IDS = avatarCatalog.map((avatar) => avatar.id);
 const avatarById: Record<AvatarId, AvatarDefinition> = Object.fromEntries(
   avatarCatalog.map((avatar) => [avatar.id, avatar]),
@@ -99,6 +102,42 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
     target.isContentEditable ||
     Boolean(target.closest(".xterm-helper-textarea"))
   );
+}
+
+function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
+  return {
+    id: frame.id,
+    cols: frame.cols,
+    rows: frame.rows,
+    seq: frame.seq,
+    chunk: frame.chunk.slice(-MAX_ACTIVITY_CHUNK_CHARS),
+    vt: frame.vt.slice(-MAX_ACTIVITY_VT_CHARS),
+    previewLines: frame.previewLines,
+    shellBusy: frame.shellBusy,
+    altScreen: frame.altScreen,
+    cursorVisible: frame.cursorVisible,
+    cursorStyle: frame.cursorStyle,
+    cursorBlink: frame.cursorBlink,
+  };
+}
+
+function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
+  return {
+    id: frame.id,
+    cols: frame.cols,
+    rows: frame.rows,
+    seq: frame.seq,
+    renderVt: frame.renderVt,
+    renderPatchVt: frame.renderPatchVt,
+    altScreen: frame.altScreen,
+    chunk: frame.chunk,
+    vt: "",
+    previewLines: [],
+    cursorVisible: frame.cursorVisible,
+    cursorStyle: frame.cursorStyle,
+    cursorBlink: frame.cursorBlink,
+    shellBusy: frame.shellBusy,
+  };
 }
 
 function App() {
@@ -355,11 +394,13 @@ function App() {
     });
     const disposeFrame = rpc.onFrame((frame) => {
       const nowMs = Date.now();
+      const activityFrame = compactFrameForActivity(frame);
+      const renderFrame = compactFrameForRender(frame);
       const previousActivity = avatarActivityRef.current[frame.id];
-      const displayState = resolveAvatarDisplayState(frame, previousActivity, nowMs);
+      const displayState = resolveAvatarDisplayState(activityFrame, previousActivity, nowMs);
       // Preserve the last known agent kind even after identifying text scrolls off screen.
-      const nextAgent = inspectAvatarState(frame).agent ?? previousActivity?.agent ?? null;
-      const nextPreviewText = (frame.previewLines ?? []).join("\n");
+      const nextAgent = inspectAvatarState(activityFrame).agent ?? previousActivity?.agent ?? null;
+      const nextPreviewText = (activityFrame.previewLines ?? []).join("\n");
       avatarActivityRef.current[frame.id] =
         displayState !== "idle"
           ? {
@@ -383,11 +424,13 @@ function App() {
                 lastFrameAtMs: nowMs,
                 lastPreviewText: nextPreviewText,
               };
-      setFrames((prev) => ({ ...prev, [frame.id]: frame }));
+      setFrames((prev) => ({ ...prev, [frame.id]: activityFrame }));
       setAvatarStates((prev) => ({ ...prev, [frame.id]: displayState }));
       setFrameQueues((prev) => ({
         ...prev,
-        [frame.id]: [...(prev[frame.id] ?? []), frame],
+        [frame.id]: renderFrame.renderVt
+          ? [renderFrame]
+          : [...(prev[frame.id] ?? []).slice(-(MAX_FRAME_QUEUE_PER_PANE - 1)), renderFrame],
       }));
       setPaneStatus((prev) => ({ ...prev, [frame.id]: "running" }));
       setStatus("Connected");

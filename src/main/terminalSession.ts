@@ -4,6 +4,7 @@ import { ptyToText } from "ghostty-opentui";
 import type { TerminalFrame } from "../shared/protocol";
 
 const MAX_VT_CHARS = 250_000;
+const MAX_ACTIVITY_VT_CHARS = 4_000;
 const MAX_PREVIEW_LINES = 200;
 const MAX_BRIDGE_LINE_CHARS = 12_000_000;
 let hasWarnedMissingBridge = false;
@@ -546,7 +547,8 @@ export class TerminalSession {
       renderPatchVt,
       altScreen,
       chunk,
-      vt: this.vtBuffer,
+      // UI heuristics only inspect the recent VT tail, so don't ship the whole buffer.
+      vt: this.vtBuffer.slice(-MAX_ACTIVITY_VT_CHARS),
       previewLines: previewLines ?? toPreviewLines(this.vtBuffer, this.cols, this.rows),
       cursorVisible,
       cursorStyle,
