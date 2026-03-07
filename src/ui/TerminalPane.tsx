@@ -91,17 +91,18 @@ export function TerminalPane({
       });
     };
 
-    const enqueueRender = (
-      payload: string,
-      options?: { reset?: boolean; dedupeKey?: string; replaceQueuedFull?: boolean },
-    ) => {
-      if (options?.dedupeKey && payload === lastAppliedRenderRef.current) return;
-      if (options?.replaceQueuedFull) {
-        renderQueueRef.current = renderQueueRef.current.filter((entry) => !entry.dedupeKey);
-      }
-      renderQueueRef.current.push({
-        payload,
-        reset: options?.reset === true,
+      const enqueueRender = (
+        payload: string,
+        options?: { reset?: boolean; dedupeKey?: string; replaceQueuedFull?: boolean },
+      ) => {
+        if (options?.dedupeKey && payload === lastAppliedRenderRef.current) return;
+        if (options?.replaceQueuedFull) {
+          // A new full-frame snapshot supersedes any queued incremental work.
+          renderQueueRef.current = [];
+        }
+        renderQueueRef.current.push({
+          payload,
+          reset: options?.reset === true,
         dedupeKey: options?.dedupeKey,
       });
       flushRenderQueue();
@@ -157,6 +158,12 @@ export function TerminalPane({
     }
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
+      if (event.key === "Escape" && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        // Bare Escape is used by terminal apps like Codex for in-band interrupt.
+        event.preventDefault();
+        rpc.send({ type: "input", id, data: "\x1b" });
+        return false;
+      }
       const bindings = shortcutsRef.current;
       if (doesEventMatchShortcut(event, bindings.addPane)) {
         event.preventDefault();
@@ -251,9 +258,10 @@ export function TerminalPane({
           transition = altScreen ? "\x1b[?1049h\x1b[H\x1b[2J" : "\x1b[?1049l\x1b[H\x1b[2J";
           altBufferActiveRef.current = altScreen;
         }
-        const payload = `${transition}${frame.renderVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`;
+        const framePrefix = altScreen ? "" : "\x1b[H\x1b[2J";
+        const payload = `${transition}${framePrefix}${frame.renderVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`;
         enqueueRenderRef.current(payload, {
-          reset: !altScreen,
+          reset: false,
           dedupeKey: payload,
           replaceQueuedFull: true,
         });

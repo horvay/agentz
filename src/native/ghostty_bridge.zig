@@ -165,6 +165,10 @@ fn buildFullVt(
     term: *ghostty_vt.Terminal,
     alt_screen: bool,
 ) ![]u8 {
+    if (!alt_screen) {
+        return buildPrimaryScreenFullVt(alloc, term);
+    }
+
     var builder: std.Io.Writer.Allocating = .init(alloc);
     defer builder.deinit();
 
@@ -189,6 +193,29 @@ fn buildFullVt(
     formatter_cursor.extra.screen.cursor = true;
     try formatter_cursor.format(&builder.writer);
 
+    return try alloc.dupe(u8, builder.writer.buffered());
+}
+
+fn buildPrimaryScreenFullVt(
+    alloc: std.mem.Allocator,
+    term: *ghostty_vt.Terminal,
+) ![]u8 {
+    var builder: std.Io.Writer.Allocating = .init(alloc);
+    defer builder.deinit();
+
+    try writeModePrefix(&builder.writer, term);
+    try writeScrollingRegion(&builder.writer, term);
+
+    for (0..@as(usize, @intCast(term.rows))) |row_index| {
+        try builder.writer.print("\x1b[{d};1H\x1b[2K", .{row_index + 1});
+        const row_vt = try formatRow(alloc, term, row_index, .vt);
+        defer alloc.free(row_vt);
+        if (row_vt.len > 0) {
+            try builder.writer.writeAll(row_vt);
+        }
+    }
+
+    try writeCursorState(&builder.writer, term);
     return try alloc.dupe(u8, builder.writer.buffered());
 }
 
@@ -277,6 +304,7 @@ fn emitFrame(
     var mode: FrameMode = .patch;
     var use_full = force_full or
         !has_snapshot.* or
+        !alt_screen or
         alt_screen or
         previous_alt_screen.* != alt_screen or
         previous_rows.items.len != current_rows.items.len;
@@ -293,17 +321,19 @@ fn emitFrame(
             }
         }
 
-        const dirty_span = if (first_dirty_row != null and last_dirty_row != null)
-            (last_dirty_row.? - first_dirty_row.?) + 1
-        else
-            0;
+        const cursor_row: usize = @intCast(term.screens.active.cursor.y);
 
-        // Keep patch mode narrow: allow only short contiguous row edits.
-        const patchable_contiguous_block = dirty_rows > 0 and
-            dirty_rows <= 4 and
-            dirty_span == dirty_rows;
+        // Keep patch mode extremely narrow on the primary screen: only allow
+        // an in-place edit to the active cursor row. Scrolls near the bottom
+        // of the terminal can otherwise look like a tiny contiguous diff even
+        // though the visible history shifted.
+        const patchable_cursor_row_only = dirty_rows == 1 and
+            first_dirty_row != null and
+            first_dirty_row.? == cursor_row and
+            last_dirty_row != null and
+            last_dirty_row.? == cursor_row;
 
-        if (!patchable_contiguous_block and dirty_rows > 0) {
+        if (!patchable_cursor_row_only and dirty_rows > 0) {
             use_full = true;
         }
     }

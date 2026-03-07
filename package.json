@@ -17,7 +17,12 @@
 		"test:opencode": "bun run scripts/opencode-smoke.ts",
 		"test:opencode:screenshot": "bun run scripts/opencode-screenshot.ts",
 		"test:opencode:enter:onload:screenshot": "bun run scripts/opencode-enter-on-load-screenshot.ts",
-		"test:opencode:stress:screenshot": "bun run scripts/opencode-stress-screenshot.ts"
+		"test:opencode:stress:screenshot": "bun run scripts/opencode-stress-screenshot.ts",
+		"test:shell:scroll:screenshot": "bun run scripts/shell-scroll-screenshot.ts",
+		"test:avatar:opencode:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=opencode --out=screenshots/opencode-avatar-working.png",
+		"test:avatar:codex:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=codex --out=screenshots/codex-avatar-working.png",
+		"test:avatar:codex:long-song:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=codex --prompt=\"write a very long song with many verses about terminals, rain, and midnight debugging; keep going for at least 20 lines\" --working-wait-ms=45000 --out=screenshots/codex-avatar-long-song-working.png",
+		"test:avatar:codex:bottom-working:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=codex --prompt=\"write a very long song with many verses about terminals, rain, and midnight debugging; keep going for at least 60 lines\" --window-width=1000 --window-height=560 --working-wait-ms=45000 --post-working-wait-ms=5000 --out=screenshots/codex-avatar-bottom-working.png"
 	},
 	"dependencies": {
 		"@xterm/addon-canvas": "^0.7.0",

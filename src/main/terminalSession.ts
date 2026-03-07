@@ -135,7 +135,7 @@ export class TerminalSession {
     this.rows = rows;
 
     const rootCwd = process.env.GHOSTTY_DASHBOARD_ROOT ?? process.cwd();
-    const launchCwd = cwd ?? process.env.HOME ?? process.cwd();
+    const launchCwd = cwd ?? rootCwd;
     const shell = command ?? process.env.SHELL ?? (process.platform === "win32" ? "pwsh.exe" : "bash");
     const shellArgs = args ?? [];
     const bridgePath = resolveBridgePath(rootCwd);

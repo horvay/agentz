@@ -13,6 +13,7 @@ import { SettingsModal } from "./SettingsModal";
 import { TerminalPane } from "./TerminalPane";
 import type { AvatarDefinition, AvatarId, AvatarVisualState } from "./avatarCatalog";
 import { avatarCatalog } from "./avatarCatalog";
+import { inspectAvatarState, resolveAvatarDisplayState } from "./avatarState";
 import { doesEventMatchShortcut } from "./shortcuts";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
@@ -83,101 +84,6 @@ function pickAvailableAvatar(used: Set<AvatarId>): AvatarId | null {
   return available[Math.floor(Math.random() * available.length)];
 }
 
-function normalizeTerminalText(raw: string): string {
-  return raw
-    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, " ")
-    .replace(/[\x00-\x08\x0B-\x1F\x7F]/g, " ")
-    .replace(/\s+/g, " ")
-    .toLowerCase()
-    .trim();
-}
-
-function terminalTextWindows(frame?: TerminalFrame): { recent: string; full: string } {
-  if (!frame) return { recent: "", full: "" };
-  const tailChunk = frame.chunk ? frame.chunk.slice(-2000) : "";
-  const tailVt = frame.vt ? frame.vt.slice(-2000) : "";
-  const previewLines = frame.previewLines ?? [];
-  const screen = previewLines.join("\n");
-  return {
-    recent: normalizeTerminalText(screen),
-    full: normalizeTerminalText(`${screen}\n${tailChunk}\n${tailVt}`),
-  };
-}
-
-function detectOpencodeAvatarState(frame?: TerminalFrame): AvatarVisualState {
-  const windows = terminalTextWindows(frame);
-  if (!windows.full) return "idle";
-  const { recent, full } = windows;
-
-  const questionMarkers = [
-    "permission required",
-    "allow once",
-    "allow always",
-    "reject permission",
-    "type your own answer",
-    "tell opencode what to do differently",
-    "△",
-    "select all that apply",
-    "esc dismiss",
-  ];
-  const isQuestion = questionMarkers.some((marker) => recent.includes(marker));
-
-  const callingMarkers = ["delegating...", "↳", "subagent session"];
-  const hasLiveCalling = callingMarkers.some((marker) => recent.includes(marker));
-  const hasCallingContext =
-    recent.includes("view subagents") &&
-    recent.includes("toolcalls") &&
-    recent.includes("esc interrupt");
-  const isCalling = hasLiveCalling || hasCallingContext;
-
-  const workingMarkers = [
-    "esc interrupt",
-    "esc again to interrupt",
-    "_thinking:_",
-    "writing command",
-    "preparing write",
-    "finding files",
-    "reading file",
-    "searching content",
-    "listing directory",
-    "fetching from the web",
-    "searching code",
-    "searching web",
-    "preparing edit",
-    "preparing patch",
-    "updating todos",
-    "loading skill",
-    "asking questions",
-    " queued ",
-  ];
-  const isWorking = workingMarkers.some((marker) => recent.includes(marker));
-
-  const spinnerChars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-  const hasSpinner = [...spinnerChars].some((ch) => recent.includes(ch));
-
-  const opencodeMarkers = [
-    "opencode",
-    "opencode zen",
-    "ask anything",
-    "tab agents",
-    "ctrl+p commands",
-    "ctrl+t variants",
-  ];
-  const isOpencode =
-    opencodeMarkers.some((marker) => full.includes(marker)) ||
-    isQuestion ||
-    isCalling ||
-    isWorking ||
-    hasSpinner;
-  if (!isOpencode) return "idle";
-
-  if (isQuestion) return "question";
-  if (isCalling) return "calling";
-  if (isWorking || hasSpinner) return "working";
-
-  return "idle";
-}
-
 function avatarSrcForState(avatar: AvatarDefinition, state: AvatarVisualState): string {
   if (state === "working") return avatar.workingSrc;
   if (state === "question") return avatar.questionSrc;
@@ -212,6 +118,9 @@ function App() {
   const [paneAvatarIds, setPaneAvatarIds] = useState<Record<string, AvatarId>>(() =>
     assignUniqueAvatars([FIRST_ID]),
   );
+  const [avatarStates, setAvatarStates] = useState<Record<string, AvatarVisualState>>({
+    [FIRST_ID]: "idle",
+  });
   const [stripWidth, setStripWidth] = useState(0);
   const [avatarStripWidth, setAvatarStripWidth] = useState(0);
   const activePaneRef = useRef(FIRST_ID);
@@ -223,6 +132,18 @@ function App() {
   const avatarStripRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ id: string; startX: number; startWidth: number } | null>(null);
+  const avatarActivityRef = useRef<
+    Record<
+      string,
+      {
+        state: AvatarVisualState;
+        agent: "opencode" | "codex" | null;
+        atMs: number;
+        lastFrameAtMs: number;
+        lastPreviewText: string;
+      }
+    >
+  >({});
   const bootstrappedRef = useRef(false);
   const hasLaunchConfigRef = useRef(false);
   const hasDashboardConfigRef = useRef(false);
@@ -323,6 +244,8 @@ function App() {
       return next;
     });
     setPaneAvatarIds(assignUniqueAvatars(ids));
+    setAvatarStates(Object.fromEntries(ids.map((id) => [id, "idle" as const])));
+    avatarActivityRef.current = {};
     const firstId = ids[0] ?? FIRST_ID;
     setActivePaneCentered(firstId, "auto");
     safeLaunchPanes.forEach((launch, index) => {
@@ -375,6 +298,7 @@ function App() {
       if (!avatarId) return prev;
       return { ...prev, [id]: avatarId };
     });
+    setAvatarStates((prev) => ({ ...prev, [id]: "idle" }));
     setActivePaneCentered(id);
     createTerminal(id);
   }, [createTerminal, defaultPaneWidth, setActivePaneCentered]);
@@ -425,7 +349,37 @@ function App() {
       setStatus("Connected");
     });
     const disposeFrame = rpc.onFrame((frame) => {
+      const nowMs = Date.now();
+      const previousActivity = avatarActivityRef.current[frame.id];
+      const displayState = resolveAvatarDisplayState(frame, previousActivity, nowMs);
+      // Preserve the last known agent kind even after identifying text scrolls off screen.
+      const nextAgent = inspectAvatarState(frame).agent ?? previousActivity?.agent ?? null;
+      const nextPreviewText = (frame.previewLines ?? []).join("\n");
+      avatarActivityRef.current[frame.id] =
+        displayState !== "idle"
+          ? {
+              state: displayState,
+              agent: nextAgent,
+              atMs: nowMs,
+              lastFrameAtMs: nowMs,
+              lastPreviewText: nextPreviewText,
+            }
+          : previousActivity
+            ? {
+                ...previousActivity,
+                agent: nextAgent,
+                lastFrameAtMs: nowMs,
+                lastPreviewText: nextPreviewText,
+              }
+            : {
+                state: "idle",
+                agent: nextAgent,
+                atMs: nowMs,
+                lastFrameAtMs: nowMs,
+                lastPreviewText: nextPreviewText,
+              };
       setFrames((prev) => ({ ...prev, [frame.id]: frame }));
+      setAvatarStates((prev) => ({ ...prev, [frame.id]: displayState }));
       setFrameQueues((prev) => ({
         ...prev,
         [frame.id]: [...(prev[frame.id] ?? []), frame],
@@ -459,6 +413,12 @@ function App() {
         delete next[id];
         return next;
       });
+      setAvatarStates((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      delete avatarActivityRef.current[id];
       setPaneWidths((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -539,6 +499,33 @@ function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [addTerminalPane, moveActivePane, openSettings, settingsOpen, shortcuts]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const nowMs = Date.now();
+      setAvatarStates((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const [id, currentState] of Object.entries(prev)) {
+          if (currentState !== "working") continue;
+          const activity = avatarActivityRef.current[id];
+          const frame = frames[id];
+          const nextState = resolveAvatarDisplayState(frame, activity, nowMs);
+          if (nextState === currentState) continue;
+          next[id] = nextState;
+          changed = true;
+          if (activity) {
+            avatarActivityRef.current[id] = {
+              ...activity,
+              state: nextState,
+            };
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, [frames]);
 
   useEffect(() => {
     centerPane(activePane, "smooth");
@@ -632,7 +619,7 @@ function App() {
           {paneIds.map((id, index) => {
             const avatarId = paneAvatarIds[id];
             const avatar = avatarId ? avatarById[avatarId] : undefined;
-            const avatarState = detectOpencodeAvatarState(frames[id]);
+            const avatarState = avatarStates[id] ?? "idle";
             const isActive = activePane === id;
             const relative = index - activeAvatarIndex;
             const direction = relative === 0 ? 0 : relative > 0 ? 1 : -1;
