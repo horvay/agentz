@@ -165,35 +165,8 @@ fn buildFullVt(
     term: *ghostty_vt.Terminal,
     alt_screen: bool,
 ) ![]u8 {
-    if (!alt_screen) {
-        return buildPrimaryScreenFullVt(alloc, term);
-    }
-
-    var builder: std.Io.Writer.Allocating = .init(alloc);
-    defer builder.deinit();
-
-    try writeModePrefix(&builder.writer, term);
-
-    var formatter_state: ghostty_vt.formatter.TerminalFormatter = .init(term, .{ .emit = .vt });
-    formatter_state.extra = .{
-        .palette = false,
-        .modes = alt_screen,
-        .scrolling_region = true,
-        .tabstops = false,
-        .pwd = false,
-        .keyboard = false,
-        .screen = .all,
-    };
-    formatter_state.extra.screen.cursor = false;
-    try formatter_state.format(&builder.writer);
-
-    var formatter_cursor: ghostty_vt.formatter.TerminalFormatter = .init(term, .{ .emit = .vt });
-    formatter_cursor.content = .none;
-    formatter_cursor.extra = .none;
-    formatter_cursor.extra.screen.cursor = true;
-    try formatter_cursor.format(&builder.writer);
-
-    return try alloc.dupe(u8, builder.writer.buffered());
+    _ = alt_screen;
+    return buildPrimaryScreenFullVt(alloc, term);
 }
 
 fn buildPrimaryScreenFullVt(

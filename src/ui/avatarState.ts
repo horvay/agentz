@@ -58,7 +58,14 @@ function isCodexSession(recent: string, full: string): boolean {
 
 function isClaudeSession(recent: string, full: string): boolean {
   const claudeMarkers = ["claude code", "claude"];
-  const claudeUiMarkers = ["esc to interrupt", "permission", "shift+tab"];
+  const claudeUiMarkers = [
+    "esc to interrupt",
+    "permission",
+    "shift+tab",
+    "enter to select",
+    "esc to cancel",
+    "what should claude do instead?",
+  ];
   return (
     claudeMarkers.some((marker) => full.includes(marker) || recent.includes(marker)) &&
     claudeUiMarkers.some((marker) => full.includes(marker) || recent.includes(marker))
@@ -115,8 +122,17 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
     "tab to add notes",
     "enter to submit answer",
   ];
-  const isQuestion = [...opencodeQuestionMarkers, ...codexQuestionMarkers].some((marker) =>
-    recent.includes(marker),
+  const claudeQuestionMarkers = [
+    "enter to select",
+    "esc to cancel",
+    "what aspect of",
+    "what should claude do instead?",
+    "type something.",
+    "chat about this",
+    "to navigate",
+  ];
+  const isQuestion = [...opencodeQuestionMarkers, ...codexQuestionMarkers, ...claudeQuestionMarkers].some(
+    (marker) => recent.includes(marker),
   );
 
   const opencodeCallingMarkers = ["delegating...", "↳", "subagent session"];

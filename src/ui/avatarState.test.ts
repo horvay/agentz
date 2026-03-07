@@ -265,4 +265,25 @@ describe("detectAvatarState", () => {
 
     expect(state).toBe("question");
   });
+
+  test("detects claude selection prompt as question", () => {
+    const state = detectAvatarState(
+      frameFromText(
+        [
+          "Hello! I'm here to help you with your work on the agentz project.",
+          "Use a sub agent to look through the code in this app. Tell me how it uses ghostty",
+          "Interrupted - What should Claude do instead?",
+          "Good call! Let me ask:",
+          "What aspect of ghostty usage in this codebase would you like to understand?",
+          "1. Build & Release Process",
+          "2. Runtime Integration",
+          "5. Type something.",
+          "6. Chat about this",
+          "Enter to select · ↑/↓ to navigate · Esc to cancel",
+        ].join("\n"),
+      ),
+    );
+
+    expect(state).toBe("question");
+  });
 });

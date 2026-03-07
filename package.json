@@ -19,6 +19,7 @@
 		"test:opencode:screenshot": "bun run scripts/opencode-screenshot.ts",
 		"test:opencode:enter:onload:screenshot": "bun run scripts/opencode-enter-on-load-screenshot.ts",
 		"test:opencode:stress:screenshot": "bun run scripts/opencode-stress-screenshot.ts",
+		"test:nvim:screenshot": "bun run scripts/nvim-screenshot.ts",
 		"test:shell:scroll:screenshot": "bun run scripts/shell-scroll-screenshot.ts",
 		"test:avatar:opencode:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=opencode --out=screenshots/opencode-avatar-working.png",
 		"test:avatar:codex:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=codex --out=screenshots/codex-avatar-working.png",
