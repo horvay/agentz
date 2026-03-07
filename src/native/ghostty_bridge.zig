@@ -21,6 +21,9 @@ const FrameMessage = struct {
     cols: u16,
     rows: u16,
     alt_screen: bool,
+    cursor_visible: bool,
+    cursor_style: []const u8,
+    cursor_blink: bool,
 };
 
 const OwnedRows = std.ArrayList([]u8);
@@ -69,6 +72,15 @@ fn writeCursorState(
     writer: *std.Io.Writer,
     term: *ghostty_vt.Terminal,
 ) !void {
+    const cursor_style_code: u8 = switch (term.screens.active.cursor.cursor_style) {
+        .block, .block_hollow => if (term.modes.get(.cursor_blinking)) 1 else 2,
+        .underline => if (term.modes.get(.cursor_blinking)) 3 else 4,
+        .bar => if (term.modes.get(.cursor_blinking)) 5 else 6,
+    };
+
+    try writer.print("\x1b[{d} q", .{cursor_style_code});
+    try writer.writeAll(if (term.modes.get(.cursor_visible)) "\x1b[?25h" else "\x1b[?25l");
+
     var formatter: ghostty_vt.formatter.TerminalFormatter = .init(term, .{ .emit = .vt });
     formatter.content = .none;
     formatter.extra = .none;
@@ -253,6 +265,14 @@ fn writeFrame(
             .cols = @as(u16, @intCast(term.cols)),
             .rows = @as(u16, @intCast(term.rows)),
             .alt_screen = alt_screen,
+            .cursor_visible = term.modes.get(.cursor_visible),
+            .cursor_style = switch (term.screens.active.cursor.cursor_style) {
+                .block => "block",
+                .block_hollow => "block",
+                .underline => "underline",
+                .bar => "bar",
+            },
+            .cursor_blink = term.modes.get(.cursor_blinking),
         },
         .{},
         stdout_writer,

@@ -28,8 +28,6 @@ export function TerminalPane({
   onShortcut,
   onFramesQueued,
 }: Props) {
-  const activeCursorSuffix = "\x1b[6 q\x1b[?25h";
-  const inactiveCursorSuffix = "\x1b[?25l";
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -260,8 +258,17 @@ export function TerminalPane({
     const terminal = terminalRef.current;
 
     for (const frame of pendingFrames) {
+      if (frame.cursorStyle) {
+        terminal.options.cursorStyle = frame.cursorStyle;
+      }
+      if (typeof frame.cursorBlink === "boolean") {
+        terminal.options.cursorBlink = frame.cursorBlink;
+      }
+      const cursorVisible = active && (frame.cursorVisible ?? true);
+      const cursorSuffix = cursorVisible ? "\x1b[?25h" : "\x1b[?25l";
+
       if (frame.renderPatchVt) {
-        enqueueRenderRef.current(`${frame.renderPatchVt}${active ? activeCursorSuffix : inactiveCursorSuffix}`);
+        enqueueRenderRef.current(`${frame.renderPatchVt}${cursorSuffix}`);
       } else if (frame.renderVt) {
         let transition = "";
         const altScreen = frame.altScreen === true;
@@ -273,7 +280,7 @@ export function TerminalPane({
           altBufferActiveRef.current = altScreen;
         }
         const framePrefix = altScreen ? "" : "\x1b[H\x1b[2J";
-        const payload = `${transition}${framePrefix}${frame.renderVt}${active ? activeCursorSuffix : inactiveCursorSuffix}`;
+        const payload = `${transition}${framePrefix}${frame.renderVt}${cursorSuffix}`;
         enqueueRenderRef.current(payload, {
           reset: false,
           dedupeKey: payload,

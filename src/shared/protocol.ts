@@ -30,6 +30,9 @@ export interface TerminalFrame {
   // Raw VT stream captured for now; renderer interprets incrementally.
   vt: string;
   previewLines: string[];
+  cursorVisible?: boolean;
+  cursorStyle?: "block" | "underline" | "bar";
+  cursorBlink?: boolean;
   // True when the interactive shell in this PTY currently has a live child process.
   shellBusy?: boolean;
 }

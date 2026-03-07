@@ -377,6 +377,9 @@ export class TerminalSession {
             cols: number;
             rows: number;
             alt_screen?: boolean;
+            cursor_visible?: boolean;
+            cursor_style?: "block" | "underline" | "bar";
+            cursor_blink?: boolean;
             mode?: "full" | "patch";
           }
         | null = null;
@@ -388,6 +391,9 @@ export class TerminalSession {
           cols: number;
           rows: number;
           alt_screen?: boolean;
+          cursor_visible?: boolean;
+          cursor_style?: "block" | "underline" | "bar";
+          cursor_blink?: boolean;
           mode?: "full" | "patch";
         };
       } catch {
@@ -409,6 +415,9 @@ export class TerminalSession {
           previewLines,
           message.alt_screen === true,
           message.mode === "patch" ? renderedVt : undefined,
+          message.cursor_visible,
+          message.cursor_style,
+          message.cursor_blink,
         ),
       );
     };
@@ -523,6 +532,9 @@ export class TerminalSession {
     previewLines?: string[],
     altScreen?: boolean,
     renderPatchVt?: string,
+    cursorVisible?: boolean,
+    cursorStyle?: "block" | "underline" | "bar",
+    cursorBlink?: boolean,
   ): TerminalFrame {
     this.seq += 1;
     return {
@@ -536,6 +548,9 @@ export class TerminalSession {
       chunk,
       vt: this.vtBuffer,
       previewLines: previewLines ?? toPreviewLines(this.vtBuffer, this.cols, this.rows),
+      cursorVisible,
+      cursorStyle,
+      cursorBlink,
       shellBusy: this.shellBusy,
     };
   }

@@ -505,6 +505,20 @@ body.pane-resize-active .pane-resize-handle::before {
   box-shadow: 0 0 0 1px rgba(255, 216, 138, 0.85);
 }
 
+.xterm .xterm-cursor-layer .xterm-cursor.xterm-cursor-block {
+  background: rgba(255, 216, 138, 0.2);
+}
+
+.xterm .xterm-cursor-layer .xterm-cursor.xterm-cursor-bar {
+  background: #ffd88a;
+  box-shadow: none;
+}
+
+.xterm .xterm-cursor-layer .xterm-cursor.xterm-cursor-underline {
+  border-bottom: 2px solid #ffd88a;
+  box-shadow: none;
+}
+
 .pane-shell:not(.pane-active) .xterm .xterm-cursor-layer .xterm-cursor {
   opacity: 0 !important;
 }
