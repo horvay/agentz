@@ -27,5 +27,6 @@ export default {
 	},
 	scripts: {
 		postBuild: "scripts/post-build-wrap-launcher.ts",
+		postPackage: "scripts/post-package-linux-setup.ts",
 	},
 } satisfies ElectrobunConfig;
