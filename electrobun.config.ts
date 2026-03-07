@@ -11,7 +11,8 @@ export default {
 		copy: {
 			"dist/index.html": "views/mainview/index.html",
 			"dist/assets": "views/mainview/assets",
-			"node_modules/node-pty/prebuilds/linux-x64/pty.node": "bun/prebuilds/linux-x64/pty.node",
+			"node_modules/node-pty/lib": "bun/node-pty/lib",
+			"node_modules/node-pty/prebuilds/linux-x64/pty.node": "bun/node-pty/prebuilds/linux-x64/pty.node",
 			"src/native/zig-out/bin/ghostty-vt-bridge": "bin/ghostty-vt-bridge",
 		},
 		mac: {
@@ -23,5 +24,8 @@ export default {
 		win: {
 			bundleCEF: false,
 		},
+	},
+	scripts: {
+		postBuild: "scripts/post-build-wrap-launcher.ts",
 	},
 } satisfies ElectrobunConfig;

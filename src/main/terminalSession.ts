@@ -7,9 +7,26 @@ const MAX_VT_CHARS = 250_000;
 const MAX_PREVIEW_LINES = 200;
 const MAX_BRIDGE_LINE_CHARS = 12_000_000;
 let hasWarnedMissingBridge = false;
+
+function resolvePackagedPtyRoot(): string | null {
+  const execDir = dirname(process.execPath);
+  const packaged = join(execDir, "..", "Resources", "app", "bun", "node-pty");
+  return Bun.file(join(packaged, "lib", "index.js")).size > 0 ? packaged : null;
+}
+
 const PTY_WORKER_SOURCE = `
 const readline = require("node:readline");
-const pty = require("node-pty");
+const path = require("node:path");
+
+function loadPty() {
+  const packagedRoot = process.env.GHOSTTY_PTY_ROOT;
+  if (packagedRoot) {
+    return require(path.join(packagedRoot, "lib", "index.js"));
+  }
+  return require("node-pty");
+}
+
+const pty = loadPty();
 
 function writeMessage(message) {
   process.stdout.write(JSON.stringify(message) + "\\n");
@@ -139,6 +156,7 @@ export class TerminalSession {
     const shell = command ?? process.env.SHELL ?? (process.platform === "win32" ? "pwsh.exe" : "bash");
     const shellArgs = args ?? [];
     const bridgePath = resolveBridgePath(rootCwd);
+    const packagedPtyRoot = resolvePackagedPtyRoot();
     const bridgeDisabled = process.env.GHOSTTY_DASHBOARD_DISABLE_BRIDGE === "1";
     const bridgeBinaryPresent = Bun.file(bridgePath).size > 0;
 
@@ -182,6 +200,7 @@ export class TerminalSession {
         cwd: rootCwd,
         env: {
           ...process.env,
+          ...(packagedPtyRoot ? { GHOSTTY_PTY_ROOT: packagedPtyRoot } : {}),
         },
         stdin: "pipe",
         stdout: "pipe",
