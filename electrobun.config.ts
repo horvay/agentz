@@ -12,7 +12,7 @@ export default {
 			"dist/index.html": "views/mainview/index.html",
 			"dist/assets": "views/mainview/assets",
 			"node_modules/node-pty/lib": "bun/node-pty/lib",
-			"node_modules/node-pty/prebuilds/linux-x64/pty.node": "bun/node-pty/prebuilds/linux-x64/pty.node",
+			"node_modules/node-pty/prebuilds": "bun/node-pty/prebuilds",
 			"src/native/zig-out/bin/ghostty-vt-bridge": "bin/ghostty-vt-bridge",
 		},
 		mac: {
