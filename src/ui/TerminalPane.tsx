@@ -128,7 +128,7 @@ export function TerminalPane({
       letterSpacing: 0,
       cursorBlink: false,
       cursorStyle: "block",
-      cursorInactiveStyle: "block",
+      cursorInactiveStyle: "bar",
       cursorWidth: 2,
       convertEol: false,
       scrollback: 8000,
@@ -260,6 +260,7 @@ export function TerminalPane({
     for (const frame of pendingFrames) {
       if (frame.cursorStyle) {
         terminal.options.cursorStyle = frame.cursorStyle;
+        terminal.options.cursorInactiveStyle = frame.cursorStyle;
       }
       if (typeof frame.cursorBlink === "boolean") {
         terminal.options.cursorBlink = frame.cursorBlink;
