@@ -44,6 +44,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Fetch Ghostty dependency
+        run: |
+          git clone --depth 1 https://github.com/ghostty-org/ghostty.git deps/ghostty
+          git -C deps/ghostty fetch --depth 1 origin 913c12097bad2feb8977853cf1a60c137a968b50
+          git -C deps/ghostty checkout 913c12097bad2feb8977853cf1a60c137a968b50
+
       - name: Build native bridge
         run: cd src/native && zig build -Doptimize=ReleaseFast
 
