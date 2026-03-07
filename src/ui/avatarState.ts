@@ -1,7 +1,7 @@
 import type { TerminalFrame } from "../shared/protocol";
 import type { AvatarVisualState } from "./avatarCatalog";
 
-export type AgentKind = "opencode" | "codex" | null;
+export type AgentKind = "opencode" | "codex" | "claude" | null;
 export const CODEX_WORKING_HOLD_MS = 3000;
 export const CODEX_ACTIVE_FRAME_GRACE_MS = 1500;
 
@@ -56,6 +56,15 @@ function isCodexSession(recent: string, full: string): boolean {
   return codexMarkers.some((marker) => full.includes(marker) || recent.includes(marker));
 }
 
+function isClaudeSession(recent: string, full: string): boolean {
+  const claudeMarkers = ["claude code", "claude"];
+  const claudeUiMarkers = ["esc to interrupt", "permission", "shift+tab"];
+  return (
+    claudeMarkers.some((marker) => full.includes(marker) || recent.includes(marker)) &&
+    claudeUiMarkers.some((marker) => full.includes(marker) || recent.includes(marker))
+  );
+}
+
 function hasCodexWorkingSignal(recent: string, full: string): boolean {
   const codexWorkingMarkers = [
     "working (",
@@ -80,7 +89,8 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
   const { recent, full } = windows;
   const opencodeSession = isOpencodeSession(full);
   const codexSession = isCodexSession(recent, full);
-  const agent: AgentKind = opencodeSession ? "opencode" : codexSession ? "codex" : null;
+  const claudeSession = isClaudeSession(recent, full);
+  const agent: AgentKind = opencodeSession ? "opencode" : codexSession ? "codex" : claudeSession ? "claude" : null;
 
   const opencodeQuestionMarkers = [
     "permission required",
@@ -189,6 +199,9 @@ export function resolveAvatarDisplayState(
       nowMs - previous.lastFrameAtMs <= CODEX_ACTIVE_FRAME_GRACE_MS ||
       nowMs - previous.atMs <= CODEX_WORKING_HOLD_MS)
   ) {
+    return "working";
+  }
+  if (effectiveAgent === null && frame?.shellBusy) {
     return "working";
   }
   return "idle";

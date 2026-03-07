@@ -3,11 +3,11 @@
 	"version": "1.0.0",
 	"description": "Electrobun app with React, Tailwind CSS, and Vite HMR",
 	"scripts": {
-		"start": "bun run prepare:node-pty && GHOSTTY_DASHBOARD_ROOT=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 vite build && GHOSTTY_DASHBOARD_ROOT=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 electrobun dev",
-		"dev": "bun run prepare:node-pty && GHOSTTY_DASHBOARD_ROOT=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 vite build && GHOSTTY_DASHBOARD_ROOT=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 electrobun dev --watch",
-		"dev:hmr": "concurrently \"bun run hmr\" \"bun run prepare:node-pty && GHOSTTY_DASHBOARD_ROOT=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 ELECTROBUN_HMR=1 electrobun dev --watch\"",
+		"start": "bun run scripts/kill-dashboard-processes.ts && concurrently \"bun run hmr\" \"bun run prepare:node-pty && GHOSTTY_DASHBOARD_ROOT=$PWD GHOSTTY_DASHBOARD_LAUNCH_CWD=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 ELECTROBUN_HMR=1 electrobun dev\"",
+		"dev": "bun run scripts/kill-dashboard-processes.ts && concurrently \"bun run hmr\" \"bun run prepare:node-pty && GHOSTTY_DASHBOARD_ROOT=$PWD GHOSTTY_DASHBOARD_LAUNCH_CWD=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 ELECTROBUN_HMR=1 electrobun dev --watch\"",
+		"dev:hmr": "bun run dev",
 		"dev:launch": "bun run scripts/dev-launch.ts",
-		"hmr": "vite --port 5173",
+		"hmr": "vite --host 127.0.0.1 --port 5173",
 		"build:canary": "bun run prepare:node-pty && vite build && electrobun build --env=canary",
 		"prepare:node-pty": "bun run scripts/prepare-node-pty.ts",
 		"setup:zig": "bun run .tools/setup.ts",
@@ -22,6 +22,7 @@
 		"test:shell:scroll:screenshot": "bun run scripts/shell-scroll-screenshot.ts",
 		"test:avatar:opencode:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=opencode --out=screenshots/opencode-avatar-working.png",
 		"test:avatar:codex:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=codex --out=screenshots/codex-avatar-working.png",
+		"test:avatar:shell:sleep:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=shell --prompt=\"sleep 20\" --working-wait-ms=10000 --post-working-wait-ms=3000 --out=screenshots/shell-avatar-sleep-working.png",
 		"test:avatar:codex:long-song:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=codex --prompt=\"write a very long song with many verses about terminals, rain, and midnight debugging; keep going for at least 20 lines\" --working-wait-ms=45000 --out=screenshots/codex-avatar-long-song-working.png",
 		"test:avatar:codex:bottom-working:screenshot": "bun run scripts/agent-avatar-screenshot.ts --app=codex --prompt=\"write a very long song with many verses about terminals, rain, and midnight debugging; keep going for at least 60 lines\" --window-width=1000 --window-height=560 --working-wait-ms=45000 --post-working-wait-ms=5000 --out=screenshots/codex-avatar-bottom-working.png"
 	},

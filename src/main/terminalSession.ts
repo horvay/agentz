@@ -17,6 +17,8 @@ function resolvePackagedPtyRoot(): string | null {
 const PTY_WORKER_SOURCE = `
 const readline = require("node:readline");
 const path = require("node:path");
+const fs = require("node:fs");
+const childProcess = require("node:child_process");
 
 function loadPty() {
   const packagedRoot = process.env.GHOSTTY_PTY_ROOT;
@@ -38,6 +40,8 @@ const shellArgsJson = args[1] || "[]";
 const launchCwd = args[2] || process.cwd();
 const cols = Number.parseInt(args[3] || "120", 10);
 const rows = Number.parseInt(args[4] || "36", 10);
+let lastKnownCwd = launchCwd;
+let lastBusyState = false;
 
 let shellArgs = [];
 try {
@@ -59,6 +63,57 @@ const term = pty.spawn(shell, shellArgs, {
   },
 });
 
+function resolveTermCwd() {
+  try {
+    if (process.platform === "linux" && Number.isFinite(term.pid)) {
+      const liveCwd = fs.realpathSync(\`/proc/\${term.pid}/cwd\`);
+      if (typeof liveCwd === "string" && liveCwd.length > 0) {
+        lastKnownCwd = liveCwd;
+      }
+    }
+  } catch {}
+  return lastKnownCwd;
+}
+
+function listChildPids() {
+  try {
+    if (process.platform === "linux" && Number.isFinite(term.pid)) {
+      const raw = fs.readFileSync(\`/proc/\${term.pid}/task/\${term.pid}/children\`, "utf8");
+      return raw
+        .trim()
+        .split(/\\s+/)
+        .map((entry) => Number.parseInt(entry, 10))
+        .filter((pid) => Number.isFinite(pid) && pid > 0);
+    }
+  } catch {}
+
+  try {
+    const result = childProcess.spawnSync("pgrep", ["-P", String(term.pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (result.status !== 0) return [];
+    return String(result.stdout || "")
+      .trim()
+      .split(/\\s+/)
+      .map((entry) => Number.parseInt(entry, 10))
+      .filter((pid) => Number.isFinite(pid) && pid > 0);
+  } catch {
+    return [];
+  }
+}
+
+function resolveBusyState() {
+  return listChildPids().length > 0;
+}
+
+function publishBusyState(force = false) {
+  const nextBusy = resolveBusyState();
+  if (!force && nextBusy === lastBusyState) return;
+  lastBusyState = nextBusy;
+  writeMessage({ type: "busy", busy: nextBusy });
+}
+
 term.onData((chunk) => {
   const payload = Buffer.from(chunk, "utf8").toString("base64");
   writeMessage({ type: "data", data: payload });
@@ -68,6 +123,10 @@ term.onExit(({ exitCode }) => {
   writeMessage({ type: "exit", code: exitCode });
   process.exit(0);
 });
+
+publishBusyState(true);
+const busyPoll = setInterval(() => publishBusyState(false), 700);
+if (typeof busyPoll.unref === "function") busyPoll.unref();
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
@@ -81,6 +140,8 @@ rl.on("line", (line) => {
   if (message.type === "input" && typeof message.data === "string") {
     const input = Buffer.from(message.data, "base64").toString("utf8");
     term.write(input);
+    setTimeout(() => publishBusyState(false), 50);
+    setTimeout(() => publishBusyState(false), 250);
     return;
   }
   if (
@@ -93,6 +154,13 @@ rl.on("line", (line) => {
   }
   if (message.type === "kill") {
     term.kill();
+    return;
+  }
+  if (message.type === "cwd") {
+    writeMessage({ type: "cwd", cwd: resolveTermCwd() });
+  }
+  if (message.type === "busy") {
+    publishBusyState(true);
   }
 });
 `;
@@ -134,11 +202,14 @@ export class TerminalSession {
   private seq = 0;
   private cols: number;
   private rows: number;
+  private cwd: string;
+  private shellBusy = false;
   private exitHandler: ((exitCode: number) => void) | null = null;
   private frameHandler: ((frame: TerminalFrame) => void) | null = null;
   private stdoutLineBuffer = "";
   private bridgeLineBuffer = "";
   private hasExited = false;
+  private pendingCwdResolvers = new Set<(cwd?: string) => void>();
 
   constructor(
     readonly id: string,
@@ -150,9 +221,11 @@ export class TerminalSession {
   ) {
     this.cols = cols;
     this.rows = rows;
+    const launchBaseCwd = process.env.GHOSTTY_DASHBOARD_LAUNCH_CWD || process.cwd();
+    this.cwd = cwd ?? launchBaseCwd;
 
     const rootCwd = process.env.GHOSTTY_DASHBOARD_ROOT ?? process.cwd();
-    const launchCwd = cwd ?? rootCwd;
+    const launchCwd = cwd ?? launchBaseCwd;
     const shell = command ?? process.env.SHELL ?? (process.platform === "win32" ? "pwsh.exe" : "bash");
     const shellArgs = args ?? [];
     const bridgePath = resolveBridgePath(rootCwd);
@@ -217,9 +290,17 @@ export class TerminalSession {
     this.frameHandler = cb;
     const handleWorkerLine = (line: string) => {
       if (!line.trim()) return;
-      let message: { type: string; data?: string; code?: number } | null = null;
+      let message:
+        | { type: string; data?: string; code?: number; cwd?: string; busy?: boolean }
+        | null = null;
       try {
-        message = JSON.parse(line) as { type: string; data?: string; code?: number };
+        message = JSON.parse(line) as {
+          type: string;
+          data?: string;
+          code?: number;
+          cwd?: string;
+          busy?: boolean;
+        };
       } catch {
         return;
       }
@@ -241,6 +322,21 @@ export class TerminalSession {
       }
       if (message.type === "exit") {
         this.emitExit(typeof message.code === "number" ? message.code : 0);
+        return;
+      }
+      if (message.type === "cwd") {
+        if (typeof message.cwd === "string" && message.cwd.length > 0) {
+          this.cwd = message.cwd;
+        }
+        for (const resolve of this.pendingCwdResolvers) resolve(this.cwd);
+        this.pendingCwdResolvers.clear();
+        return;
+      }
+      if (message.type === "busy") {
+        const nextBusy = message.busy === true;
+        if (nextBusy === this.shellBusy) return;
+        this.shellBusy = nextBusy;
+        cb(this.snapshot(""));
       }
     };
 
@@ -398,6 +494,22 @@ export class TerminalSession {
     });
   }
 
+  getCwd(): Promise<string | undefined> {
+    if (this.hasExited) return Promise.resolve(this.cwd);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (nextCwd?: string) => {
+        if (settled) return;
+        settled = true;
+        this.pendingCwdResolvers.delete(finish);
+        resolve(nextCwd ?? this.cwd);
+      };
+      this.pendingCwdResolvers.add(finish);
+      this.sendWorker({ type: "cwd" });
+      setTimeout(() => finish(this.cwd), 250);
+    });
+  }
+
   kill(): void {
     this.sendWorker({ type: "kill" });
     this.sendBridge({ type: "kill" });
@@ -424,6 +536,7 @@ export class TerminalSession {
       chunk,
       vt: this.vtBuffer,
       previewLines: previewLines ?? toPreviewLines(this.vtBuffer, this.cols, this.rows),
+      shellBusy: this.shellBusy,
     };
   }
 
@@ -443,6 +556,8 @@ export class TerminalSession {
   private emitExit(exitCode: number): void {
     if (this.hasExited) return;
     this.hasExited = true;
+    for (const resolve of this.pendingCwdResolvers) resolve(this.cwd);
+    this.pendingCwdResolvers.clear();
     this.exitHandler?.(exitCode);
   }
 }

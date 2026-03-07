@@ -13,7 +13,7 @@ import { SettingsModal } from "./SettingsModal";
 import { TerminalPane } from "./TerminalPane";
 import type { AvatarDefinition, AvatarId, AvatarVisualState } from "./avatarCatalog";
 import { avatarCatalog } from "./avatarCatalog";
-import { inspectAvatarState, resolveAvatarDisplayState } from "./avatarState";
+import { inspectAvatarState, resolveAvatarDisplayState, type AgentKind } from "./avatarState";
 import { doesEventMatchShortcut } from "./shortcuts";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
@@ -137,7 +137,7 @@ function App() {
       string,
       {
         state: AvatarVisualState;
-        agent: "opencode" | "codex" | null;
+        agent: AgentKind;
         atMs: number;
         lastFrameAtMs: number;
         lastPreviewText: string;
@@ -209,7 +209,11 @@ function App() {
     defaultPaneWidthRef.current = defaultPaneWidth;
   }, [defaultPaneWidth]);
 
-  const createTerminal = useCallback((id: string, launch?: PaneLaunchConfig) => {
+  const createTerminal = useCallback((
+    id: string,
+    launch?: PaneLaunchConfig,
+    options?: { inheritCwdFromId?: string },
+  ) => {
     if (createdIdsRef.current.has(id)) return;
     createdIdsRef.current.add(id);
     rpc.send({
@@ -220,6 +224,7 @@ function App() {
       command: launch?.command,
       args: launch?.args,
       cwd: launch?.cwd,
+      inheritCwdFromId: launch?.cwd ? undefined : options?.inheritCwdFromId,
     });
   }, []);
 
@@ -300,7 +305,7 @@ function App() {
     });
     setAvatarStates((prev) => ({ ...prev, [id]: "idle" }));
     setActivePaneCentered(id);
-    createTerminal(id);
+    createTerminal(id, undefined, { inheritCwdFromId: activePaneRef.current });
   }, [createTerminal, defaultPaneWidth, setActivePaneCentered]);
 
   const moveActivePane = useCallback(

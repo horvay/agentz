@@ -50,6 +50,44 @@ describe("detectAvatarState", () => {
     expect(state).toBe("idle");
   });
 
+  test("treats a non-agent shell with a live child process as working", () => {
+    const state = resolveAvatarDisplayState(
+      {
+        ...frameFromText(
+          [
+            "agentz master",
+            "$ bun run dev",
+            "Server started at http://localhost:50001",
+          ].join("\n"),
+        ),
+        shellBusy: true,
+      },
+      undefined,
+      Date.now(),
+    );
+
+    expect(state).toBe("working");
+  });
+
+  test("does not use generic shell-busy fallback for recognized agent sessions", () => {
+    const state = resolveAvatarDisplayState(
+      {
+        ...frameFromText(
+          [
+            "OpenAI Codex",
+            "› Ask Codex to do anything",
+            "? for shortcuts                                                                100% context left",
+          ].join("\n"),
+        ),
+        shellBusy: true,
+      },
+      undefined,
+      Date.now(),
+    );
+
+    expect(state).toBe("idle");
+  });
+
   test("detects codex working state", () => {
     const state = detectAvatarState(
       frameFromText(

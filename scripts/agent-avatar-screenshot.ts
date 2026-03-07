@@ -1,7 +1,12 @@
 import { dirname } from "node:path";
 import type { TerminalFrame } from "../src/shared/protocol";
 import type { AvatarVisualState } from "../src/ui/avatarCatalog";
-import { detectAvatarState, inspectAvatarState, resolveAvatarDisplayState } from "../src/ui/avatarState";
+import {
+  detectAvatarState,
+  inspectAvatarState,
+  resolveAvatarDisplayState,
+  type AgentKind,
+} from "../src/ui/avatarState";
 
 function parseFlags(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
@@ -54,7 +59,7 @@ class RpcSession {
     string,
     {
       state: AvatarVisualState;
-      agent: "opencode" | "codex" | null;
+      agent: AgentKind;
       atMs: number;
       lastFrameAtMs: number;
       lastPreviewText: string;
@@ -293,6 +298,7 @@ function visibleLineCount(frame: TerminalFrame | undefined): number {
 const flags = parseFlags(process.argv.slice(2));
 const appName =
   typeof flags.app === "string" && flags.app.trim().length > 0 ? flags.app.trim() : "opencode";
+const shellLaunch = appName === "shell";
 const prompt =
   typeof flags.prompt === "string" && flags.prompt.trim().length > 0
     ? flags.prompt
@@ -351,14 +357,15 @@ const windowHeight =
   typeof flags["window-height"] === "string" && Number.isFinite(Number(flags["window-height"]))
     ? Math.max(420, Number(flags["window-height"]))
     : 900;
-const launchJson = JSON.stringify({ panes: [{ command: appName }] });
 
 Bun.spawnSync(["pkill", "-f", "ghostty-dashboard-mvp-dev"]);
 Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"]);
 Bun.spawnSync(["pkill", "-f", "Resources/main.js"]);
 
 const app = Bun.spawn(["bun", "run", "dev"], {
-  env: { ...process.env, GHOSTTY_DASHBOARD_LAUNCH: launchJson },
+  env: shellLaunch
+    ? { ...process.env }
+    : { ...process.env, GHOSTTY_DASHBOARD_LAUNCH: JSON.stringify({ panes: [{ command: appName }] }) },
   stdio: ["ignore", "inherit", "inherit"],
 });
 

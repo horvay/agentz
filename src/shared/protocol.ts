@@ -30,6 +30,8 @@ export interface TerminalFrame {
   // Raw VT stream captured for now; renderer interprets incrementally.
   vt: string;
   previewLines: string[];
+  // True when the interactive shell in this PTY currently has a live child process.
+  shellBusy?: boolean;
 }
 
 export type ClientMessage =
@@ -39,6 +41,7 @@ export type ClientMessage =
       cols: number;
       rows: number;
       cwd?: string;
+      inheritCwdFromId?: string;
       command?: string;
       args?: string[];
     }
