@@ -61,4 +61,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
-          gh release upload "$TAG" artifacts/* --clobber
+          gh release upload "$TAG" artifacts/*.dmg artifacts/*.app.tar.zst --clobber
