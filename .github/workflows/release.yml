@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to build and upload assets for
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-15-intel
             label: x64
           - runner: macos-14
             label: arm64
@@ -24,7 +29,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || github.ref_name }}
+          ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -48,6 +53,6 @@ jobs:
       - name: Upload macOS artifacts to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           gh release upload "$TAG" artifacts/* --clobber
