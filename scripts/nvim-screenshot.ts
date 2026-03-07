@@ -159,7 +159,9 @@ const screenshotPath =
 const fileName =
   typeof flags.file === "string" && flags.file.trim().length > 0 ? flags.file.trim() : "test.txt";
 const typedText =
-  typeof flags.text === "string" && flags.text.trim().length > 0 ? flags.text : "hello";
+  typeof flags.text === "string" && flags.text.length > 0
+    ? flags.text
+    : "nice.\rNot bad I guess?\rwhat the fuck\r";
 const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(1000, Number(flags["wait-ms"]))

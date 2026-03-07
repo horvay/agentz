@@ -69,10 +69,16 @@ fn writeCursorState(
     writer: *std.Io.Writer,
     term: *ghostty_vt.Terminal,
 ) !void {
-    var formatter: ghostty_vt.formatter.ScreenFormatter = .init(term.screens.active, .{ .emit = .vt });
+    var formatter: ghostty_vt.formatter.TerminalFormatter = .init(term, .{ .emit = .vt });
     formatter.content = .none;
-    formatter.extra = .all;
+    formatter.extra = .none;
+    formatter.extra.screen.cursor = true;
     try formatter.format(writer);
+    const cursor = term.screens.active.cursor;
+    try writer.print("\x1b[{d};{d}H", .{
+        @as(usize, @intCast(cursor.y)) + 1,
+        @as(usize, @intCast(cursor.x)) + 1,
+    });
 }
 
 fn formatRow(

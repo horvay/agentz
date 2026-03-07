@@ -28,6 +28,8 @@ export function TerminalPane({
   onShortcut,
   onFramesQueued,
 }: Props) {
+  const activeCursorSuffix = "\x1b[6 q\x1b[?25h";
+  const inactiveCursorSuffix = "\x1b[?25l";
   const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -47,8 +49,13 @@ export function TerminalPane({
   const renderInFlightRef = useRef(false);
   const lastAppliedRenderRef = useRef<string>("");
   const altBufferActiveRef = useRef(false);
+  const activeRef = useRef(active);
   const shortcutHandlerRef = useRef(onShortcut);
   const shortcutsRef = useRef(shortcuts);
+
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
 
   useEffect(() => {
     shortcutHandlerRef.current = onShortcut;
@@ -86,6 +93,10 @@ export function TerminalPane({
           lastAppliedRenderRef.current = next.dedupeKey;
         } else {
           lastAppliedRenderRef.current = "";
+        }
+        scheduleFullRefresh();
+        if (activeRef.current) {
+          terminalRef.current?.focus();
         }
         flushRenderQueue();
       });
@@ -250,16 +261,19 @@ export function TerminalPane({
 
     for (const frame of pendingFrames) {
       if (frame.renderPatchVt) {
-        enqueueRenderRef.current(`${frame.renderPatchVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`);
+        enqueueRenderRef.current(`${frame.renderPatchVt}${active ? activeCursorSuffix : inactiveCursorSuffix}`);
       } else if (frame.renderVt) {
         let transition = "";
         const altScreen = frame.altScreen === true;
-        if (altScreen !== altBufferActiveRef.current) {
-          transition = altScreen ? "\x1b[?1049h\x1b[H\x1b[2J" : "\x1b[?1049l\x1b[H\x1b[2J";
+        if (altScreen) {
+          transition = "\x1b[?1049h\x1b[H\x1b[2J";
+          altBufferActiveRef.current = true;
+        } else if (altBufferActiveRef.current) {
+          transition = "\x1b[?1049l\x1b[H\x1b[2J";
           altBufferActiveRef.current = altScreen;
         }
         const framePrefix = altScreen ? "" : "\x1b[H\x1b[2J";
-        const payload = `${transition}${framePrefix}${frame.renderVt}${active ? "\x1b[?25h" : "\x1b[?25l"}`;
+        const payload = `${transition}${framePrefix}${frame.renderVt}${active ? activeCursorSuffix : inactiveCursorSuffix}`;
         enqueueRenderRef.current(payload, {
           reset: false,
           dedupeKey: payload,
