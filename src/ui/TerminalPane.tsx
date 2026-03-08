@@ -3,10 +3,13 @@ import type { CSSProperties } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
+import { WebglAddon } from "@xterm/addon-webgl";
 import type { TerminalFrame } from "../shared/protocol";
 import type { DashboardShortcuts } from "../shared/config";
 import type { RpcClient } from "./rpcClient";
 import { doesEventMatchShortcut } from "./shortcuts";
+
+const RESIZE_DEBOUNCE_MS = 40;
 
 interface Props {
   id: string;
@@ -49,17 +52,34 @@ export function TerminalPane({
   const stageRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const webglAddonRef = useRef<WebglAddon | null>(null);
   const canvasAddonRef = useRef<CanvasAddon | null>(null);
   const syncedSizeRef = useRef(false);
   const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const resizeSyncTimeoutRef = useRef<number | null>(null);
   const refreshRafRef = useRef<number | null>(null);
   const syncOutputActiveRef = useRef(false);
   const syncOutputBufferRef = useRef("");
   const syncOutputTimeoutRef = useRef<number | null>(null);
-  const renderQueueRef = useRef<Array<{ payload: string; reset: boolean; dedupeKey?: string }>>([]);
+  const renderQueueRef = useRef<
+    Array<{
+      payload: string;
+      reset: boolean;
+      dedupeKey?: string;
+      patchKind?: "cursor-only" | "row-update" | "alt-row-update";
+    }>
+  >([]);
   const flushRenderQueueRef = useRef<() => void>(() => {});
   const enqueueRenderRef = useRef<
-    (payload: string, options?: { reset?: boolean; dedupeKey?: string; replaceQueuedFull?: boolean }) => void
+    (
+      payload: string,
+      options?: {
+        reset?: boolean;
+        dedupeKey?: string;
+        replaceQueuedFull?: boolean;
+        patchKind?: "cursor-only" | "row-update" | "alt-row-update";
+      },
+    ) => void
   >(() => {});
   const renderInFlightRef = useRef(false);
   const lastAppliedRenderRef = useRef<string>("");
@@ -76,7 +96,14 @@ export function TerminalPane({
     const terminal = terminalRef.current;
     const host = hostRef.current;
     const stage = stageRef.current;
-    if (!terminal || !host || !stage || !currentFrame?.cursorRow || !currentFrame?.cursorCol) {
+    if (
+      !terminal ||
+      !host ||
+      !stage ||
+      currentFrame?.altScreen === true ||
+      typeof currentFrame?.cursorRow !== "number" ||
+      typeof currentFrame?.cursorCol !== "number"
+    ) {
       setOverlayCursor(null);
       return;
     }
@@ -123,6 +150,7 @@ export function TerminalPane({
     if (!host) return;
 
     const scheduleFullRefresh = () => {
+      if (webglAddonRef.current) return;
       if (refreshRafRef.current) cancelAnimationFrame(refreshRafRef.current);
       refreshRafRef.current = requestAnimationFrame(() => {
         refreshRafRef.current = null;
@@ -134,16 +162,25 @@ export function TerminalPane({
     const flushRenderQueue = () => {
       if (!terminalRef.current) return;
       if (renderInFlightRef.current) return;
-      const next = renderQueueRef.current.shift();
-      if (!next) return;
+      const first = renderQueueRef.current.shift();
+      if (!first) return;
+      const batch = [first];
+      while (renderQueueRef.current.length > 0) {
+        const next = renderQueueRef.current[0];
+        if (next.reset) break;
+        batch.push(renderQueueRef.current.shift()!);
+        if (batch.length >= 24) break;
+      }
+      const payload = batch.map((entry) => entry.payload).join("");
+      const last = batch[batch.length - 1];
       renderInFlightRef.current = true;
-      if (next.reset) {
+      if (first.reset) {
         terminalRef.current.reset();
       }
-      terminalRef.current.write(next.payload, () => {
+      terminalRef.current.write(payload, () => {
         renderInFlightRef.current = false;
-        if (next.dedupeKey) {
-          lastAppliedRenderRef.current = next.dedupeKey;
+        if (last.dedupeKey) {
+          lastAppliedRenderRef.current = last.dedupeKey;
         } else {
           lastAppliedRenderRef.current = "";
         }
@@ -155,19 +192,42 @@ export function TerminalPane({
       });
     };
 
-      const enqueueRender = (
-        payload: string,
-        options?: { reset?: boolean; dedupeKey?: string; replaceQueuedFull?: boolean },
-      ) => {
-        if (options?.dedupeKey && payload === lastAppliedRenderRef.current) return;
-        if (options?.replaceQueuedFull) {
-          // A new full-frame snapshot supersedes any queued incremental work.
-          renderQueueRef.current = [];
-        }
-        renderQueueRef.current.push({
-          payload,
-          reset: options?.reset === true,
+    const queueResizeSync = (cols: number, rows: number) => {
+      if (resizeSyncTimeoutRef.current) {
+        window.clearTimeout(resizeSyncTimeoutRef.current);
+      }
+      resizeSyncTimeoutRef.current = window.setTimeout(() => {
+        resizeSyncTimeoutRef.current = null;
+        const prevSize = lastSentSizeRef.current;
+        if (prevSize && prevSize.cols === cols && prevSize.rows === rows) return;
+        lastSentSizeRef.current = { cols, rows };
+        rpc.send({ type: "resize", id, cols, rows });
+      }, RESIZE_DEBOUNCE_MS);
+    };
+
+    const enqueueRender = (
+      payload: string,
+      options?: {
+        reset?: boolean;
+        dedupeKey?: string;
+        replaceQueuedFull?: boolean;
+        patchKind?: "cursor-only" | "row-update" | "alt-row-update";
+      },
+    ) => {
+      if (options?.dedupeKey && payload === lastAppliedRenderRef.current) return;
+      if (options?.replaceQueuedFull) {
+        // A new full-frame snapshot supersedes any queued incremental work.
+        renderQueueRef.current = [];
+      } else if (options?.patchKind === "cursor-only" || options?.patchKind === "alt-row-update") {
+        renderQueueRef.current = renderQueueRef.current.filter(
+          (queued) => queued.patchKind !== "cursor-only" && queued.patchKind !== "alt-row-update",
+        );
+      }
+      renderQueueRef.current.push({
+        payload,
+        reset: options?.reset === true,
         dedupeKey: options?.dedupeKey,
+        patchKind: options?.patchKind,
       });
       flushRenderQueue();
     };
@@ -186,7 +246,7 @@ export function TerminalPane({
       cursorInactiveStyle: "bar",
       cursorWidth: 2,
       convertEol: false,
-      scrollback: 8000,
+      scrollback: 2000,
       minimumContrastRatio: 4.5,
       theme: {
         background: "#0a0f1a",
@@ -213,9 +273,28 @@ export function TerminalPane({
       },
     });
     const fitAddon = new FitAddon();
-    const canvasAddon = new CanvasAddon();
     terminal.loadAddon(fitAddon);
-    terminal.loadAddon(canvasAddon);
+    let canvasAddon: CanvasAddon | null = null;
+    const activateCanvasRenderer = () => {
+      if (canvasAddon) return;
+      canvasAddon = new CanvasAddon();
+      terminal.loadAddon(canvasAddon);
+      canvasAddonRef.current = canvasAddon;
+      webglAddonRef.current = null;
+    };
+    try {
+      const webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        webglAddonRef.current = null;
+        activateCanvasRenderer();
+        scheduleFullRefresh();
+      });
+      terminal.loadAddon(webglAddon);
+      webglAddonRef.current = webglAddon;
+      canvasAddonRef.current = null;
+    } catch {
+      activateCanvasRenderer();
+    }
     terminal.open(host);
     if (active) {
       requestAnimationFrame(() => terminal.focus());
@@ -275,23 +354,17 @@ export function TerminalPane({
         scheduleFullRefresh();
         const nextCols = terminal.cols;
         const nextRows = terminal.rows;
-        const prevSize = lastSentSizeRef.current;
-        if (prevSize && prevSize.cols === nextCols && prevSize.rows === nextRows) return;
-        lastSentSizeRef.current = { cols: nextCols, rows: nextRows };
-        rpc.send({ type: "resize", id, cols: nextCols, rows: nextRows });
+        queueResizeSync(nextCols, nextRows);
       });
     };
 
     fitAndSync();
 
     terminal.onData((data) => rpc.send({ type: "input", id, data }));
-    terminal.onResize((size) =>
-      rpc.send({ type: "resize", id, cols: size.cols, rows: size.rows }),
-    );
+    terminal.onResize((size) => queueResizeSync(size.cols, size.rows));
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
-    canvasAddonRef.current = canvasAddon;
     syncedSizeRef.current = false;
     renderQueueRef.current = [];
     lastAppliedRenderRef.current = "";
@@ -312,11 +385,13 @@ export function TerminalPane({
       window.removeEventListener("resize", onWindowResize);
       resizeObserver.disconnect();
       if (raf) cancelAnimationFrame(raf);
+      if (resizeSyncTimeoutRef.current) window.clearTimeout(resizeSyncTimeoutRef.current);
       if (refreshRafRef.current) cancelAnimationFrame(refreshRafRef.current);
       if (syncOutputTimeoutRef.current) window.clearTimeout(syncOutputTimeoutRef.current);
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      webglAddonRef.current = null;
       canvasAddonRef.current = null;
       flushRenderQueueRef.current = () => {};
       enqueueRenderRef.current = () => {};
@@ -335,22 +410,37 @@ export function TerminalPane({
       if (typeof frame.cursorBlink === "boolean") {
         terminal.options.cursorBlink = frame.cursorBlink;
       }
-      const useOverlayCursor = typeof frame.cursorRow === "number" && typeof frame.cursorCol === "number";
+      const useOverlayCursor =
+        frame.altScreen !== true && typeof frame.cursorRow === "number" && typeof frame.cursorCol === "number";
       const cursorVisible = active && (frame.cursorVisible ?? true);
       const cursorSuffix =
         useOverlayCursor ? "\x1b[?25l" : cursorVisible ? "\x1b[?25h" : "\x1b[?25l";
+      const useAltScreenChunkFastPath =
+        frame.altScreen === true &&
+        Boolean(frame.chunk) &&
+        (frame.renderPatchKind === "cursor-only" || frame.renderPatchKind === "alt-row-update");
 
-      if (frame.renderPatchVt) {
-        enqueueRenderRef.current(`${frame.renderPatchVt}${cursorSuffix}`);
+      if (useAltScreenChunkFastPath) {
+        const payload = `${frame.chunk}${cursorSuffix}`;
+        enqueueRenderRef.current(payload, {
+          patchKind: frame.renderPatchKind,
+        });
+      } else if (frame.renderPatchVt) {
+        enqueueRenderRef.current(`${frame.renderPatchVt}${cursorSuffix}`, {
+          patchKind: frame.renderPatchKind,
+        });
       } else if (frame.renderVt) {
         let transition = "";
         const altScreen = frame.altScreen === true;
-        if (altScreen) {
+        const wasAltScreenActive = altBufferActiveRef.current;
+        if (altScreen && !wasAltScreenActive) {
           transition = "\x1b[?1049h\x1b[H\x1b[2J";
           altBufferActiveRef.current = true;
-        } else if (altBufferActiveRef.current) {
+        } else if (!altScreen && wasAltScreenActive) {
           transition = "\x1b[?1049l\x1b[H\x1b[2J";
-          altBufferActiveRef.current = altScreen;
+          altBufferActiveRef.current = false;
+        } else if (altScreen) {
+          altBufferActiveRef.current = true;
         }
         const framePrefix = altScreen ? "" : "\x1b[H\x1b[2J";
         const payload = `${transition}${framePrefix}${frame.renderVt}${cursorSuffix}`;
@@ -439,7 +529,13 @@ export function TerminalPane({
     if (!terminalRef.current) return;
     if (active) {
       terminalRef.current.focus();
-      terminalRef.current.write(currentFrame?.cursorRow && currentFrame?.cursorCol ? "\x1b[?25l" : "\x1b[?25h");
+      terminalRef.current.write(
+        currentFrame?.altScreen !== true &&
+        typeof currentFrame?.cursorRow === "number" &&
+        typeof currentFrame?.cursorCol === "number"
+          ? "\x1b[?25l"
+          : "\x1b[?25h",
+      );
       const focusRaf = requestAnimationFrame(() => {
         terminalRef.current?.focus();
       });

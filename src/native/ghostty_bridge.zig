@@ -18,6 +18,7 @@ const FrameMessage = struct {
     mode: FrameMode,
     vt_b64: []const u8,
     plain_b64: []const u8,
+    patch_kind: ?[]const u8 = null,
     cols: u16,
     rows: u16,
     alt_screen: bool,
@@ -131,9 +132,10 @@ fn formatRow(
     return try alloc.dupe(u8, builder.writer.buffered());
 }
 
-fn capturePlainRows(
+fn captureRows(
     alloc: std.mem.Allocator,
     term: *ghostty_vt.Terminal,
+    emit: ghostty_vt.formatter.Format,
 ) !OwnedRows {
     var rows: OwnedRows = .empty;
     errdefer {
@@ -142,7 +144,7 @@ fn capturePlainRows(
     }
 
     for (0..@as(usize, @intCast(term.rows))) |row_index| {
-        const row = try formatRow(alloc, term, row_index, .plain);
+        const row = try formatRow(alloc, term, row_index, emit);
         try rows.append(alloc, row);
     }
 
@@ -183,15 +185,7 @@ fn joinRows(
 fn buildFullVt(
     alloc: std.mem.Allocator,
     term: *ghostty_vt.Terminal,
-    alt_screen: bool,
-) ![]u8 {
-    _ = alt_screen;
-    return buildPrimaryScreenFullVt(alloc, term);
-}
-
-fn buildPrimaryScreenFullVt(
-    alloc: std.mem.Allocator,
-    term: *ghostty_vt.Terminal,
+    current_render_rows: []const []u8,
 ) ![]u8 {
     var builder: std.Io.Writer.Allocating = .init(alloc);
     defer builder.deinit();
@@ -199,10 +193,8 @@ fn buildPrimaryScreenFullVt(
     try writeModePrefix(&builder.writer, term);
     try writeScrollingRegion(&builder.writer, term);
 
-    for (0..@as(usize, @intCast(term.rows))) |row_index| {
+    for (current_render_rows, 0..) |row_vt, row_index| {
         try builder.writer.print("\x1b[{d};1H\x1b[2K", .{row_index + 1});
-        const row_vt = try formatRow(alloc, term, row_index, .vt);
-        defer alloc.free(row_vt);
         if (row_vt.len > 0) {
             try builder.writer.writeAll(row_vt);
         }
@@ -215,8 +207,8 @@ fn buildPrimaryScreenFullVt(
 fn buildPatchVt(
     alloc: std.mem.Allocator,
     term: *ghostty_vt.Terminal,
-    previous_rows: []const []u8,
-    current_rows: []const []u8,
+    previous_render_rows: []const []u8,
+    current_render_rows: []const []u8,
 ) ![]u8 {
     var builder: std.Io.Writer.Allocating = .init(alloc);
     defer builder.deinit();
@@ -224,14 +216,11 @@ fn buildPatchVt(
     try writeModePrefix(&builder.writer, term);
     try writeScrollingRegion(&builder.writer, term);
 
-    for (current_rows, 0..) |row, row_index| {
-        if (std.mem.eql(u8, previous_rows[row_index], row)) continue;
+    for (current_render_rows, 0..) |row_vt, row_index| {
+        if (std.mem.eql(u8, previous_render_rows[row_index], row_vt)) continue;
 
         try builder.writer.print("\x1b[{d};1H\x1b[2K", .{row_index + 1});
-        if (row.len == 0) continue;
-
-        const row_vt = try formatRow(alloc, term, row_index, .vt);
-        defer alloc.free(row_vt);
+        if (row_vt.len == 0) continue;
         try builder.writer.writeAll(row_vt);
     }
 
@@ -245,6 +234,7 @@ fn writeFrame(
     mode: FrameMode,
     vt: []const u8,
     plain: []const u8,
+    patch_kind: ?[]const u8,
     term: *ghostty_vt.Terminal,
     alt_screen: bool,
 ) !void {
@@ -264,6 +254,7 @@ fn writeFrame(
             .mode = mode,
             .vt_b64 = vt_b64,
             .plain_b64 = plain_b64,
+            .patch_kind = patch_kind,
             .cols = @as(u16, @intCast(term.cols)),
             .rows = @as(u16, @intCast(term.rows)),
             .alt_screen = alt_screen,
@@ -289,35 +280,36 @@ fn emitFrame(
     alloc: std.mem.Allocator,
     stdout_writer: *std.Io.Writer,
     term: *ghostty_vt.Terminal,
-    previous_rows: *OwnedRows,
+    previous_render_rows: *OwnedRows,
     previous_alt_screen: *bool,
     has_snapshot: *bool,
     force_full: bool,
 ) !void {
     const alt_screen = isAltScreen(term);
-    var current_rows = try capturePlainRows(alloc, term);
+    var current_plain_rows = try captureRows(alloc, term, .plain);
     defer {
-        freeOwnedRows(alloc, &current_rows);
-        current_rows.deinit(alloc);
+        freeOwnedRows(alloc, &current_plain_rows);
+        current_plain_rows.deinit(alloc);
     }
 
-    const plain = try joinRows(alloc, current_rows.items);
-    defer alloc.free(plain);
+    var current_render_rows = try captureRows(alloc, term, .vt);
+    defer {
+        freeOwnedRows(alloc, &current_render_rows);
+        current_render_rows.deinit(alloc);
+    }
 
     var mode: FrameMode = .patch;
     var use_full = force_full or
         !has_snapshot.* or
-        !alt_screen or
-        alt_screen or
         previous_alt_screen.* != alt_screen or
-        previous_rows.items.len != current_rows.items.len;
+        previous_render_rows.items.len != current_render_rows.items.len;
 
     var dirty_rows: usize = 0;
     var first_dirty_row: ?usize = null;
     var last_dirty_row: ?usize = null;
     if (!use_full) {
-        for (current_rows.items, 0..) |row, idx| {
-            if (!std.mem.eql(u8, previous_rows.items[idx], row)) {
+        for (current_render_rows.items, 0..) |row, idx| {
+            if (!std.mem.eql(u8, previous_render_rows.items[idx], row)) {
                 dirty_rows += 1;
                 if (first_dirty_row == null) first_dirty_row = idx;
                 last_dirty_row = idx;
@@ -326,32 +318,64 @@ fn emitFrame(
 
         const cursor_row: usize = @intCast(term.screens.active.cursor.y);
 
-        // Keep patch mode extremely narrow on the primary screen: only allow
-        // an in-place edit to the active cursor row. Scrolls near the bottom
-        // of the terminal can otherwise look like a tiny contiguous diff even
-        // though the visible history shifted.
+        // Keep patch mode conservative.
+        // - On the primary screen, only allow a cursor-only change or an
+        //   in-place edit to the active cursor row. Scrolls near the bottom
+        //   of the terminal can otherwise look like a tiny contiguous diff even
+        //   though the visible history shifted.
+        // - On the alternate screen, allow cursor-only changes and very small
+        //   contiguous row updates. Neovim cursor motion commonly repaints the
+        //   old and new cursor rows; treating that as a patch avoids queuing a
+        //   full-screen snapshot for every repeated j/k move.
+        const patchable_cursor_only = dirty_rows == 0;
         const patchable_cursor_row_only = dirty_rows == 1 and
             first_dirty_row != null and
             first_dirty_row.? == cursor_row and
             last_dirty_row != null and
             last_dirty_row.? == cursor_row;
+        const patchable_alt_small_block = alt_screen and
+            dirty_rows > 0 and
+            dirty_rows <= 4 and
+            first_dirty_row != null and
+            last_dirty_row != null and
+            (last_dirty_row.? - first_dirty_row.? + 1) == dirty_rows;
 
-        if (!patchable_cursor_row_only and dirty_rows > 0) {
+        const allow_patch = if (alt_screen)
+            patchable_cursor_only or patchable_alt_small_block
+        else
+            patchable_cursor_only or patchable_cursor_row_only;
+
+        if (!allow_patch) {
             use_full = true;
         }
     }
 
+    const patch_kind: ?[]const u8 = if (use_full)
+        null
+    else if (dirty_rows == 0)
+        "cursor-only"
+    else if (alt_screen)
+        "alt-row-update"
+    else
+        "row-update";
+
+    const plain = if (patch_kind != null and std.mem.eql(u8, patch_kind.?, "cursor-only"))
+        try alloc.dupe(u8, "")
+    else
+        try joinRows(alloc, current_plain_rows.items);
+    defer alloc.free(plain);
+
     const vt = if (use_full) blk: {
         mode = .full;
-        break :blk try buildFullVt(alloc, term, alt_screen);
+        break :blk try buildFullVt(alloc, term, current_render_rows.items);
     } else blk: {
         mode = .patch;
-        break :blk try buildPatchVt(alloc, term, previous_rows.items, current_rows.items);
+        break :blk try buildPatchVt(alloc, term, previous_render_rows.items, current_render_rows.items);
     };
     defer alloc.free(vt);
 
-    try writeFrame(alloc, stdout_writer, mode, vt, plain, term, alt_screen);
-    replaceOwnedRows(alloc, previous_rows, &current_rows);
+    try writeFrame(alloc, stdout_writer, mode, vt, plain, patch_kind, term, alt_screen);
+    replaceOwnedRows(alloc, previous_render_rows, &current_render_rows);
     previous_alt_screen.* = alt_screen;
     has_snapshot.* = true;
 }
@@ -379,10 +403,10 @@ pub fn main() !void {
     var stream = term.vtStream();
     defer stream.deinit();
 
-    var previous_rows: OwnedRows = .empty;
+    var previous_render_rows: OwnedRows = .empty;
     defer {
-        freeOwnedRows(alloc, &previous_rows);
-        previous_rows.deinit(alloc);
+        freeOwnedRows(alloc, &previous_render_rows);
+        previous_render_rows.deinit(alloc);
     }
     var previous_alt_screen = false;
     var has_snapshot = false;
@@ -411,7 +435,7 @@ pub fn main() !void {
             defer alloc.free(decoded);
             _ = std.base64.standard.Decoder.decode(decoded, encoded) catch continue;
             try stream.nextSlice(decoded);
-            try emitFrame(alloc, stdout_writer, &term, &previous_rows, &previous_alt_screen, &has_snapshot, false);
+            try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, false);
             continue;
         }
 
@@ -419,12 +443,12 @@ pub fn main() !void {
             const next_cols = cmd.cols orelse init_cols;
             const next_rows = cmd.rows orelse init_rows;
             try term.resize(alloc, next_cols, next_rows);
-            try emitFrame(alloc, stdout_writer, &term, &previous_rows, &previous_alt_screen, &has_snapshot, true);
+            try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true);
             continue;
         }
 
         if (std.mem.eql(u8, cmd.type, "snapshot")) {
-            try emitFrame(alloc, stdout_writer, &term, &previous_rows, &previous_alt_screen, &has_snapshot, true);
+            try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true);
             continue;
         }
     }

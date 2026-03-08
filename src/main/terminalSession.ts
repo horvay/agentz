@@ -7,6 +7,7 @@ const MAX_VT_CHARS = 250_000;
 const MAX_ACTIVITY_VT_CHARS = 4_000;
 const MAX_PREVIEW_LINES = 200;
 const MAX_BRIDGE_LINE_CHARS = 12_000_000;
+const BRIDGE_FEED_BATCH_MS = 8;
 let hasWarnedMissingBridge = false;
 
 function resolvePackagedPtyRoot(): string | null {
@@ -215,6 +216,11 @@ export class TerminalSession {
   private rows: number;
   private cwd: string;
   private shellBusy = false;
+  private lastPreviewLines: string[] = [];
+  private pendingBridgeChunk = "";
+  private pendingBridgeFeed = "";
+  private bridgeFeedTimer: ReturnType<typeof setTimeout> | null = null;
+  private bridgeFeedInFlight = false;
   private exitHandler: ((exitCode: number) => void) | null = null;
   private frameHandler: ((frame: TerminalFrame) => void) | null = null;
   private stdoutLineBuffer = "";
@@ -322,10 +328,9 @@ export class TerminalSession {
           this.vtBuffer = this.vtBuffer.slice(-MAX_VT_CHARS);
         }
         if (this.ghosttyBridgeHandle) {
-          this.sendBridge({
-            type: "feed",
-            data_b64: message.data,
-          });
+          this.pendingBridgeChunk += decoded;
+          this.pendingBridgeFeed += decoded;
+          this.scheduleBridgeFeedFlush();
         } else {
           cb(this.snapshot(decoded));
         }
@@ -351,30 +356,46 @@ export class TerminalSession {
       }
     };
 
-    const pumpStdout = async (stream: ReadableStream<Uint8Array> | null) => {
+    const pumpStdout = async (stream: ReadableStream<Uint8Array> | null | undefined) => {
       if (!stream) return;
+      const reader = stream.getReader();
       const decoder = new TextDecoder();
-      for await (const chunk of stream) {
-        const decoded = decoder.decode(chunk, { stream: true });
-        this.stdoutLineBuffer += decoded;
-        let newlineIndex = this.stdoutLineBuffer.indexOf("\n");
-        while (newlineIndex >= 0) {
-          const line = this.stdoutLineBuffer.slice(0, newlineIndex);
-          this.stdoutLineBuffer = this.stdoutLineBuffer.slice(newlineIndex + 1);
-          handleWorkerLine(line);
-          newlineIndex = this.stdoutLineBuffer.indexOf("\n");
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          const decoded = decoder.decode(value, { stream: true });
+          this.stdoutLineBuffer += decoded;
+          let newlineIndex = this.stdoutLineBuffer.indexOf("\n");
+          while (newlineIndex >= 0) {
+            const line = this.stdoutLineBuffer.slice(0, newlineIndex);
+            this.stdoutLineBuffer = this.stdoutLineBuffer.slice(newlineIndex + 1);
+            handleWorkerLine(line);
+            newlineIndex = this.stdoutLineBuffer.indexOf("\n");
+          }
         }
+      } finally {
+        reader.releaseLock();
       }
     };
 
-    const pumpStderr = async (stream: ReadableStream<Uint8Array> | null) => {
+    const pumpStderr = async (stream: ReadableStream<Uint8Array> | null | undefined) => {
       if (!stream) return;
+      const reader = stream.getReader();
       const decoder = new TextDecoder();
-      for await (const chunk of stream) {
-        const decoded = decoder.decode(chunk, { stream: true });
-        if (decoded.trim()) {
-          console.error(`[terminal:${this.id}:pty-worker] ${decoded.trim()}`);
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          const decoded = decoder.decode(value, { stream: true });
+          if (decoded.trim()) {
+            console.error(`[terminal:${this.id}:pty-worker] ${decoded.trim()}`);
+          }
         }
+      } finally {
+        reader.releaseLock();
       }
     };
 
@@ -393,6 +414,7 @@ export class TerminalSession {
             cursor_blink?: boolean;
             cursor_row?: number;
             cursor_col?: number;
+            patch_kind?: "cursor-only" | "row-update" | "alt-row-update";
             mode?: "full" | "patch";
           }
         | null = null;
@@ -409,27 +431,34 @@ export class TerminalSession {
           cursor_blink?: boolean;
           cursor_row?: number;
           cursor_col?: number;
+          patch_kind?: "cursor-only" | "row-update" | "alt-row-update";
           mode?: "full" | "patch";
         };
       } catch {
         return;
       }
       if (message.type !== "frame" || !this.frameHandler) return;
+      this.bridgeFeedInFlight = false;
       const renderedVt = Buffer.from(message.vt_b64, "base64").toString("utf8");
-      const plain = Buffer.from(message.plain_b64, "base64").toString("utf8");
-      const previewLines = plain
-        .split(/\r?\n/)
-        .slice(-MAX_PREVIEW_LINES)
-        .map((entry) => entry.slice(0, 512));
+      const previewLines =
+        message.mode === "patch" && message.patch_kind === "cursor-only"
+          ? this.lastPreviewLines
+          : Buffer.from(message.plain_b64, "base64")
+              .toString("utf8")
+              .split(/\r?\n/)
+              .slice(-MAX_PREVIEW_LINES)
+              .map((entry) => entry.slice(0, 512));
+      this.lastPreviewLines = previewLines;
       this.cols = Math.max(2, Math.trunc(message.cols));
       this.rows = Math.max(2, Math.trunc(message.rows));
       this.frameHandler(
         this.snapshot(
-          "",
+          this.pendingBridgeChunk,
           message.mode === "patch" ? undefined : renderedVt,
           previewLines,
           message.alt_screen === true,
           message.mode === "patch" ? renderedVt : undefined,
+          message.patch_kind,
           message.cursor_visible,
           message.cursor_style,
           message.cursor_blink,
@@ -437,6 +466,10 @@ export class TerminalSession {
           message.cursor_col,
         ),
       );
+      this.pendingBridgeChunk = "";
+      if (this.pendingBridgeFeed.length > 0) {
+        this.scheduleBridgeFeedFlush();
+      }
     };
 
     const pumpBridgeStdout = async (stream: ReadableStream<Uint8Array> | null | undefined) => {
@@ -490,8 +523,10 @@ export class TerminalSession {
       void pumpBridgeStdout(typeof bridgeOut === "number" ? null : bridgeOut);
       void pumpBridgeStderr(typeof bridgeErr === "number" ? null : bridgeErr);
     }
-    void pumpStdout(this.processHandle.stdout);
-    void pumpStderr(this.processHandle.stderr);
+    const workerOut = this.processHandle.stdout;
+    const workerErr = this.processHandle.stderr;
+    void pumpStdout(typeof workerOut === "number" ? null : workerOut);
+    void pumpStderr(typeof workerErr === "number" ? null : workerErr);
   }
 
   onExit(cb: (exitCode: number) => void): void {
@@ -508,6 +543,7 @@ export class TerminalSession {
   resize(cols: number, rows: number): void {
     this.cols = Math.max(cols, 2);
     this.rows = Math.max(rows, 2);
+    this.flushPendingBridgeFeed();
     this.sendWorker({
       type: "resize",
       cols: this.cols,
@@ -537,6 +573,7 @@ export class TerminalSession {
   }
 
   kill(): void {
+    this.flushPendingBridgeFeed();
     this.sendWorker({ type: "kill" });
     this.sendBridge({ type: "kill" });
     this.ghosttyBridgeHandle?.kill();
@@ -549,6 +586,7 @@ export class TerminalSession {
     previewLines?: string[],
     altScreen?: boolean,
     renderPatchVt?: string,
+    renderPatchKind?: "cursor-only" | "row-update" | "alt-row-update",
     cursorVisible?: boolean,
     cursorStyle?: "block" | "underline" | "bar",
     cursorBlink?: boolean,
@@ -564,6 +602,7 @@ export class TerminalSession {
       cwd: this.cwd,
       renderVt,
       renderPatchVt,
+      renderPatchKind,
       altScreen,
       chunk,
       // UI heuristics only inspect the recent VT tail, so don't ship the whole buffer.
@@ -591,9 +630,35 @@ export class TerminalSession {
     stdin.write(`${JSON.stringify(message)}\n`);
   }
 
+  private scheduleBridgeFeedFlush(): void {
+    if (!this.ghosttyBridgeHandle) return;
+    if (this.bridgeFeedTimer) return;
+    this.bridgeFeedTimer = setTimeout(() => {
+      this.bridgeFeedTimer = null;
+      this.flushPendingBridgeFeed();
+    }, BRIDGE_FEED_BATCH_MS);
+  }
+
+  private flushPendingBridgeFeed(): void {
+    if (this.bridgeFeedTimer) {
+      clearTimeout(this.bridgeFeedTimer);
+      this.bridgeFeedTimer = null;
+    }
+    if (this.bridgeFeedInFlight) return;
+    if (!this.ghosttyBridgeHandle || this.pendingBridgeFeed.length === 0) return;
+    const payload = this.pendingBridgeFeed;
+    this.pendingBridgeFeed = "";
+    this.bridgeFeedInFlight = true;
+    this.sendBridge({
+      type: "feed",
+      data_b64: Buffer.from(payload, "utf8").toString("base64"),
+    });
+  }
+
   private emitExit(exitCode: number): void {
     if (this.hasExited) return;
     this.hasExited = true;
+    this.flushPendingBridgeFeed();
     for (const resolve of this.pendingCwdResolvers) resolve(this.cwd);
     this.pendingCwdResolvers.clear();
     this.exitHandler?.(exitCode);

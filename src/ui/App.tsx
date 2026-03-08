@@ -155,6 +155,7 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     cwd: frame.cwd,
     renderVt: frame.renderVt,
     renderPatchVt: frame.renderPatchVt,
+    renderPatchKind: frame.renderPatchKind,
     altScreen: frame.altScreen,
     chunk: frame.chunk,
     vt: "",
@@ -168,12 +169,33 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
   };
 }
 
+function coalesceQueuedRenderFrames(existing: TerminalFrame[], nextFrame: TerminalFrame): TerminalFrame[] {
+  if (nextFrame.renderVt) return [nextFrame];
+
+  if (nextFrame.renderPatchKind === "cursor-only") {
+    return [...existing.filter((queued) => queued.renderPatchKind !== "cursor-only"), nextFrame];
+  }
+
+  if (nextFrame.altScreen === true && nextFrame.renderPatchKind === "alt-row-update") {
+    return [
+      ...existing.filter(
+        (queued) =>
+          queued.renderVt ||
+          (queued.renderPatchKind !== "cursor-only" && queued.renderPatchKind !== "alt-row-update"),
+      ),
+      nextFrame,
+    ];
+  }
+
+  return [...existing.slice(-(MAX_FRAME_QUEUE_PER_PANE - 1)), nextFrame];
+}
+
 function App() {
   const [paneIds, setPaneIds] = useState<string[]>([FIRST_ID]);
   const [frames, setFrames] = useState<Record<string, TerminalFrame>>({});
   const [frameQueues, setFrameQueues] = useState<Record<string, TerminalFrame[]>>({});
   const [status, setStatus] = useState("Connecting...");
-  const [paneStatus, setPaneStatus] = useState<Record<string, "booting" | "running" | "exited" | "error">>({
+  const [, setPaneStatus] = useState<Record<string, "booting" | "running" | "exited" | "error">>({
     [FIRST_ID]: "booting",
   });
   const [dashboardConfig, setDashboardConfig] = useState<DashboardConfig>(() =>
@@ -191,6 +213,7 @@ function App() {
   const [stripWidth, setStripWidth] = useState(0);
   const [avatarStripWidth, setAvatarStripWidth] = useState(0);
   const activePaneRef = useRef(FIRST_ID);
+  const framesRef = useRef<Record<string, TerminalFrame>>({});
   const paneIdsRef = useRef<string[]>([FIRST_ID]);
   const nextPaneOrdinalRef = useRef(2);
   const launchConfigRef = useRef<LaunchConfig>({});
@@ -213,6 +236,10 @@ function App() {
   >({});
   const liveFolderAccentSlotsRef = useRef<Record<string, number>>({});
   const historicalFolderAccentSlotsRef = useRef<Record<string, number>>({});
+  const deferredCursorFramesRef = useRef<
+    Record<string, { activityFrame: TerminalFrame; renderFrame: TerminalFrame }>
+  >({});
+  const deferredCursorRafRef = useRef<number | null>(null);
   const bootstrappedRef = useRef(false);
   const hasLaunchConfigRef = useRef(false);
   const hasDashboardConfigRef = useRef(false);
@@ -222,6 +249,7 @@ function App() {
   const defaultPaneWidthRef = useRef(defaultPaneWidth);
 
   activePaneRef.current = activePane;
+  framesRef.current = frames;
   paneIdsRef.current = paneIds;
   defaultPaneWidthRef.current = defaultPaneWidth;
 
@@ -432,6 +460,66 @@ function App() {
     setStatus("Settings saved");
   }, []);
 
+  const flushDeferredCursorFrames = useCallback(() => {
+    deferredCursorRafRef.current = null;
+    const pending = deferredCursorFramesRef.current;
+    deferredCursorFramesRef.current = {};
+    const entries = Object.entries(pending);
+    if (entries.length === 0) return;
+
+    setFrames((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [id, { activityFrame }] of entries) {
+        const existing = prev[id];
+        if (!existing) {
+          next[id] = activityFrame;
+          changed = true;
+          continue;
+        }
+        next[id] = {
+          ...existing,
+          seq: activityFrame.seq,
+          cols: activityFrame.cols,
+          rows: activityFrame.rows,
+          cwd: activityFrame.cwd ?? existing.cwd,
+          altScreen: activityFrame.altScreen ?? existing.altScreen,
+          cursorVisible: activityFrame.cursorVisible,
+          cursorStyle: activityFrame.cursorStyle,
+          cursorBlink: activityFrame.cursorBlink,
+          cursorRow: activityFrame.cursorRow,
+          cursorCol: activityFrame.cursorCol,
+          shellBusy: activityFrame.shellBusy ?? existing.shellBusy,
+        };
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+
+    setFrameQueues((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [id, { renderFrame }] of entries) {
+        const existing = prev[id] ?? [];
+        next[id] = coalesceQueuedRenderFrames(existing, renderFrame);
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+
+    setPaneStatus((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [id] of entries) {
+        if (next[id] !== "running") {
+          next[id] = "running";
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
   useEffect(() => {
     const disposeReady = rpc.onReady(() => {
       setStatus("Connected");
@@ -458,6 +546,13 @@ function App() {
       const nowMs = Date.now();
       const activityFrame = compactFrameForActivity(frame);
       const renderFrame = compactFrameForRender(frame);
+      if (renderFrame.renderPatchKind === "cursor-only" && framesRef.current[frame.id]) {
+        deferredCursorFramesRef.current[frame.id] = { activityFrame, renderFrame };
+        if (deferredCursorRafRef.current == null) {
+          deferredCursorRafRef.current = window.requestAnimationFrame(flushDeferredCursorFrames);
+        }
+        return;
+      }
       const previousActivity = avatarActivityRef.current[frame.id];
       const displayState = resolveAvatarDisplayState(activityFrame, previousActivity, nowMs);
       // Preserve the last known agent kind even after identifying text scrolls off screen.
@@ -488,12 +583,14 @@ function App() {
               };
       setFrames((prev) => ({ ...prev, [frame.id]: activityFrame }));
       setAvatarStates((prev) => ({ ...prev, [frame.id]: displayState }));
-      setFrameQueues((prev) => ({
-        ...prev,
-        [frame.id]: renderFrame.renderVt
-          ? [renderFrame]
-          : [...(prev[frame.id] ?? []).slice(-(MAX_FRAME_QUEUE_PER_PANE - 1)), renderFrame],
-      }));
+      setFrameQueues((prev) => {
+        const existing = prev[frame.id] ?? [];
+        const nextQueue = coalesceQueuedRenderFrames(existing, renderFrame);
+        return {
+          ...prev,
+          [frame.id]: nextQueue,
+        };
+      });
       setPaneStatus((prev) => ({ ...prev, [frame.id]: "running" }));
       setStatus("Connected");
     });
@@ -551,6 +648,10 @@ function App() {
     armBootstrapFallback();
 
     return () => {
+      if (deferredCursorRafRef.current != null) {
+        window.cancelAnimationFrame(deferredCursorRafRef.current);
+        deferredCursorRafRef.current = null;
+      }
       if (bootstrapFallbackTimerRef.current) {
         window.clearTimeout(bootstrapFallbackTimerRef.current);
         bootstrapFallbackTimerRef.current = null;
@@ -563,7 +664,7 @@ function App() {
       disposeError();
       disposeExit();
     };
-  }, [armBootstrapFallback, maybeBootstrapTerminals, setActivePaneCentered]);
+  }, [armBootstrapFallback, flushDeferredCursorFrames, maybeBootstrapTerminals, setActivePaneCentered]);
 
   const handleFramesQueued = useCallback((id: string, lastSeq: number) => {
     setFrameQueues((prev) => {

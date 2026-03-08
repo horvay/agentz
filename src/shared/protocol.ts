@@ -25,6 +25,7 @@ export interface TerminalFrame {
   renderVt?: string;
   // Incremental VT patch from libghostty-vt for changed rows/cursor state.
   renderPatchVt?: string;
+  renderPatchKind?: "cursor-only" | "row-update" | "alt-row-update";
   // Whether Ghostty VT is currently on alternate screen buffer.
   altScreen?: boolean;
   chunk: string;
