@@ -19,6 +19,7 @@ pnpm-debug.log*
 dist/
 build/
 out/
+artifacts/
 
 # Native Zig artifacts
 src/native/.zig-cache/
