@@ -1,4 +1,4 @@
-import { BrowserWindow, Updater } from "electrobun/bun";
+import { BrowserWindow } from "electrobun/bun";
 import { startTerminalRpcServer } from "./server";
 import { createDashboardConfigManager } from "./configManager";
 import type { LaunchConfig } from "../shared/protocol";
@@ -43,12 +43,7 @@ function parseLaunchConfigFromEnv(): LaunchConfig | null {
 async function getMainViewUrl(): Promise<string> {
   // Opt-in only: avoid accidental hijack by any process on localhost:5173.
   const hmrEnabled = process.env.ELECTROBUN_HMR === "1";
-  if (!hmrEnabled) {
-    return "views://mainview/index.html";
-  }
-
-  const channel = await Updater.localInfo.channel();
-  if (channel === "dev") {
+  if (hmrEnabled) {
     try {
       await fetch(DEV_SERVER_URL, { method: "HEAD" });
       return DEV_SERVER_URL;

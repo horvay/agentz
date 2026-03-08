@@ -23,7 +23,8 @@ const archivePath = join(artifactDir, archiveName);
 const setupPath = join(artifactDir, setupName);
 
 if (!existsSync(archivePath)) {
-	throw new Error(`Portable archive not found at ${archivePath}`);
+	// `electrobun dev --watch` invokes postPackage without producing a portable archive.
+	process.exit(0);
 }
 
 const stagingDir = join(artifactDir, ".setup-staging");
@@ -41,9 +42,12 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ARCHIVE_NAME="${archiveName}"
 APP_IDENTIFIER="${appIdentifier}"
 CHANNEL="${buildEnv}"
+COMMAND_NAME="agentz"
 
 INSTALL_ROOT="\${XDG_DATA_HOME:-$HOME/.local/share}/$APP_IDENTIFIER/$CHANNEL"
 mkdir -p "$INSTALL_ROOT"
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR"
 
 TMP_DIR="$(mktemp -d)"
 cleanup() {
@@ -63,8 +67,23 @@ TARGET_DIR="$INSTALL_ROOT/$APP_DIR_NAME"
 rm -rf "$TARGET_DIR"
 mv "$TMP_DIR/$APP_DIR_NAME" "$TARGET_DIR"
 
+LAUNCHER_PATH="$TARGET_DIR/bin/launcher"
+WRAPPER_PATH="$BIN_DIR/$COMMAND_NAME"
+printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$LAUNCHER_PATH" > "$WRAPPER_PATH"
+chmod +x "$WRAPPER_PATH"
+
 echo "Installed to: $TARGET_DIR"
-echo "Run with: $TARGET_DIR/bin/launcher"
+echo "Launcher: $LAUNCHER_PATH"
+echo "Command installed to: $WRAPPER_PATH"
+case ":$PATH:" in
+  *":$BIN_DIR:"*)
+    echo "Run with: $COMMAND_NAME"
+    ;;
+  *)
+    echo "Run with: $WRAPPER_PATH"
+    echo "Note: add $BIN_DIR to your PATH to run '$COMMAND_NAME' directly."
+    ;;
+esac
 `;
 
 const readme = `${appName} Installer
@@ -77,6 +96,7 @@ To install ${appName}:
 
 The installer will:
 - Extract the app under ~/.local/share/${appIdentifier}/${buildEnv}/
+- Install a user launcher at ~/.local/bin/agentz
 - Print the exact launcher path to run
 `;
 

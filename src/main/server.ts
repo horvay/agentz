@@ -52,7 +52,7 @@ export function startTerminalRpcServer(
       close(ws) {
         clients.delete(ws);
       },
-      message(ws, incoming) {
+      async message(ws, incoming) {
         const parsed = parseMessage(String(incoming));
         if (!parsed) {
           send(ws, { type: "error", message: "Invalid JSON message" });
@@ -62,6 +62,10 @@ export function startTerminalRpcServer(
         try {
           switch (parsed.type) {
             case "create": {
+              const inheritedCwd =
+                !parsed.cwd && parsed.inheritCwdFromId
+                  ? await terminals.get(parsed.inheritCwdFromId)?.getCwd()
+                  : undefined;
               terminals.create(
                 parsed.id,
                 parsed.cols,
@@ -74,7 +78,7 @@ export function startTerminalRpcServer(
                 },
                 parsed.command,
                 parsed.args,
-                parsed.cwd,
+                parsed.cwd ?? inheritedCwd,
               );
               broadcast({ type: "terminal-created", id: parsed.id });
               break;
