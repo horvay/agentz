@@ -713,12 +713,27 @@ function App() {
   const avatarLayout = useMemo(() => {
     const chipWidth = 132;
     const edgePadding = 12;
-    const maxDistance = Math.max(activeAvatarIndex, paneIds.length - 1 - activeAvatarIndex);
     const usableHalf = Math.max(0, avatarStripWidth / 2 - chipWidth / 2 - edgePadding);
-    const centerGap = Math.min(96, usableHalf);
-    const laneStep =
-      maxDistance > 1 ? Math.max(12, (usableHalf - centerGap) / (maxDistance - 1)) : 0;
-    return { centerGap, laneStep };
+    const leftCount = activeAvatarIndex;
+    const rightCount = Math.max(0, paneIds.length - activeAvatarIndex - 1);
+    const edgeOffset = Math.max(0, usableHalf - 10);
+    const minCenterGap = chipWidth + 18;
+
+    const buildSide = (count: number) => {
+      if (count <= 0) return { base: 0, step: 0 };
+      if (count === 1) return { base: edgeOffset, step: 0 };
+
+      const availableSpan = Math.max(0, edgeOffset - minCenterGap);
+      const idealStep = chipWidth + 14;
+      const step = Math.min(idealStep, availableSpan / (count - 1));
+      const base = edgeOffset - step * (count - 1);
+      return { base, step };
+    };
+
+    return {
+      left: buildSide(leftCount),
+      right: buildSide(rightCount),
+    };
   }, [activeAvatarIndex, avatarStripWidth, paneIds.length]);
 
   return (
@@ -751,12 +766,16 @@ function App() {
             const isActive = activePane === id;
             const relative = index - activeAvatarIndex;
             const direction = relative === 0 ? 0 : relative > 0 ? 1 : -1;
-            const distance = Math.abs(relative);
+            const sideRank =
+              direction < 0 ? activeAvatarIndex - index - 1 : direction > 0 ? index - activeAvatarIndex - 1 : 0;
             const spread =
-              distance === 0
+              direction === 0
                 ? 0
-                : avatarLayout.centerGap + (distance - 1) * avatarLayout.laneStep;
+                : direction < 0
+                  ? avatarLayout.left.base + sideRank * avatarLayout.left.step
+                  : avatarLayout.right.base + sideRank * avatarLayout.right.step;
             const offset = direction * spread;
+            const distance = Math.abs(relative);
             const scale = isActive ? 1 : Math.max(0.72, 0.9 - distance * 0.11);
             const avatarStyle = {
               "--offset": `${offset}px`,
