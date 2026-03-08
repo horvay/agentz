@@ -10,6 +10,11 @@ import type { RpcClient } from "./rpcClient";
 import { doesEventMatchShortcut } from "./shortcuts";
 
 const RESIZE_DEBOUNCE_MS = 40;
+const CURSOR_FILL = "#ffe066";
+const CURSOR_TEXT = "#02060d";
+const TERMINAL_FONT_FAMILY = "JetBrainsMonoNerdFontMonoLocal, JetBrainsMono Nerd Font Mono, monospace";
+const TERMINAL_FONT_SIZE = 14;
+const TERMINAL_LINE_HEIGHT = 1.22;
 
 interface Props {
   id: string;
@@ -34,6 +39,13 @@ interface OverlayCursorState {
   width: number;
   height: number;
   char: string;
+}
+
+function shouldUseOverlayCursor(frame?: TerminalFrame): boolean {
+  if (!frame) return false;
+  if (typeof frame.cursorRow !== "number" || typeof frame.cursorCol !== "number") return false;
+  if (frame.altScreen !== true) return true;
+  return (frame.cursorStyle ?? "block") === "block";
 }
 
 export function TerminalPane({
@@ -100,7 +112,7 @@ export function TerminalPane({
       !terminal ||
       !host ||
       !stage ||
-      currentFrame?.altScreen === true ||
+      !shouldUseOverlayCursor(currentFrame) ||
       typeof currentFrame?.cursorRow !== "number" ||
       typeof currentFrame?.cursorCol !== "number"
     ) {
@@ -235,11 +247,11 @@ export function TerminalPane({
     enqueueRenderRef.current = enqueueRender;
 
     const terminal = new Terminal({
-      fontFamily: "JetBrainsMonoNerdFontMonoLocal, JetBrainsMono Nerd Font Mono, monospace",
-      fontSize: 14,
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: TERMINAL_FONT_SIZE,
       fontWeight: "400",
       fontWeightBold: "700",
-      lineHeight: 1.22,
+      lineHeight: TERMINAL_LINE_HEIGHT,
       letterSpacing: 0,
       cursorBlink: false,
       cursorStyle: "block",
@@ -251,8 +263,8 @@ export function TerminalPane({
       theme: {
         background: "#0a0f1a",
         foreground: "#d9e6ff",
-        cursor: "#ffe066",
-        cursorAccent: "#02060d",
+        cursor: CURSOR_FILL,
+        cursorAccent: CURSOR_TEXT,
         selectionBackground: "rgba(117, 219, 255, 0.25)",
         black: "#10131b",
         red: "#f07178",
@@ -410,8 +422,7 @@ export function TerminalPane({
       if (typeof frame.cursorBlink === "boolean") {
         terminal.options.cursorBlink = frame.cursorBlink;
       }
-      const useOverlayCursor =
-        frame.altScreen !== true && typeof frame.cursorRow === "number" && typeof frame.cursorCol === "number";
+      const useOverlayCursor = shouldUseOverlayCursor(frame);
       const cursorVisible = active && (frame.cursorVisible ?? true);
       const cursorSuffix =
         useOverlayCursor ? "\x1b[?25l" : cursorVisible ? "\x1b[?25h" : "\x1b[?25l";
@@ -530,9 +541,7 @@ export function TerminalPane({
     if (active) {
       terminalRef.current.focus();
       terminalRef.current.write(
-        currentFrame?.altScreen !== true &&
-        typeof currentFrame?.cursorRow === "number" &&
-        typeof currentFrame?.cursorCol === "number"
+        shouldUseOverlayCursor(currentFrame)
           ? "\x1b[?25l"
           : "\x1b[?25h",
       );
@@ -545,7 +554,24 @@ export function TerminalPane({
     }
     terminalRef.current.write("\x1b[?25l");
     terminalRef.current.blur();
-  }, [active, currentFrame?.cursorCol, currentFrame?.cursorRow]);
+  }, [active, currentFrame]);
+
+  const overlayCursorStyle: CSSProperties | undefined = overlayCursor
+    ? {
+        left: `${overlayCursor.left}px`,
+        top: `${overlayCursor.top}px`,
+        width: `${overlayCursor.width}px`,
+        height: `${overlayCursor.height}px`,
+        backgroundColor: overlayCursor.style === "block" ? CURSOR_FILL : undefined,
+        color: overlayCursor.style === "block" ? CURSOR_TEXT : undefined,
+        fontFamily: overlayCursor.style === "block" ? TERMINAL_FONT_FAMILY : undefined,
+        fontSize: overlayCursor.style === "block" ? `${TERMINAL_FONT_SIZE}px` : undefined,
+        lineHeight: overlayCursor.style === "block" ? TERMINAL_LINE_HEIGHT : undefined,
+        fontWeight: overlayCursor.style === "block" ? 400 : undefined,
+        paddingLeft: overlayCursor.style === "block" ? "1px" : undefined,
+        boxShadow: overlayCursor.style === "block" ? "inset 0 0 0 1px rgba(255, 216, 138, 0.22)" : undefined,
+      }
+    : undefined;
 
   return (
     <section className={`pane-shell ${active ? "pane-active" : ""}`} style={accentStyle}>
@@ -562,12 +588,7 @@ export function TerminalPane({
         {overlayCursor?.visible && (
           <div
             className={`terminal-cursor-overlay terminal-cursor-overlay-${overlayCursor.style}`}
-            style={{
-              left: `${overlayCursor.left}px`,
-              top: `${overlayCursor.top}px`,
-              width: `${overlayCursor.width}px`,
-              height: `${overlayCursor.height}px`,
-            }}
+            style={overlayCursorStyle}
             aria-hidden="true"
           >
             {overlayCursor.style === "block" ? overlayCursor.char || " " : null}
