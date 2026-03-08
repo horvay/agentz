@@ -8,6 +8,7 @@ export interface DashboardShortcuts {
   focusNextPane: string;
   movePaneLeft: string;
   movePaneRight: string;
+  closePane: string;
   openSettings: string;
 }
 
@@ -24,6 +25,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
     focusNextPane: "Ctrl+Shift+ArrowRight",
     movePaneLeft: "Ctrl+Alt+Shift+ArrowLeft",
     movePaneRight: "Ctrl+Alt+Shift+ArrowRight",
+    closePane: "Ctrl+Shift+W",
     openSettings: "Ctrl+Shift+P",
   },
 };
@@ -100,6 +102,7 @@ export function cloneDashboardConfig(config: DashboardConfig): DashboardConfig {
       focusNextPane: config.shortcuts.focusNextPane,
       movePaneLeft: config.shortcuts.movePaneLeft,
       movePaneRight: config.shortcuts.movePaneRight,
+      closePane: config.shortcuts.closePane,
       openSettings: config.shortcuts.openSettings,
     },
   };
@@ -148,6 +151,10 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
         typeof candidate.shortcuts.movePaneRight === "string"
           ? normalizeShortcutCombo(candidate.shortcuts.movePaneRight)
           : null;
+      const normalizedClosePane =
+        typeof candidate.shortcuts.closePane === "string"
+          ? normalizeShortcutCombo(candidate.shortcuts.closePane)
+          : null;
 
       shortcuts = {
         addPane: normalizedAddPane ?? defaults.shortcuts.addPane,
@@ -155,6 +162,7 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
         focusNextPane: normalizedFocusNext ?? defaults.shortcuts.focusNextPane,
         movePaneLeft: normalizedMovePrev ?? defaults.shortcuts.movePaneLeft,
         movePaneRight: normalizedMoveNext ?? defaults.shortcuts.movePaneRight,
+        closePane: normalizedClosePane ?? defaults.shortcuts.closePane,
         openSettings: normalizedOpenSettings ?? defaults.shortcuts.openSettings,
       };
     }

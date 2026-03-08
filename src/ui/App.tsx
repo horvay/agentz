@@ -419,6 +419,13 @@ function App() {
     setSettingsOpen(true);
   }, []);
 
+  const closeActivePane = useCallback(() => {
+    const id = activePaneRef.current;
+    if (!id) return;
+    rpc.send({ type: "kill", id });
+    setStatus(`Closing ${id}...`);
+  }, []);
+
   const saveDashboardConfig = useCallback((nextConfig: DashboardConfig) => {
     setDashboardConfig(nextConfig);
     rpc.send({ type: "set-config", config: nextConfig });
@@ -607,11 +614,16 @@ function App() {
       if (doesEventMatchShortcut(event, shortcuts.movePaneRight)) {
         event.preventDefault();
         reorderActivePane("right");
+        return;
+      }
+      if (doesEventMatchShortcut(event, shortcuts.closePane)) {
+        event.preventDefault();
+        closeActivePane();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [addTerminalPane, moveActivePane, openSettings, reorderActivePane, settingsOpen, shortcuts]);
+  }, [addTerminalPane, closeActivePane, moveActivePane, openSettings, reorderActivePane, settingsOpen, shortcuts]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -775,6 +787,10 @@ function App() {
               <span className="shortcut-divider">/</span>
               <kbd>{shortcuts.movePaneRight}</kbd>
             </span>
+            <span className="shortcut-pill">
+              <span className="shortcut-label">Close</span>
+              <kbd>{shortcuts.closePane}</kbd>
+            </span>
           </div>
         </div>
         <span className="topbar-spacer" />
@@ -878,6 +894,10 @@ function App() {
                 }
                 if (shortcut === "move-left" || shortcut === "move-right") {
                   reorderActivePane(shortcut === "move-right" ? "right" : "left");
+                  return;
+                }
+                if (shortcut === "close-pane") {
+                  closeActivePane();
                   return;
                 }
                 if (shortcut === "open-settings") {

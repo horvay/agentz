@@ -18,7 +18,7 @@ interface Props {
   shortcuts: DashboardShortcuts;
   onActivate: (id: string) => void;
   onShortcut: (
-    shortcut: "new-pane" | "focus-left" | "focus-right" | "move-left" | "move-right" | "open-settings",
+    shortcut: "new-pane" | "focus-left" | "focus-right" | "move-left" | "move-right" | "close-pane" | "open-settings",
   ) => void;
   onFramesQueued: (id: string, lastSeq: number) => void;
 }
@@ -252,6 +252,11 @@ export function TerminalPane({
       if (doesEventMatchShortcut(event, bindings.movePaneRight)) {
         event.preventDefault();
         shortcutHandlerRef.current("move-right");
+        return false;
+      }
+      if (doesEventMatchShortcut(event, bindings.closePane)) {
+        event.preventDefault();
+        shortcutHandlerRef.current("close-pane");
         return false;
       }
       if (doesEventMatchShortcut(event, bindings.openSettings)) {

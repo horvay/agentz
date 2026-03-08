@@ -45,6 +45,7 @@ GHOSTTY_DASHBOARD_DISABLE_X11_INPUT_NUDGE=1 bun run dev
 - The app starts with one or more terminal panes based on launch config (defaults to one).
 - Press `Ctrl+Shift+N` to open another terminal pane.
 - Press `Ctrl+Shift+Left` / `Ctrl+Shift+Right` to focus previous/next pane.
+- Press `Ctrl+Shift+W` to close the active terminal pane.
 - The focused pane is centered in the horizontal strip.
 - Drag each pane's right-edge resize handle to change its width (persisted per pane ID).
 

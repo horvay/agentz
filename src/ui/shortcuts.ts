@@ -6,6 +6,7 @@ export const SHORTCUT_FIELD_ORDER: Array<keyof DashboardShortcuts> = [
   "focusNextPane",
   "movePaneLeft",
   "movePaneRight",
+  "closePane",
   "openSettings",
 ];
 
@@ -15,6 +16,7 @@ export const SHORTCUT_FIELD_LABELS: Record<keyof DashboardShortcuts, string> = {
   focusNextPane: "Focus next pane",
   movePaneLeft: "Move pane left",
   movePaneRight: "Move pane right",
+  closePane: "Close pane",
   openSettings: "Open settings",
 };
 
