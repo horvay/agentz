@@ -227,6 +227,7 @@ export class TerminalSession {
   private stdoutLineBuffer = "";
   private bridgeLineBuffer = "";
   private hasExited = false;
+  private lastAltScreen = false;
   private pendingCwdResolvers = new Set<(cwd?: string) => void>();
 
   constructor(
@@ -329,7 +330,11 @@ export class TerminalSession {
           this.vtBuffer = this.vtBuffer.slice(-MAX_VT_CHARS);
         }
         if (this.ghosttyBridgeHandle) {
-          this.pendingBridgeChunk += decoded;
+          if (this.lastAltScreen) {
+            this.pendingBridgeChunk += decoded;
+          } else {
+            cb(this.snapshot(decoded, undefined, undefined, false));
+          }
           this.pendingBridgeFeed += decoded;
           this.scheduleBridgeFeedFlush();
         } else {
@@ -448,6 +453,7 @@ export class TerminalSession {
       }
       if (message.type !== "frame" || !this.frameHandler) return;
       this.bridgeFeedInFlight = false;
+      this.lastAltScreen = message.alt_screen === true;
       const renderedVt = Buffer.from(message.vt_b64, "base64").toString("utf8");
       const previewLines =
         message.mode === "patch" && message.patch_kind === "cursor-only"
@@ -462,11 +468,11 @@ export class TerminalSession {
       this.rows = Math.max(2, Math.trunc(message.rows));
       this.frameHandler(
         this.snapshot(
-          this.pendingBridgeChunk,
-          message.mode === "patch" ? undefined : renderedVt,
+          this.lastAltScreen ? this.pendingBridgeChunk : "",
+          this.lastAltScreen && message.mode !== "patch" ? renderedVt : undefined,
           previewLines,
-          message.alt_screen === true,
-          message.mode === "patch" ? renderedVt : undefined,
+          this.lastAltScreen,
+          this.lastAltScreen && message.mode === "patch" ? renderedVt : undefined,
           message.patch_kind,
           message.cursor_visible,
           message.cursor_style,

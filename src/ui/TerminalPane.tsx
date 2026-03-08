@@ -51,8 +51,7 @@ interface InputModeState {
 function shouldUseOverlayCursor(frame?: TerminalFrame): boolean {
   if (!frame) return false;
   if (typeof frame.cursorRow !== "number" || typeof frame.cursorCol !== "number") return false;
-  if (frame.altScreen !== true) return true;
-  return (frame.cursorStyle ?? "block") === "block";
+  return frame.altScreen === true && (frame.cursorStyle ?? "block") === "block";
 }
 
 function getInputModeState(frame?: TerminalFrame): InputModeState | null {
@@ -484,28 +483,34 @@ export function TerminalPane({
         Boolean(frame.chunk) &&
         (frame.renderPatchKind === "cursor-only" || frame.renderPatchKind === "alt-row-update");
 
-      if (usePrimaryChunkFastPath || useAltScreenChunkFastPath) {
-        const payload = `${inputModePrefix}${frame.chunk}${cursorSuffix}`;
+      let transition = "";
+      const altScreen = frame.altScreen === true;
+      const wasAltScreenActive = altBufferActiveRef.current;
+      if (altScreen && !wasAltScreenActive) {
+        transition = "\x1b[?1049h\x1b[H\x1b[2J";
+        altBufferActiveRef.current = true;
+      } else if (!altScreen && wasAltScreenActive) {
+        transition = "\x1b[?1049l\x1b[H\x1b[2J";
+        altBufferActiveRef.current = false;
+      } else if (altScreen) {
+        altBufferActiveRef.current = true;
+      }
+
+      if (usePrimaryChunkFastPath) {
+        const payload = `${transition}${inputModePrefix}${frame.chunk}${cursorSuffix}`;
+        enqueueRenderRef.current(payload, {
+          patchKind: frame.renderPatchKind,
+        });
+      } else if (useAltScreenChunkFastPath) {
+        const payload = `${transition}${inputModePrefix}${frame.chunk}${cursorSuffix}`;
         enqueueRenderRef.current(payload, {
           patchKind: frame.renderPatchKind,
         });
       } else if (frame.renderPatchVt) {
-        enqueueRenderRef.current(`${inputModePrefix}${frame.renderPatchVt}${cursorSuffix}`, {
+        enqueueRenderRef.current(`${transition}${inputModePrefix}${frame.renderPatchVt}${cursorSuffix}`, {
           patchKind: frame.renderPatchKind,
         });
       } else if (frame.renderVt) {
-        let transition = "";
-        const altScreen = frame.altScreen === true;
-        const wasAltScreenActive = altBufferActiveRef.current;
-        if (altScreen && !wasAltScreenActive) {
-          transition = "\x1b[?1049h\x1b[H\x1b[2J";
-          altBufferActiveRef.current = true;
-        } else if (!altScreen && wasAltScreenActive) {
-          transition = "\x1b[?1049l\x1b[H\x1b[2J";
-          altBufferActiveRef.current = false;
-        } else if (altScreen) {
-          altBufferActiveRef.current = true;
-        }
         const framePrefix = altScreen ? "" : "\x1b[H\x1b[2J";
         const payload = `${transition}${inputModePrefix}${framePrefix}${frame.renderVt}${cursorSuffix}`;
         enqueueRenderRef.current(payload, {
