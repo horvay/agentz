@@ -367,7 +367,13 @@ function App() {
     }
     const id = `term-${nextOrdinal}`;
     nextPaneOrdinalRef.current = nextOrdinal + 1;
-    setPaneIds((prev) => [...prev, id]);
+    setPaneIds((prev) => {
+      const activeIndex = prev.indexOf(activePaneRef.current);
+      if (activeIndex < 0) return [...prev, id];
+      const next = [...prev];
+      next.splice(activeIndex + 1, 0, id);
+      return next;
+    });
     setPaneStatus((prev) => ({ ...prev, [id]: "booting" }));
     setPaneWidths((prev) => ({ ...prev, [id]: defaultPaneWidth }));
     setPaneAvatarIds((prev) => {
@@ -392,6 +398,33 @@ function App() {
       setActivePaneCentered(paneIdsRef.current[nextIndex]);
     },
     [setActivePaneCentered],
+  );
+
+  const reorderActivePane = useCallback(
+    (direction: "left" | "right") => {
+      const ids = paneIdsRef.current;
+      if (ids.length < 2) return;
+      const currentIndex = ids.indexOf(activePaneRef.current);
+      if (currentIndex < 0) return;
+      const targetIndex = direction === "left" ? currentIndex - 1 : currentIndex + 1;
+      if (targetIndex < 0 || targetIndex >= ids.length) return;
+
+      setPaneIds((prev) => {
+        const from = prev.indexOf(activePaneRef.current);
+        if (from < 0) return prev;
+        const to = direction === "left" ? from - 1 : from + 1;
+        if (to < 0 || to >= prev.length) return prev;
+        const next = [...prev];
+        const [moved] = next.splice(from, 1);
+        next.splice(to, 0, moved);
+        return next;
+      });
+
+      requestAnimationFrame(() => {
+        centerPane(activePaneRef.current, "smooth");
+      });
+    },
+    [centerPane],
   );
 
   const openSettings = useCallback(() => {
@@ -576,11 +609,21 @@ function App() {
       if (doesEventMatchShortcut(event, shortcuts.focusNextPane)) {
         event.preventDefault();
         moveActivePane("right");
+        return;
+      }
+      if (doesEventMatchShortcut(event, shortcuts.movePaneLeft)) {
+        event.preventDefault();
+        reorderActivePane("left");
+        return;
+      }
+      if (doesEventMatchShortcut(event, shortcuts.movePaneRight)) {
+        event.preventDefault();
+        reorderActivePane("right");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [addTerminalPane, moveActivePane, openSettings, settingsOpen, shortcuts]);
+  }, [addTerminalPane, moveActivePane, openSettings, reorderActivePane, settingsOpen, shortcuts]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -684,7 +727,8 @@ function App() {
         <span className="status-chip">{connectedLabel}</span>
         <span className="status-metric">
           {paneIds.length} panes · {frameCount} active frames · {shortcuts.addPane} add ·{" "}
-          {shortcuts.focusPrevPane}/{shortcuts.focusNextPane} focus
+          {shortcuts.focusPrevPane}/{shortcuts.focusNextPane} focus · {shortcuts.movePaneLeft}/
+          {shortcuts.movePaneRight} move
         </span>
         <span className="topbar-spacer" />
         <button type="button" className="topbar-settings-button" onClick={openSettings}>
@@ -778,6 +822,10 @@ function App() {
               onShortcut={(shortcut) => {
                 if (shortcut === "new-pane") {
                   addTerminalPane();
+                  return;
+                }
+                if (shortcut === "move-left" || shortcut === "move-right") {
+                  reorderActivePane(shortcut === "move-right" ? "right" : "left");
                   return;
                 }
                 if (shortcut === "open-settings") {

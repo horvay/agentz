@@ -6,6 +6,8 @@ export interface DashboardShortcuts {
   addPane: string;
   focusPrevPane: string;
   focusNextPane: string;
+  movePaneLeft: string;
+  movePaneRight: string;
   openSettings: string;
 }
 
@@ -20,6 +22,8 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
     addPane: "Ctrl+Shift+N",
     focusPrevPane: "Ctrl+Shift+ArrowLeft",
     focusNextPane: "Ctrl+Shift+ArrowRight",
+    movePaneLeft: "Ctrl+Alt+Shift+ArrowLeft",
+    movePaneRight: "Ctrl+Alt+Shift+ArrowRight",
     openSettings: "Ctrl+Shift+P",
   },
 };
@@ -94,6 +98,8 @@ export function cloneDashboardConfig(config: DashboardConfig): DashboardConfig {
       addPane: config.shortcuts.addPane,
       focusPrevPane: config.shortcuts.focusPrevPane,
       focusNextPane: config.shortcuts.focusNextPane,
+      movePaneLeft: config.shortcuts.movePaneLeft,
+      movePaneRight: config.shortcuts.movePaneRight,
       openSettings: config.shortcuts.openSettings,
     },
   };
@@ -134,11 +140,21 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
         typeof candidate.shortcuts.openSettings === "string"
           ? normalizeShortcutCombo(candidate.shortcuts.openSettings)
           : null;
+      const normalizedMovePrev =
+        typeof candidate.shortcuts.movePaneLeft === "string"
+          ? normalizeShortcutCombo(candidate.shortcuts.movePaneLeft)
+          : null;
+      const normalizedMoveNext =
+        typeof candidate.shortcuts.movePaneRight === "string"
+          ? normalizeShortcutCombo(candidate.shortcuts.movePaneRight)
+          : null;
 
       shortcuts = {
         addPane: normalizedAddPane ?? defaults.shortcuts.addPane,
         focusPrevPane: normalizedFocusPrev ?? defaults.shortcuts.focusPrevPane,
         focusNextPane: normalizedFocusNext ?? defaults.shortcuts.focusNextPane,
+        movePaneLeft: normalizedMovePrev ?? defaults.shortcuts.movePaneLeft,
+        movePaneRight: normalizedMoveNext ?? defaults.shortcuts.movePaneRight,
         openSettings: normalizedOpenSettings ?? defaults.shortcuts.openSettings,
       };
     }
