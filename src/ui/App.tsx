@@ -14,6 +14,11 @@ import { TerminalPane } from "./TerminalPane";
 import type { AvatarDefinition, AvatarId, AvatarVisualState } from "./avatarCatalog";
 import { avatarCatalog } from "./avatarCatalog";
 import { inspectAvatarState, resolveAvatarDisplayState, type AgentKind } from "./avatarState";
+import {
+  FOLDER_ACCENT_PALETTE,
+  folderAccentKey,
+  resolveFolderAccentAssignments,
+} from "./folderAccent";
 import { doesEventMatchShortcut } from "./shortcuts";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
@@ -101,33 +106,6 @@ function folderLabel(cwd?: string): string {
   return segments[segments.length - 1] ?? "/";
 }
 
-function colorHash(input: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-const FOLDER_ACCENT_PALETTE = [
-  { hue: 194, saturation: 92, lightness: 66 },
-  { hue: 147, saturation: 78, lightness: 58 },
-  { hue: 31, saturation: 95, lightness: 64 },
-  { hue: 331, saturation: 88, lightness: 68 },
-  { hue: 264, saturation: 86, lightness: 71 },
-  { hue: 84, saturation: 84, lightness: 60 },
-  { hue: 221, saturation: 90, lightness: 66 },
-  { hue: 54, saturation: 96, lightness: 68 },
-  { hue: 3, saturation: 90, lightness: 66 },
-  { hue: 171, saturation: 82, lightness: 56 },
-] as const;
-
-function hueDistance(a: number, b: number): number {
-  const raw = Math.abs(a - b) % 360;
-  return Math.min(raw, 360 - raw);
-}
-
 function accentVars(accent: (typeof FOLDER_ACCENT_PALETTE)[number]): CSSProperties {
   const { hue, saturation, lightness } = accent;
   return {
@@ -136,64 +114,6 @@ function accentVars(accent: (typeof FOLDER_ACCENT_PALETTE)[number]): CSSProperti
     "--folder-accent-border": `hsl(${hue} ${Math.max(62, saturation - 6)}% ${Math.max(44, lightness - 14)}% / 0.82)`,
     "--folder-accent-glow": `hsl(${hue} ${Math.max(70, saturation - 4)}% ${lightness}% / 0.42)`,
   } as CSSProperties;
-}
-
-function resolveFolderAccentMap(
-  paneIds: string[],
-  frames: Record<string, TerminalFrame>,
-): Record<string, CSSProperties> {
-  const uniqueFolders = Array.from(
-    new Set(
-      paneIds.map((id) => {
-        const cwd = frames[id]?.cwd;
-        return cwd && cwd.length > 0 ? cwd : "unknown-folder";
-      }),
-    ),
-  ).sort((a, b) => colorHash(a) - colorHash(b) || a.localeCompare(b));
-
-  const assigned = new Map<string, CSSProperties>();
-  const usedSlots = new Set<number>();
-
-  for (const folder of uniqueFolders) {
-    const preferred = colorHash(folder) % FOLDER_ACCENT_PALETTE.length;
-    let selected = preferred;
-
-    if (usedSlots.size > 0) {
-      let bestScore = -1;
-      let bestTieBreaker = Number.POSITIVE_INFINITY;
-      for (let candidate = 0; candidate < FOLDER_ACCENT_PALETTE.length; candidate += 1) {
-        if (usedSlots.has(candidate)) continue;
-        const candidateHue = FOLDER_ACCENT_PALETTE[candidate].hue;
-        let minDistance = Number.POSITIVE_INFINITY;
-        for (const used of usedSlots) {
-          minDistance = Math.min(
-            minDistance,
-            hueDistance(candidateHue, FOLDER_ACCENT_PALETTE[used].hue),
-          );
-        }
-        const tieBreaker = hueDistance(candidateHue, FOLDER_ACCENT_PALETTE[preferred].hue);
-        if (
-          minDistance > bestScore ||
-          (minDistance === bestScore && tieBreaker < bestTieBreaker)
-        ) {
-          bestScore = minDistance;
-          bestTieBreaker = tieBreaker;
-          selected = candidate;
-        }
-      }
-    }
-
-    usedSlots.add(selected);
-    assigned.set(folder, accentVars(FOLDER_ACCENT_PALETTE[selected]));
-  }
-
-  const out: Record<string, CSSProperties> = {};
-  for (const id of paneIds) {
-    const cwd = frames[id]?.cwd;
-    const key = cwd && cwd.length > 0 ? cwd : "unknown-folder";
-    out[id] = assigned.get(key) ?? accentVars(FOLDER_ACCENT_PALETTE[0]);
-  }
-  return out;
 }
 
 function isEditableEventTarget(target: EventTarget | null): boolean {
@@ -291,6 +211,8 @@ function App() {
       }
     >
   >({});
+  const liveFolderAccentSlotsRef = useRef<Record<string, number>>({});
+  const historicalFolderAccentSlotsRef = useRef<Record<string, number>>({});
   const bootstrappedRef = useRef(false);
   const hasLaunchConfigRef = useRef(false);
   const hasDashboardConfigRef = useRef(false);
@@ -809,7 +731,24 @@ function App() {
       right: buildSide(rightCount),
     };
   }, [activeAvatarIndex, avatarStripWidth, paneIds.length]);
-  const paneAccentStyles = useMemo(() => resolveFolderAccentMap(paneIds, frames), [frames, paneIds]);
+  const paneAccentStyles = useMemo(() => {
+    const folderKeys = paneIds.map((id) => folderAccentKey(frames[id]?.cwd));
+    const next = resolveFolderAccentAssignments(
+      folderKeys,
+      liveFolderAccentSlotsRef.current,
+      historicalFolderAccentSlotsRef.current,
+    );
+    liveFolderAccentSlotsRef.current = next.liveAssignments;
+    historicalFolderAccentSlotsRef.current = next.historicalAssignments;
+
+    const out: Record<string, CSSProperties> = {};
+    for (const id of paneIds) {
+      const key = folderAccentKey(frames[id]?.cwd);
+      const slot = next.liveAssignments[key] ?? 0;
+      out[id] = accentVars(FOLDER_ACCENT_PALETTE[slot]);
+    }
+    return out;
+  }, [frames, paneIds]);
 
   return (
     <main className="app-shell">
