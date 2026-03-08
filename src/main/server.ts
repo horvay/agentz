@@ -88,7 +88,7 @@ export function startTerminalRpcServer(
               break;
             }
             case "input": {
-              terminals.get(parsed.id)?.input(parsed.data);
+              terminals.get(parsed.id)?.input(parsed.data, parsed.encoding);
               break;
             }
             case "snapshot": {

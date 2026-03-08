@@ -27,6 +27,10 @@ const FrameMessage = struct {
     cursor_blink: bool,
     cursor_row: u16,
     cursor_col: u16,
+    mouse_tracking_mode: []const u8,
+    mouse_format: []const u8,
+    focus_event: bool,
+    mouse_alternate_scroll: bool,
 };
 
 const OwnedRows = std.ArrayList([]u8);
@@ -268,6 +272,22 @@ fn writeFrame(
             .cursor_blink = term.modes.get(.cursor_blinking),
             .cursor_row = @as(u16, @intCast(term.screens.active.cursor.y)) + 1,
             .cursor_col = @as(u16, @intCast(term.screens.active.cursor.x)) + 1,
+            .mouse_tracking_mode = switch (term.flags.mouse_event) {
+                .none => "none",
+                .x10 => "x10",
+                .normal => "normal",
+                .button => "button",
+                .any => "any",
+            },
+            .mouse_format = switch (term.flags.mouse_format) {
+                .x10 => "x10",
+                .utf8 => "utf8",
+                .sgr => "sgr",
+                .urxvt => "urxvt",
+                .sgr_pixels => "sgr-pixels",
+            },
+            .focus_event = term.modes.get(.focus_event),
+            .mouse_alternate_scroll = term.modes.get(.mouse_alternate_scroll),
         },
         .{},
         stdout_writer,

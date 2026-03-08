@@ -143,6 +143,10 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     cursorBlink: frame.cursorBlink,
     cursorRow: frame.cursorRow,
     cursorCol: frame.cursorCol,
+    mouseTrackingMode: frame.mouseTrackingMode,
+    mouseFormat: frame.mouseFormat,
+    focusEvent: frame.focusEvent,
+    mouseAlternateScroll: frame.mouseAlternateScroll,
   };
 }
 
@@ -165,6 +169,10 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     cursorBlink: frame.cursorBlink,
     cursorRow: frame.cursorRow,
     cursorCol: frame.cursorCol,
+    mouseTrackingMode: frame.mouseTrackingMode,
+    mouseFormat: frame.mouseFormat,
+    focusEvent: frame.focusEvent,
+    mouseAlternateScroll: frame.mouseAlternateScroll,
     shellBusy: frame.shellBusy,
   };
 }

@@ -37,6 +37,10 @@ export interface TerminalFrame {
   cursorBlink?: boolean;
   cursorRow?: number;
   cursorCol?: number;
+  mouseTrackingMode?: "none" | "x10" | "normal" | "button" | "any";
+  mouseFormat?: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
+  focusEvent?: boolean;
+  mouseAlternateScroll?: boolean;
   // True when the interactive shell in this PTY currently has a live child process.
   shellBusy?: boolean;
 }
@@ -62,6 +66,7 @@ export type ClientMessage =
       type: "input";
       id: TerminalId;
       data: string;
+      encoding?: "utf8" | "binary";
     }
   | {
       type: "snapshot";

@@ -150,8 +150,9 @@ rl.on("line", (line) => {
     return;
   }
   if (message.type === "input" && typeof message.data === "string") {
-    const input = Buffer.from(message.data, "base64").toString("utf8");
-    term.write(input);
+    const encoding = message.encoding === "binary" ? "binary" : "utf8";
+    const input = Buffer.from(message.data, "base64");
+    term.write(encoding === "binary" ? input : input.toString("utf8"));
     setTimeout(() => publishBusyState(false), 50);
     setTimeout(() => publishBusyState(false), 250);
     return;
@@ -415,6 +416,10 @@ export class TerminalSession {
             cursor_row?: number;
             cursor_col?: number;
             patch_kind?: "cursor-only" | "row-update" | "alt-row-update";
+            mouse_tracking_mode?: "none" | "x10" | "normal" | "button" | "any";
+            mouse_format?: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
+            focus_event?: boolean;
+            mouse_alternate_scroll?: boolean;
             mode?: "full" | "patch";
           }
         | null = null;
@@ -432,6 +437,10 @@ export class TerminalSession {
           cursor_row?: number;
           cursor_col?: number;
           patch_kind?: "cursor-only" | "row-update" | "alt-row-update";
+          mouse_tracking_mode?: "none" | "x10" | "normal" | "button" | "any";
+          mouse_format?: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
+          focus_event?: boolean;
+          mouse_alternate_scroll?: boolean;
           mode?: "full" | "patch";
         };
       } catch {
@@ -464,6 +473,10 @@ export class TerminalSession {
           message.cursor_blink,
           message.cursor_row,
           message.cursor_col,
+          message.mouse_tracking_mode,
+          message.mouse_format,
+          message.focus_event,
+          message.mouse_alternate_scroll,
         ),
       );
       this.pendingBridgeChunk = "";
@@ -533,10 +546,11 @@ export class TerminalSession {
     this.exitHandler = cb;
   }
 
-  input(data: string): void {
+  input(data: string, encoding: "utf8" | "binary" = "utf8"): void {
     this.sendWorker({
       type: "input",
-      data: Buffer.from(data, "utf8").toString("base64"),
+      data: Buffer.from(data, encoding).toString("base64"),
+      encoding,
     });
   }
 
@@ -592,6 +606,10 @@ export class TerminalSession {
     cursorBlink?: boolean,
     cursorRow?: number,
     cursorCol?: number,
+    mouseTrackingMode?: "none" | "x10" | "normal" | "button" | "any",
+    mouseFormat?: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels",
+    focusEvent?: boolean,
+    mouseAlternateScroll?: boolean,
   ): TerminalFrame {
     this.seq += 1;
     return {
@@ -613,6 +631,10 @@ export class TerminalSession {
       cursorBlink,
       cursorRow,
       cursorCol,
+      mouseTrackingMode,
+      mouseFormat,
+      focusEvent,
+      mouseAlternateScroll,
       shellBusy: this.shellBusy,
     };
   }

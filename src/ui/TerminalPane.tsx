@@ -41,11 +41,58 @@ interface OverlayCursorState {
   char: string;
 }
 
+interface InputModeState {
+  mouseTrackingMode: "none" | "x10" | "normal" | "button" | "any";
+  mouseFormat: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
+  focusEvent: boolean;
+  mouseAlternateScroll: boolean;
+}
+
 function shouldUseOverlayCursor(frame?: TerminalFrame): boolean {
   if (!frame) return false;
   if (typeof frame.cursorRow !== "number" || typeof frame.cursorCol !== "number") return false;
   if (frame.altScreen !== true) return true;
   return (frame.cursorStyle ?? "block") === "block";
+}
+
+function getInputModeState(frame?: TerminalFrame): InputModeState | null {
+  if (!frame) return null;
+  if (
+    !frame.mouseTrackingMode &&
+    !frame.mouseFormat &&
+    typeof frame.focusEvent !== "boolean" &&
+    typeof frame.mouseAlternateScroll !== "boolean"
+  ) {
+    return null;
+  }
+
+  return {
+    mouseTrackingMode: frame.mouseTrackingMode ?? "none",
+    mouseFormat: frame.mouseFormat ?? "x10",
+    focusEvent: frame.focusEvent === true,
+    mouseAlternateScroll: frame.mouseAlternateScroll === true,
+  };
+}
+
+function buildInputModePrefix(next: InputModeState, previous?: InputModeState | null): string {
+  const privateMode = (code: number, enabled: boolean) => `\x1b[?${code}${enabled ? "h" : "l"}`;
+  const writes: string[] = [];
+  const writeIfChanged = (code: number, enabled: boolean, prevEnabled: boolean | undefined) => {
+    if (prevEnabled === enabled) return;
+    writes.push(privateMode(code, enabled));
+  };
+
+  writeIfChanged(9, next.mouseTrackingMode === "x10", previous?.mouseTrackingMode === "x10");
+  writeIfChanged(1000, next.mouseTrackingMode === "normal", previous?.mouseTrackingMode === "normal");
+  writeIfChanged(1002, next.mouseTrackingMode === "button", previous?.mouseTrackingMode === "button");
+  writeIfChanged(1003, next.mouseTrackingMode === "any", previous?.mouseTrackingMode === "any");
+  writeIfChanged(1004, next.focusEvent, previous?.focusEvent);
+  writeIfChanged(1005, next.mouseFormat === "utf8", previous?.mouseFormat === "utf8");
+  writeIfChanged(1006, next.mouseFormat === "sgr", previous?.mouseFormat === "sgr");
+  writeIfChanged(1007, next.mouseAlternateScroll, previous?.mouseAlternateScroll);
+  writeIfChanged(1015, next.mouseFormat === "urxvt", previous?.mouseFormat === "urxvt");
+  writeIfChanged(1016, next.mouseFormat === "sgr-pixels", previous?.mouseFormat === "sgr-pixels");
+  return writes.join("");
 }
 
 export function TerminalPane({
@@ -73,6 +120,7 @@ export function TerminalPane({
   const syncOutputActiveRef = useRef(false);
   const syncOutputBufferRef = useRef("");
   const syncOutputTimeoutRef = useRef<number | null>(null);
+  const lastInputModeStateRef = useRef<InputModeState | null>(null);
   const renderQueueRef = useRef<
     Array<{
       payload: string;
@@ -96,11 +144,9 @@ export function TerminalPane({
   const renderInFlightRef = useRef(false);
   const lastAppliedRenderRef = useRef<string>("");
   const altBufferActiveRef = useRef(false);
-  const activeRef = useRef(active);
   const shortcutHandlerRef = useRef(onShortcut);
   const shortcutsRef = useRef(shortcuts);
   const [overlayCursor, setOverlayCursor] = useState<OverlayCursorState | null>(null);
-  activeRef.current = active;
   shortcutHandlerRef.current = onShortcut;
   shortcutsRef.current = shortcuts;
 
@@ -197,9 +243,6 @@ export function TerminalPane({
           lastAppliedRenderRef.current = "";
         }
         scheduleFullRefresh();
-        if (activeRef.current) {
-          terminalRef.current?.focus();
-        }
         flushRenderQueue();
       });
     };
@@ -372,15 +415,17 @@ export function TerminalPane({
 
     fitAndSync();
 
-    terminal.onData((data) => rpc.send({ type: "input", id, data }));
+    terminal.onData((data) => rpc.send({ type: "input", id, data, encoding: "utf8" }));
+    terminal.onBinary((data) => rpc.send({ type: "input", id, data, encoding: "binary" }));
     terminal.onResize((size) => queueResizeSync(size.cols, size.rows));
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
-    syncedSizeRef.current = false;
-    renderQueueRef.current = [];
-    lastAppliedRenderRef.current = "";
-    altBufferActiveRef.current = false;
+      syncedSizeRef.current = false;
+      renderQueueRef.current = [];
+      lastAppliedRenderRef.current = "";
+      altBufferActiveRef.current = false;
+      lastInputModeStateRef.current = null;
 
     const onWindowResize = () => fitAndSync();
     const resizeObserver = new ResizeObserver(() => fitAndSync());
@@ -424,6 +469,13 @@ export function TerminalPane({
       }
       const useOverlayCursor = shouldUseOverlayCursor(frame);
       const cursorVisible = active && (frame.cursorVisible ?? true);
+      const nextInputModeState = getInputModeState(frame);
+      const inputModePrefix = nextInputModeState
+        ? buildInputModePrefix(nextInputModeState, lastInputModeStateRef.current)
+        : "";
+      if (nextInputModeState) {
+        lastInputModeStateRef.current = nextInputModeState;
+      }
       const cursorSuffix =
         useOverlayCursor ? "\x1b[?25l" : cursorVisible ? "\x1b[?25h" : "\x1b[?25l";
       const useAltScreenChunkFastPath =
@@ -432,12 +484,12 @@ export function TerminalPane({
         (frame.renderPatchKind === "cursor-only" || frame.renderPatchKind === "alt-row-update");
 
       if (useAltScreenChunkFastPath) {
-        const payload = `${frame.chunk}${cursorSuffix}`;
+        const payload = `${inputModePrefix}${frame.chunk}${cursorSuffix}`;
         enqueueRenderRef.current(payload, {
           patchKind: frame.renderPatchKind,
         });
       } else if (frame.renderPatchVt) {
-        enqueueRenderRef.current(`${frame.renderPatchVt}${cursorSuffix}`, {
+        enqueueRenderRef.current(`${inputModePrefix}${frame.renderPatchVt}${cursorSuffix}`, {
           patchKind: frame.renderPatchKind,
         });
       } else if (frame.renderVt) {
@@ -454,7 +506,7 @@ export function TerminalPane({
           altBufferActiveRef.current = true;
         }
         const framePrefix = altScreen ? "" : "\x1b[H\x1b[2J";
-        const payload = `${transition}${framePrefix}${frame.renderVt}${cursorSuffix}`;
+        const payload = `${transition}${inputModePrefix}${framePrefix}${frame.renderVt}${cursorSuffix}`;
         enqueueRenderRef.current(payload, {
           reset: false,
           dedupeKey: payload,
@@ -540,11 +592,6 @@ export function TerminalPane({
     if (!terminalRef.current) return;
     if (active) {
       terminalRef.current.focus();
-      terminalRef.current.write(
-        shouldUseOverlayCursor(currentFrame)
-          ? "\x1b[?25l"
-          : "\x1b[?25h",
-      );
       const focusRaf = requestAnimationFrame(() => {
         terminalRef.current?.focus();
       });
@@ -554,6 +601,15 @@ export function TerminalPane({
     }
     terminalRef.current.write("\x1b[?25l");
     terminalRef.current.blur();
+  }, [active]);
+
+  useEffect(() => {
+    if (!terminalRef.current) return;
+    terminalRef.current.write(
+      active && !shouldUseOverlayCursor(currentFrame)
+        ? "\x1b[?25h"
+        : "\x1b[?25l",
+    );
   }, [active, currentFrame]);
 
   const overlayCursorStyle: CSSProperties | undefined = overlayCursor
@@ -578,6 +634,10 @@ export function TerminalPane({
       <div
         ref={stageRef}
         className="terminal-stage"
+        onMouseDownCapture={() => {
+          if (!active) onActivate(id);
+          terminalRef.current?.focus();
+        }}
         onClick={() => {
           if (!active) onActivate(id);
           terminalRef.current?.focus();
