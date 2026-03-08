@@ -110,16 +110,90 @@ function colorHash(input: string): number {
   return hash >>> 0;
 }
 
-function folderAccentStyle(cwd?: string): CSSProperties {
-  const key = cwd && cwd.length > 0 ? cwd : "unknown-folder";
-  const hash = colorHash(key);
-  const hue = hash % 360;
-  const saturation = 68 + (hash % 12);
-  const lightness = 62 + (hash % 8);
+const FOLDER_ACCENT_PALETTE = [
+  { hue: 194, saturation: 92, lightness: 66 },
+  { hue: 147, saturation: 78, lightness: 58 },
+  { hue: 31, saturation: 95, lightness: 64 },
+  { hue: 331, saturation: 88, lightness: 68 },
+  { hue: 264, saturation: 86, lightness: 71 },
+  { hue: 84, saturation: 84, lightness: 60 },
+  { hue: 221, saturation: 90, lightness: 66 },
+  { hue: 54, saturation: 96, lightness: 68 },
+  { hue: 3, saturation: 90, lightness: 66 },
+  { hue: 171, saturation: 82, lightness: 56 },
+] as const;
+
+function hueDistance(a: number, b: number): number {
+  const raw = Math.abs(a - b) % 360;
+  return Math.min(raw, 360 - raw);
+}
+
+function accentVars(accent: (typeof FOLDER_ACCENT_PALETTE)[number]): CSSProperties {
+  const { hue, saturation, lightness } = accent;
   return {
     "--folder-accent": `hsl(${hue} ${saturation}% ${lightness}%)`,
-    "--folder-accent-soft": `hsl(${hue} ${Math.max(40, saturation - 18)}% ${Math.max(18, lightness - 36)}% / 0.32)`,
+    "--folder-accent-soft": `hsl(${hue} ${Math.max(44, saturation - 22)}% ${Math.max(18, lightness - 40)}% / 0.4)`,
+    "--folder-accent-border": `hsl(${hue} ${Math.max(62, saturation - 6)}% ${Math.max(44, lightness - 14)}% / 0.82)`,
+    "--folder-accent-glow": `hsl(${hue} ${Math.max(70, saturation - 4)}% ${lightness}% / 0.42)`,
   } as CSSProperties;
+}
+
+function resolveFolderAccentMap(
+  paneIds: string[],
+  frames: Record<string, TerminalFrame>,
+): Record<string, CSSProperties> {
+  const uniqueFolders = Array.from(
+    new Set(
+      paneIds.map((id) => {
+        const cwd = frames[id]?.cwd;
+        return cwd && cwd.length > 0 ? cwd : "unknown-folder";
+      }),
+    ),
+  ).sort((a, b) => colorHash(a) - colorHash(b) || a.localeCompare(b));
+
+  const assigned = new Map<string, CSSProperties>();
+  const usedSlots = new Set<number>();
+
+  for (const folder of uniqueFolders) {
+    const preferred = colorHash(folder) % FOLDER_ACCENT_PALETTE.length;
+    let selected = preferred;
+
+    if (usedSlots.size > 0) {
+      let bestScore = -1;
+      let bestTieBreaker = Number.POSITIVE_INFINITY;
+      for (let candidate = 0; candidate < FOLDER_ACCENT_PALETTE.length; candidate += 1) {
+        if (usedSlots.has(candidate)) continue;
+        const candidateHue = FOLDER_ACCENT_PALETTE[candidate].hue;
+        let minDistance = Number.POSITIVE_INFINITY;
+        for (const used of usedSlots) {
+          minDistance = Math.min(
+            minDistance,
+            hueDistance(candidateHue, FOLDER_ACCENT_PALETTE[used].hue),
+          );
+        }
+        const tieBreaker = hueDistance(candidateHue, FOLDER_ACCENT_PALETTE[preferred].hue);
+        if (
+          minDistance > bestScore ||
+          (minDistance === bestScore && tieBreaker < bestTieBreaker)
+        ) {
+          bestScore = minDistance;
+          bestTieBreaker = tieBreaker;
+          selected = candidate;
+        }
+      }
+    }
+
+    usedSlots.add(selected);
+    assigned.set(folder, accentVars(FOLDER_ACCENT_PALETTE[selected]));
+  }
+
+  const out: Record<string, CSSProperties> = {};
+  for (const id of paneIds) {
+    const cwd = frames[id]?.cwd;
+    const key = cwd && cwd.length > 0 ? cwd : "unknown-folder";
+    out[id] = assigned.get(key) ?? accentVars(FOLDER_ACCENT_PALETTE[0]);
+  }
+  return out;
 }
 
 function isEditableEventTarget(target: EventTarget | null): boolean {
@@ -693,7 +767,7 @@ function App() {
   }, [centerPane]);
 
   const frameCount = useMemo(() => Object.keys(frames).length, [frames]);
-  const connectedLabel = frameCount > 0 ? "Connected" : status;
+  const rpcReady = frameCount > 0;
   const leadSpacerWidth = useMemo(() => {
     if (paneIds.length === 0) return 0;
     const firstId = paneIds[0];
@@ -735,16 +809,43 @@ function App() {
       right: buildSide(rightCount),
     };
   }, [activeAvatarIndex, avatarStripWidth, paneIds.length]);
+  const paneAccentStyles = useMemo(() => resolveFolderAccentMap(paneIds, frames), [frames, paneIds]);
 
   return (
     <main className="app-shell">
       <header className="topbar topbar-compact">
-        <span className="status-chip">{connectedLabel}</span>
-        <span className="status-metric">
-          {paneIds.length} panes · {frameCount} active frames · {shortcuts.addPane} add ·{" "}
-          {shortcuts.focusPrevPane}/{shortcuts.focusNextPane} focus · {shortcuts.movePaneLeft}/
-          {shortcuts.movePaneRight} move
-        </span>
+        <span
+          className={`status-orb ${rpcReady ? "status-orb-ready" : "status-orb-down"}`}
+          title={
+            rpcReady
+              ? "Local terminal backend connected."
+              : `Local terminal backend not ready: ${status}`
+          }
+          aria-label={rpcReady ? "Local terminal backend connected" : "Local terminal backend disconnected"}
+        />
+        <div className="topbar-meta">
+          <span className="status-metric">
+            {paneIds.length} panes · {frameCount} active frames
+          </span>
+          <div className="shortcut-cluster" aria-label="Keyboard shortcuts">
+            <span className="shortcut-pill">
+              <span className="shortcut-label">Add</span>
+              <kbd>{shortcuts.addPane}</kbd>
+            </span>
+            <span className="shortcut-pill">
+              <span className="shortcut-label">Focus</span>
+              <kbd>{shortcuts.focusPrevPane}</kbd>
+              <span className="shortcut-divider">/</span>
+              <kbd>{shortcuts.focusNextPane}</kbd>
+            </span>
+            <span className="shortcut-pill">
+              <span className="shortcut-label">Move</span>
+              <kbd>{shortcuts.movePaneLeft}</kbd>
+              <span className="shortcut-divider">/</span>
+              <kbd>{shortcuts.movePaneRight}</kbd>
+            </span>
+          </div>
+        </div>
         <span className="topbar-spacer" />
         <button type="button" className="topbar-settings-button" onClick={openSettings}>
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -782,7 +883,7 @@ function App() {
               "--scale": scale,
               "--opacity": 1,
               zIndex: `${120 - distance}`,
-              ...folderAccentStyle(cwd),
+              ...(paneAccentStyles[id] ?? {}),
             } as CSSProperties;
 
             return (
@@ -835,6 +936,7 @@ function App() {
               currentFrame={frames[id]}
               pendingFrames={frameQueues[id]}
               active={activePane === id}
+              accentStyle={paneAccentStyles[id]}
               shortcuts={shortcuts}
               onActivate={(nextId) => setActivePaneCentered(nextId)}
               onFramesQueued={handleFramesQueued}

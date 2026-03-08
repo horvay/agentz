@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
@@ -13,6 +14,7 @@ interface Props {
   currentFrame?: TerminalFrame;
   pendingFrames?: TerminalFrame[];
   active: boolean;
+  accentStyle?: CSSProperties;
   shortcuts: DashboardShortcuts;
   onActivate: (id: string) => void;
   onShortcut: (
@@ -37,6 +39,7 @@ export function TerminalPane({
   currentFrame,
   pendingFrames,
   active,
+  accentStyle,
   shortcuts,
   onActivate,
   onShortcut,
@@ -453,7 +456,7 @@ export function TerminalPane({
   }, [active, currentFrame?.cursorCol, currentFrame?.cursorRow]);
 
   return (
-    <section className={`pane-shell ${active ? "pane-active" : ""}`}>
+    <section className={`pane-shell ${active ? "pane-active" : ""}`} style={accentStyle}>
       <div
         ref={stageRef}
         className="terminal-stage"
