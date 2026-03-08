@@ -40,18 +40,24 @@ function findDuplicateShortcutError(shortcuts: DashboardShortcuts): string | nul
 }
 
 export function SettingsModal({ open, config, onClose, onSave }: SettingsModalProps) {
+  if (!open) return null;
+
+  return <SettingsModalContent key={JSON.stringify(config)} config={config} onClose={onClose} onSave={onSave} />;
+}
+
+interface SettingsModalContentProps {
+  config: DashboardConfig;
+  onClose: () => void;
+  onSave: (nextConfig: DashboardConfig) => void;
+}
+
+function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentProps) {
   const [draft, setDraft] = useState<DashboardConfig>(() => cloneDashboardConfig(config));
   const [recordingField, setRecordingField] = useState<keyof DashboardShortcuts | null>(null);
   const duplicateShortcutError = useMemo(() => findDuplicateShortcutError(draft.shortcuts), [draft.shortcuts]);
 
   useEffect(() => {
-    if (!open) return;
-    setDraft(cloneDashboardConfig(config));
-    setRecordingField(null);
-  }, [config, open]);
-
-  useEffect(() => {
-    if (!open || recordingField) return;
+    if (recordingField) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -59,10 +65,10 @@ export function SettingsModal({ open, config, onClose, onSave }: SettingsModalPr
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [onClose, open, recordingField]);
+  }, [onClose, recordingField]);
 
   useEffect(() => {
-    if (!open || !recordingField) return;
+    if (!recordingField) return;
     const onKeyDown = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
@@ -85,9 +91,7 @@ export function SettingsModal({ open, config, onClose, onSave }: SettingsModalPr
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [open, recordingField]);
-
-  if (!open) return null;
+  }, [recordingField]);
 
   return (
     <div

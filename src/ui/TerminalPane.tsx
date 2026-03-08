@@ -68,18 +68,9 @@ export function TerminalPane({
   const shortcutHandlerRef = useRef(onShortcut);
   const shortcutsRef = useRef(shortcuts);
   const [overlayCursor, setOverlayCursor] = useState<OverlayCursorState | null>(null);
-
-  useEffect(() => {
-    activeRef.current = active;
-  }, [active]);
-
-  useEffect(() => {
-    shortcutHandlerRef.current = onShortcut;
-  }, [onShortcut]);
-
-  useEffect(() => {
-    shortcutsRef.current = shortcuts;
-  }, [shortcuts]);
+  activeRef.current = active;
+  shortcutHandlerRef.current = onShortcut;
+  shortcutsRef.current = shortcuts;
 
   useEffect(() => {
     const terminal = terminalRef.current;

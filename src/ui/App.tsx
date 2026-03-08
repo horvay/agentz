@@ -221,6 +221,10 @@ function App() {
   const defaultPaneWidth = dashboardConfig.defaultPaneWidth;
   const defaultPaneWidthRef = useRef(defaultPaneWidth);
 
+  activePaneRef.current = activePane;
+  paneIdsRef.current = paneIds;
+  defaultPaneWidthRef.current = defaultPaneWidth;
+
   const centerNode = useCallback((container: HTMLElement | null, node: HTMLElement | null, behavior: ScrollBehavior) => {
     if (!container || !node) return;
     const idealLeft = node.offsetLeft - (container.clientWidth - node.clientWidth) / 2;
@@ -247,10 +251,6 @@ function App() {
   );
 
   useEffect(() => {
-    activePaneRef.current = activePane;
-  }, [activePane]);
-
-  useEffect(() => {
     const strip = stripRef.current;
     if (!strip) return;
     const syncWidth = () => setStripWidth(strip.clientWidth);
@@ -269,14 +269,6 @@ function App() {
     observer.observe(avatarStrip);
     return () => observer.disconnect();
   }, []);
-
-  useEffect(() => {
-    paneIdsRef.current = paneIds;
-  }, [paneIds]);
-
-  useEffect(() => {
-    defaultPaneWidthRef.current = defaultPaneWidth;
-  }, [defaultPaneWidth]);
 
   const createTerminal = useCallback((
     id: string,
