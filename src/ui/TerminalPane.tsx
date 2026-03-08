@@ -478,12 +478,13 @@ export function TerminalPane({
       }
       const cursorSuffix =
         useOverlayCursor ? "\x1b[?25l" : cursorVisible ? "\x1b[?25h" : "\x1b[?25l";
+      const usePrimaryChunkFastPath = frame.altScreen !== true && Boolean(frame.chunk);
       const useAltScreenChunkFastPath =
         frame.altScreen === true &&
         Boolean(frame.chunk) &&
         (frame.renderPatchKind === "cursor-only" || frame.renderPatchKind === "alt-row-update");
 
-      if (useAltScreenChunkFastPath) {
+      if (usePrimaryChunkFastPath || useAltScreenChunkFastPath) {
         const payload = `${inputModePrefix}${frame.chunk}${cursorSuffix}`;
         enqueueRenderRef.current(payload, {
           patchKind: frame.renderPatchKind,
