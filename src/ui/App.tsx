@@ -118,6 +118,8 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     cursorVisible: frame.cursorVisible,
     cursorStyle: frame.cursorStyle,
     cursorBlink: frame.cursorBlink,
+    cursorRow: frame.cursorRow,
+    cursorCol: frame.cursorCol,
   };
 }
 
@@ -136,6 +138,8 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     cursorVisible: frame.cursorVisible,
     cursorStyle: frame.cursorStyle,
     cursorBlink: frame.cursorBlink,
+    cursorRow: frame.cursorRow,
+    cursorCol: frame.cursorCol,
     shellBusy: frame.shellBusy,
   };
 }
@@ -729,6 +733,7 @@ function App() {
             <TerminalPane
               id={id}
               rpc={rpc}
+              currentFrame={frames[id]}
               pendingFrames={frameQueues[id]}
               active={activePane === id}
               shortcuts={shortcuts}

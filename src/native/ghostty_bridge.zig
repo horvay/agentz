@@ -24,6 +24,8 @@ const FrameMessage = struct {
     cursor_visible: bool,
     cursor_style: []const u8,
     cursor_blink: bool,
+    cursor_row: u16,
+    cursor_col: u16,
 };
 
 const OwnedRows = std.ArrayList([]u8);
@@ -273,6 +275,8 @@ fn writeFrame(
                 .bar => "bar",
             },
             .cursor_blink = term.modes.get(.cursor_blinking),
+            .cursor_row = @as(u16, @intCast(term.screens.active.cursor.y)) + 1,
+            .cursor_col = @as(u16, @intCast(term.screens.active.cursor.x)) + 1,
         },
         .{},
         stdout_writer,

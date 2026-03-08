@@ -381,6 +381,8 @@ export class TerminalSession {
             cursor_visible?: boolean;
             cursor_style?: "block" | "underline" | "bar";
             cursor_blink?: boolean;
+            cursor_row?: number;
+            cursor_col?: number;
             mode?: "full" | "patch";
           }
         | null = null;
@@ -395,6 +397,8 @@ export class TerminalSession {
           cursor_visible?: boolean;
           cursor_style?: "block" | "underline" | "bar";
           cursor_blink?: boolean;
+          cursor_row?: number;
+          cursor_col?: number;
           mode?: "full" | "patch";
         };
       } catch {
@@ -419,6 +423,8 @@ export class TerminalSession {
           message.cursor_visible,
           message.cursor_style,
           message.cursor_blink,
+          message.cursor_row,
+          message.cursor_col,
         ),
       );
     };
@@ -536,6 +542,8 @@ export class TerminalSession {
     cursorVisible?: boolean,
     cursorStyle?: "block" | "underline" | "bar",
     cursorBlink?: boolean,
+    cursorRow?: number,
+    cursorCol?: number,
   ): TerminalFrame {
     this.seq += 1;
     return {
@@ -553,6 +561,8 @@ export class TerminalSession {
       cursorVisible,
       cursorStyle,
       cursorBlink,
+      cursorRow,
+      cursorCol,
       shellBusy: this.shellBusy,
     };
   }

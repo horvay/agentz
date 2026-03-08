@@ -33,6 +33,8 @@ export interface TerminalFrame {
   cursorVisible?: boolean;
   cursorStyle?: "block" | "underline" | "bar";
   cursorBlink?: boolean;
+  cursorRow?: number;
+  cursorCol?: number;
   // True when the interactive shell in this PTY currently has a live child process.
   shellBusy?: boolean;
 }

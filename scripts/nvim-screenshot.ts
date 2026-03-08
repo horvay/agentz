@@ -19,6 +19,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function decodeEscapes(raw: string): string {
+  return raw.replace(/\\r/g, "\r").replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+}
+
 async function stopProcessTree(proc: Bun.Subprocess): Promise<void> {
   try {
     proc.kill();
@@ -160,8 +164,9 @@ const fileName =
   typeof flags.file === "string" && flags.file.trim().length > 0 ? flags.file.trim() : "test.txt";
 const typedText =
   typeof flags.text === "string" && flags.text.length > 0
-    ? flags.text
+    ? decodeEscapes(flags.text)
     : "nice.\rNot bad I guess?\rwhat the fuck\r";
+const mode = flags.mode === "normal" ? "normal" : "insert";
 const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(1000, Number(flags["wait-ms"]))
@@ -221,6 +226,10 @@ try {
   await rpc.sendInput(terminalId, `nvim ${fileName}\r`);
   await sleep(2200);
   await rpc.sendInput(terminalId, `i${typedText}`);
+  if (mode === "normal") {
+    await sleep(350);
+    await rpc.sendInput(terminalId, "\x1b");
+  }
   await sleep(1200);
 
   capture(windowId, screenshotPath);

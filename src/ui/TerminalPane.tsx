@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
@@ -10,6 +10,7 @@ import { doesEventMatchShortcut } from "./shortcuts";
 interface Props {
   id: string;
   rpc: RpcClient;
+  currentFrame?: TerminalFrame;
   pendingFrames?: TerminalFrame[];
   active: boolean;
   shortcuts: DashboardShortcuts;
@@ -18,9 +19,20 @@ interface Props {
   onFramesQueued: (id: string, lastSeq: number) => void;
 }
 
+interface OverlayCursorState {
+  visible: boolean;
+  style: "block" | "underline" | "bar";
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  char: string;
+}
+
 export function TerminalPane({
   id,
   rpc,
+  currentFrame,
   pendingFrames,
   active,
   shortcuts,
@@ -50,6 +62,7 @@ export function TerminalPane({
   const activeRef = useRef(active);
   const shortcutHandlerRef = useRef(onShortcut);
   const shortcutsRef = useRef(shortcuts);
+  const [overlayCursor, setOverlayCursor] = useState<OverlayCursorState | null>(null);
 
   useEffect(() => {
     activeRef.current = active;
@@ -62,6 +75,52 @@ export function TerminalPane({
   useEffect(() => {
     shortcutsRef.current = shortcuts;
   }, [shortcuts]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    const host = hostRef.current;
+    const stage = stageRef.current;
+    if (!terminal || !host || !stage || !currentFrame?.cursorRow || !currentFrame?.cursorCol) {
+      setOverlayCursor(null);
+      return;
+    }
+
+    const renderDims = (terminal as unknown as {
+      _core?: {
+        _renderService?: {
+          dimensions?: {
+            css?: {
+              cell?: { width?: number; height?: number };
+            };
+          };
+        };
+      };
+    })._core?._renderService?.dimensions?.css;
+    const cellWidth = renderDims?.cell?.width ?? 0;
+    const cellHeight = renderDims?.cell?.height ?? 0;
+    const screen = host.querySelector(".xterm-screen") as HTMLElement | null;
+    if (!screen || cellWidth <= 0 || cellHeight <= 0) {
+      setOverlayCursor(null);
+      return;
+    }
+
+    const stageRect = stage.getBoundingClientRect();
+    const screenRect = screen.getBoundingClientRect();
+    const rowIndex = Math.max(0, currentFrame.cursorRow - 1);
+    const colIndex = Math.max(0, currentFrame.cursorCol - 1);
+    const rowText = currentFrame.previewLines[rowIndex] ?? "";
+    const char = rowText.charAt(colIndex);
+
+    setOverlayCursor({
+      visible: active && (currentFrame.cursorVisible ?? true),
+      style: currentFrame.cursorStyle ?? "block",
+      left: screenRect.left - stageRect.left + colIndex * cellWidth,
+      top: screenRect.top - stageRect.top + rowIndex * cellHeight,
+      width: cellWidth,
+      height: cellHeight,
+      char,
+    });
+  }, [active, currentFrame]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -136,8 +195,8 @@ export function TerminalPane({
       theme: {
         background: "#0a0f1a",
         foreground: "#d9e6ff",
-        cursor: "#ffd88a",
-        cursorAccent: "#0a0f1a",
+        cursor: "#ffe066",
+        cursorAccent: "#02060d",
         selectionBackground: "rgba(117, 219, 255, 0.25)",
         black: "#10131b",
         red: "#f07178",
@@ -265,8 +324,10 @@ export function TerminalPane({
       if (typeof frame.cursorBlink === "boolean") {
         terminal.options.cursorBlink = frame.cursorBlink;
       }
+      const useOverlayCursor = typeof frame.cursorRow === "number" && typeof frame.cursorCol === "number";
       const cursorVisible = active && (frame.cursorVisible ?? true);
-      const cursorSuffix = cursorVisible ? "\x1b[?25h" : "\x1b[?25l";
+      const cursorSuffix =
+        useOverlayCursor ? "\x1b[?25l" : cursorVisible ? "\x1b[?25h" : "\x1b[?25l";
 
       if (frame.renderPatchVt) {
         enqueueRenderRef.current(`${frame.renderPatchVt}${cursorSuffix}`);
@@ -367,7 +428,7 @@ export function TerminalPane({
     if (!terminalRef.current) return;
     if (active) {
       terminalRef.current.focus();
-      terminalRef.current.write("\x1b[?25h");
+      terminalRef.current.write(currentFrame?.cursorRow && currentFrame?.cursorCol ? "\x1b[?25l" : "\x1b[?25h");
       const focusRaf = requestAnimationFrame(() => {
         terminalRef.current?.focus();
       });
@@ -377,7 +438,7 @@ export function TerminalPane({
     }
     terminalRef.current.write("\x1b[?25l");
     terminalRef.current.blur();
-  }, [active]);
+  }, [active, currentFrame?.cursorCol, currentFrame?.cursorRow]);
 
   return (
     <section className={`pane-shell ${active ? "pane-active" : ""}`}>
@@ -391,6 +452,20 @@ export function TerminalPane({
         role="presentation"
       >
         <div ref={hostRef} className="xterm-host" />
+        {overlayCursor?.visible && (
+          <div
+            className={`terminal-cursor-overlay terminal-cursor-overlay-${overlayCursor.style}`}
+            style={{
+              left: `${overlayCursor.left}px`,
+              top: `${overlayCursor.top}px`,
+              width: `${overlayCursor.width}px`,
+              height: `${overlayCursor.height}px`,
+            }}
+            aria-hidden="true"
+          >
+            {overlayCursor.style === "block" ? overlayCursor.char || " " : null}
+          </div>
+        )}
       </div>
     </section>
   );
