@@ -20,6 +20,7 @@ export interface TerminalFrame {
   cols: number;
   rows: number;
   seq: number;
+  cwd?: string;
   // Canonical full-frame VT snapshot from libghostty-vt (if available).
   renderVt?: string;
   // Incremental VT patch from libghostty-vt for changed rows/cursor state.

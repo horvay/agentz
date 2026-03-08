@@ -42,6 +42,7 @@ const launchCwd = args[2] || process.cwd();
 const cols = Number.parseInt(args[3] || "120", 10);
 const rows = Number.parseInt(args[4] || "36", 10);
 let lastKnownCwd = launchCwd;
+let lastPublishedCwd = launchCwd;
 let lastBusyState = false;
 
 let shellArgs = [];
@@ -74,6 +75,13 @@ function resolveTermCwd() {
     }
   } catch {}
   return lastKnownCwd;
+}
+
+function publishCwd(force = false) {
+  const nextCwd = resolveTermCwd();
+  if (!force && nextCwd === lastPublishedCwd) return;
+  lastPublishedCwd = nextCwd;
+  writeMessage({ type: "cwd", cwd: nextCwd });
 }
 
 function listChildPids() {
@@ -118,6 +126,7 @@ function publishBusyState(force = false) {
 term.onData((chunk) => {
   const payload = Buffer.from(chunk, "utf8").toString("base64");
   writeMessage({ type: "data", data: payload });
+  publishCwd(false);
 });
 
 term.onExit(({ exitCode }) => {
@@ -126,6 +135,7 @@ term.onExit(({ exitCode }) => {
 });
 
 publishBusyState(true);
+publishCwd(true);
 const busyPoll = setInterval(() => publishBusyState(false), 700);
 if (typeof busyPoll.unref === "function") busyPoll.unref();
 
@@ -158,7 +168,7 @@ rl.on("line", (line) => {
     return;
   }
   if (message.type === "cwd") {
-    writeMessage({ type: "cwd", cwd: resolveTermCwd() });
+    publishCwd(true);
   }
   if (message.type === "busy") {
     publishBusyState(true);
@@ -551,6 +561,7 @@ export class TerminalSession {
       cols: this.cols,
       rows: this.rows,
       seq: this.seq,
+      cwd: this.cwd,
       renderVt,
       renderPatchVt,
       altScreen,

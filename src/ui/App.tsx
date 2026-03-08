@@ -94,6 +94,34 @@ function avatarSrcForState(avatar: AvatarDefinition, state: AvatarVisualState): 
   return avatar.idleSrc;
 }
 
+function folderLabel(cwd?: string): string {
+  if (!cwd) return "Starting...";
+  const normalized = cwd.replace(/\/+$/, "") || "/";
+  const segments = normalized.split("/").filter(Boolean);
+  return segments[segments.length - 1] ?? "/";
+}
+
+function colorHash(input: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function folderAccentStyle(cwd?: string): CSSProperties {
+  const key = cwd && cwd.length > 0 ? cwd : "unknown-folder";
+  const hash = colorHash(key);
+  const hue = hash % 360;
+  const saturation = 68 + (hash % 12);
+  const lightness = 62 + (hash % 8);
+  return {
+    "--folder-accent": `hsl(${hue} ${saturation}% ${lightness}%)`,
+    "--folder-accent-soft": `hsl(${hue} ${Math.max(40, saturation - 18)}% ${Math.max(18, lightness - 36)}% / 0.32)`,
+  } as CSSProperties;
+}
+
 function isEditableEventTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return (
@@ -110,6 +138,7 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     cols: frame.cols,
     rows: frame.rows,
     seq: frame.seq,
+    cwd: frame.cwd,
     chunk: frame.chunk.slice(-MAX_ACTIVITY_CHUNK_CHARS),
     vt: frame.vt.slice(-MAX_ACTIVITY_VT_CHARS),
     previewLines: frame.previewLines,
@@ -129,6 +158,7 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     cols: frame.cols,
     rows: frame.rows,
     seq: frame.seq,
+    cwd: frame.cwd,
     renderVt: frame.renderVt,
     renderPatchVt: frame.renderPatchVt,
     altScreen: frame.altScreen,
@@ -672,6 +702,8 @@ function App() {
             const avatarId = paneAvatarIds[id];
             const avatar = avatarId ? avatarById[avatarId] : undefined;
             const avatarState = avatarStates[id] ?? "idle";
+            const cwd = frames[id]?.cwd;
+            const folderName = folderLabel(cwd);
             const isActive = activePane === id;
             const relative = index - activeAvatarIndex;
             const direction = relative === 0 ? 0 : relative > 0 ? 1 : -1;
@@ -687,6 +719,7 @@ function App() {
               "--scale": scale,
               "--opacity": 1,
               zIndex: `${120 - distance}`,
+              ...folderAccentStyle(cwd),
             } as CSSProperties;
 
             return (
@@ -697,8 +730,11 @@ function App() {
                 style={avatarStyle}
                 onClick={() => setActivePaneCentered(id)}
                 aria-label={`Focus ${paneTitle(index)}`}
-                title={`${avatar?.label ?? "Unassigned"} - ${paneTitle(index)}`}
+                title={`${avatar?.label ?? "Unassigned"} - ${folderName}${cwd ? ` (${cwd})` : ""}`}
               >
+                <span className="avatar-folder" title={cwd ?? folderName}>
+                  {folderName}
+                </span>
                 <span className="avatar-image-wrap">
                   {avatar ? (
                     <img src={avatarSrcForState(avatar, avatarState)} alt={avatar.label} className="avatar-image" />
