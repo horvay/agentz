@@ -518,6 +518,11 @@ export function TerminalPane({
           dedupeKey: payload,
           replaceQueuedFull: true,
         });
+      } else if (transition || inputModePrefix) {
+        const payload = `${transition}${inputModePrefix}${cursorSuffix}`;
+        enqueueRenderRef.current(payload, {
+          patchKind: frame.renderPatchKind,
+        });
       } else if (frame.chunk) {
         const syncStart = "\x1b[?2026h";
         const syncEnd = "\x1b[?2026l";
