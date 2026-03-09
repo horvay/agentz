@@ -1,57 +1,107 @@
-# Ghostty Multi-Terminal Dashboard MVP
+# Agentz
 
-MVP desktop app scaffold with Electrobun and real process-backed terminal sessions in a multi-pane tiled UI.
+## Basic Description
 
-## Setup
+Agentz is a desktop app for running multiple real PTY-backed terminal sessions side by side in a fast tiled workspace, with native-style alternate-screen behavior for tools like `nvim`, `less`, `tmux`, and `opencode`.
 
-```bash
-bun install
-bun run native:build
-bun run native:build:bridge
+## Video
+
+Video coming soon.
+
+Add your demo link here when it is ready:
+
+```md
+[Watch the demo](PASTE_VIDEO_LINK_HERE)
 ```
 
-## Run
+## Run Down of Features
+
+- Multiple real terminal panes in one desktop window
+- PTY-backed sessions, not fake terminal emulation shortcuts
+- Better fullscreen terminal app behavior via the Ghostty VT bridge
+- Working alternate-screen mouse input for apps like `nvim`
+- Working normal-shell scrollback and prompt behavior
+- Resizable panes with keyboard shortcuts for pane management
+- Per-pane working directory tracking
+- Optional reactive avatar strip UI
+- Linux portable and installer-style release builds, plus macOS release assets
+
+## How to Download
+
+Open the latest release here:
+
+- `https://github.com/horvay/agentz/releases/latest`
+
+### What each release file is
+
+The exact filenames may vary a little by channel (`stable` vs `canary`) and architecture, but the release assets follow the same pattern.
+
+- `*.dmg` - Standard macOS installer disk image. This is the easiest option for most macOS users.
+- `*.app.tar.zst` - Compressed macOS app bundle. Use this if you want the raw `.app` instead of a DMG.
+- `*-linux-*-*.tar.zst` - Portable Linux app bundle. Extract it anywhere and run the launcher inside it.
+- `*-linux-*-*-Setup.tar.gz` - Linux setup bundle with an `installer` script. This installs the app into your user directory and creates a user-level `agentz` launcher in `~/.local/bin`.
+
+### Which file should you pick?
+
+- macOS: download the `*.dmg` unless you specifically want the raw app bundle.
+- Linux: download the `*-Setup.tar.gz` if you want a simple user install; download the `*.tar.zst` if you want a portable unpack-and-run build.
+- Windows: there is not a native Windows build yet. Use the Linux release through WSL.
+
+### Windows via WSL
+
+Agentz can be run on Windows through WSL using the Linux release artifacts.
+
+- Install WSL2
+- Use a distro like Ubuntu
+- Make sure you have GUI app support available (`WSLg` on Windows 11 is the easiest path)
+- Download the Linux release asset inside WSL
+- Extract it and run it there
+
+Recommended approach:
+
+- use the Linux `*-Setup.tar.gz` release if you want a simple user install inside WSL
+- use the Linux `*.tar.zst` release if you want a portable folder you can keep anywhere
+
+## Quick Start
+
+### Linux portable build
+
+1. Download the Linux `*.tar.zst` asset from the latest release.
+2. Extract it.
+3. Run the launcher from the extracted app folder.
+
+### Linux setup bundle
+
+1. Download the Linux `*-Setup.tar.gz` asset.
+2. Extract it.
+3. Run:
 
 ```bash
-# Standard dev run (software rendering fallback enabled on Linux)
-bun run dev
+./installer
 ```
 
-## Build Portable Release
+The installer will:
 
-```bash
-bun run release:portable
-```
+- install the app under your user directory
+- create `~/.local/bin/agentz`
+- print the final launch path
 
-Outputs are written to `artifacts/`:
+### macOS
 
-- `canary-linux-x64-ghostty-dashboard-mvp-canary.tar.zst` (portable app bundle)
-- `canary-linux-x64-ghostty-dashboard-mvp-canary-Setup.tar.gz` (installer bundle)
+1. Download the latest `*.dmg`.
+2. Install the app normally.
+3. Launch Agentz.
 
-### Linux/X11 input focus note
+## Keyboard Shortcuts
 
-On some Linux/X11 setups, Electrobun may not forward keyboard input to the app
-until the first pointer interaction. The app applies a one-time startup nudge
-using `xdotool` to simulate that first click automatically.
+- `Ctrl+Shift+N` - open a new pane
+- `Ctrl+Shift+Left` - focus the previous pane
+- `Ctrl+Shift+Right` - focus the next pane
+- `Ctrl+Shift+W` - close the active pane
 
-To disable this workaround:
+## Launch With Specific Commands
 
-```bash
-GHOSTTY_DASHBOARD_DISABLE_X11_INPUT_NUDGE=1 bun run dev
-```
-
-### Dynamic Terminals + Navigation
-
-- The app starts with one or more terminal panes based on launch config (defaults to one).
-- Press `Ctrl+Shift+N` to open another terminal pane.
-- Press `Ctrl+Shift+Left` / `Ctrl+Shift+Right` to focus previous/next pane.
-- Press `Ctrl+Shift+W` to close the active terminal pane.
-- The focused pane is centered in the horizontal strip.
-- Drag each pane's right-edge resize handle to change its width (persisted per pane ID).
-
-## Launch With Terminal Commands (CLI Args)
-
-Use `dev:launch` to pass startup commands per pane.
+Use `dev:launch` to start panes with predefined commands.
 
 ```bash
 # Start one pane with opencode
@@ -62,49 +112,82 @@ bun run dev:launch -- --pane-1-opencode --pane-2-cmd=bash --pane-2-args=-lc,ls
 ```
 
 Supported launch flags:
+
 - `--pane-<n>-cmd=<command>`
 - `--pane-<n>-args=<arg1,arg2,...>`
 - `--pane-<n>-cwd=<path>`
-- `--pane-<n>-opencode` (shorthand for command = `opencode`)
+- `--pane-<n>-opencode`
 
 Legacy flags still work:
+
 - `--pane-a-*`
 - `--pane-b-*`
 
-## Screenshot Check (Render Quality)
+## For Developers
+
+### Setup
 
 ```bash
-xdotool search --name "Ghostty Multi-Terminal Dashboard" | head -n 1
-import -window $(xdotool search --name "Ghostty Multi-Terminal Dashboard" | head -n 1) /tmp/ghostty-dashboard.png
+bun install
+bun run native:build
+bun run native:build:bridge
 ```
 
-## Validate with opencode
+### Run in development
 
-Run the automated smoke test:
+```bash
+bun run dev
+```
+
+### Build release artifacts locally
+
+```bash
+bun run release:portable
+bun run release:stable
+```
+
+### Validate terminal behavior
 
 ```bash
 bun run test:opencode
 ```
 
-Run the visual screenshot test (launches first pane with `opencode`, types `hi`, then captures a screenshot):
+Useful screenshot checks:
 
 ```bash
 bun run test:opencode:screenshot
-# optional output path:
-bun run test:opencode:screenshot -- --out=screenshots/opencode-hi-custom.png
+bun run test:nvim:screenshot
+bun run test:shell:scroll:screenshot
 ```
 
-By default screenshots are written to `screenshots/` with stable filenames. Re-running the same test overwrites the existing file instead of creating extra screenshots.
+## Notes
 
-Expected result:
-- command exits successfully,
-- output shows signs of the interactive `opencode` TUI startup (not `--help`),
-- the test sends `hi` into `opencode` and verifies that input appears in terminal output,
-- process lifecycle completes cleanly.
+### Linux/X11 input focus note
 
-## Key Paths
+On some Linux/X11 setups, Electrobun may not forward keyboard input until the first pointer interaction. Agentz applies a one-time startup nudge using `xdotool` to handle that automatically.
 
-- `src/main/` - main process, terminal manager, RPC server
-- `src/ui/` - React UI and terminal pane rendering
-- `src/native/` - Zig bridge scaffold against `libghostty-vt`
-- `deps/ghostty/` - Ghostty source used to build `libghostty-vt`
+To disable it:
+
+```bash
+GHOSTTY_DASHBOARD_DISABLE_X11_INPUT_NUDGE=1 bun run dev
+```
+
+## Project Layout
+
+- `src/main/` - main process, terminal manager, PTY sessions, RPC server
+- `src/ui/` - React UI, pane layout, xterm rendering, input handling
+- `src/native/` - Zig Ghostty VT bridge
+- `deps/ghostty/` - Ghostty source used for VT behavior research and bridge integration
+- `scripts/` - smoke tests, screenshot tests, packaging helpers
+
+## What Agentz is aiming for
+
+Agentz is trying to make terminal-heavy workflows feel good in a pane-based desktop app without giving up the behavior people expect from real terminals.
+
+That means the bar is not just "it renders text". The goal is:
+
+- real PTY sessions
+- correct-ish fullscreen app behavior
+- working mouse input in terminal TUIs
+- normal shell scrollback that feels native
+- smooth pane management for multi-agent or multi-tool workflows
