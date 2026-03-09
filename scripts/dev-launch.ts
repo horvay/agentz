@@ -95,7 +95,7 @@ const launchJson = JSON.stringify(launch);
 console.log("Launching app with config:", launchJson);
 
 // Ensure only one app instance owns the RPC port.
-Bun.spawnSync(["pkill", "-f", "ghostty-dashboard-mvp-dev"]);
+	Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"]);
 Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"]);
 Bun.spawnSync(["pkill", "-f", "Resources/main.js"]);
 

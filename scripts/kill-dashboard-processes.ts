@@ -1,4 +1,7 @@
 const patterns = [
+	"agentz-dev",
+	"agentz-canary",
+	"agentz",
 	"ghostty-dashboard-mvp-dev",
 	"ghostty-dashboard-mvp-canary",
 	"ghostty-dashboard-mvp",

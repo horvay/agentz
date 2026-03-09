@@ -122,7 +122,7 @@ const waitMs =
     : 20_000;
 const windowName = "Ghostty Multi-Terminal Dashboard";
 
-Bun.spawnSync(["pkill", "-f", "ghostty-dashboard-mvp-dev"]);
+	Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"]);
 Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"]);
 Bun.spawnSync(["pkill", "-f", "Resources/main.js"]);
 

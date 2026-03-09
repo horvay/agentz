@@ -53,7 +53,7 @@ const windowName = "Ghostty Multi-Terminal Dashboard";
 const launchJson = JSON.stringify({ panes: [{ command: "opencode" }] });
 
 // Ensure only one app instance owns the RPC port and window.
-Bun.spawnSync(["pkill", "-f", "ghostty-dashboard-mvp-dev"]);
+	Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"]);
 Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"]);
 Bun.spawnSync(["pkill", "-f", "Resources/main.js"]);
 

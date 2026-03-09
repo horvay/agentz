@@ -2,7 +2,7 @@ import type { ElectrobunConfig } from "electrobun";
 
 export default {
 	app: {
-		name: "ghostty-dashboard-mvp",
+		name: "agentz",
 		identifier: "ghosttydashboard.electrobun.dev",
 		version: "0.0.1",
 	},

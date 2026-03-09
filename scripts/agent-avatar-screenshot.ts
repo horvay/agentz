@@ -358,7 +358,7 @@ const windowHeight =
     ? Math.max(420, Number(flags["window-height"]))
     : 900;
 
-Bun.spawnSync(["pkill", "-f", "ghostty-dashboard-mvp-dev"]);
+	Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"]);
 Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"]);
 Bun.spawnSync(["pkill", "-f", "Resources/main.js"]);
 
