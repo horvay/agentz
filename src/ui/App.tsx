@@ -19,6 +19,7 @@ import {
   folderAccentKey,
   resolveFolderAccentAssignments,
 } from "./folderAccent";
+import { coalesceQueuedRenderFrames } from "./renderQueues";
 import { doesEventMatchShortcut } from "./shortcuts";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
@@ -27,7 +28,6 @@ const rpc = new RpcClient("ws://127.0.0.1:4599");
 const FIRST_ID = "term-1";
 const WIDTH_STORAGE_KEY = "ghostty.dashboard.paneWidths.v1";
 const MAX_AVATAR_PANES = avatarCatalog.length;
-const MAX_FRAME_QUEUE_PER_PANE = 24;
 const MAX_ACTIVITY_CHUNK_CHARS = 4_000;
 const MAX_ACTIVITY_VT_CHARS = 4_000;
 const AVATAR_IDS = avatarCatalog.map((avatar) => avatar.id);
@@ -133,6 +133,8 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     rows: frame.rows,
     seq: frame.seq,
     cwd: frame.cwd,
+    renderPatchKind: frame.renderPatchKind,
+    renderPatchVt: frame.renderPatchVt,
     chunk: frame.chunk.slice(-MAX_ACTIVITY_CHUNK_CHARS),
     vt: frame.vt.slice(-MAX_ACTIVITY_VT_CHARS),
     previewLines: frame.previewLines,
@@ -147,6 +149,59 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     mouseFormat: frame.mouseFormat,
     focusEvent: frame.focusEvent,
     mouseAlternateScroll: frame.mouseAlternateScroll,
+  };
+}
+
+function nextAvatarActivity(
+  frame: TerminalFrame,
+  previous:
+    | {
+        state: AvatarVisualState;
+        agent: AgentKind;
+        atMs: number;
+        lastFrameAtMs: number;
+        lastPreviewText: string;
+      }
+    | undefined,
+  nowMs: number,
+): {
+  displayState: AvatarVisualState;
+  activity: {
+    state: AvatarVisualState;
+    agent: AgentKind;
+    atMs: number;
+    lastFrameAtMs: number;
+    lastPreviewText: string;
+  };
+} {
+  const displayState = resolveAvatarDisplayState(frame, previous, nowMs);
+  const nextAgent = inspectAvatarState(frame).agent ?? previous?.agent ?? null;
+  const nextPreviewText = (frame.previewLines ?? []).join("\n");
+  return {
+    displayState,
+    activity:
+      displayState !== "idle"
+        ? {
+            state: displayState,
+            agent: nextAgent,
+            atMs: nowMs,
+            lastFrameAtMs: nowMs,
+            lastPreviewText: nextPreviewText,
+          }
+        : previous
+          ? {
+              ...previous,
+              agent: nextAgent,
+              lastFrameAtMs: nowMs,
+              lastPreviewText: nextPreviewText,
+            }
+          : {
+              state: "idle",
+              agent: nextAgent,
+              atMs: nowMs,
+              lastFrameAtMs: nowMs,
+              lastPreviewText: nextPreviewText,
+            },
   };
 }
 
@@ -175,27 +230,6 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     mouseAlternateScroll: frame.mouseAlternateScroll,
     shellBusy: frame.shellBusy,
   };
-}
-
-function coalesceQueuedRenderFrames(existing: TerminalFrame[], nextFrame: TerminalFrame): TerminalFrame[] {
-  if (nextFrame.renderVt) return [nextFrame];
-
-  if (nextFrame.renderPatchKind === "cursor-only") {
-    return [...existing.filter((queued) => queued.renderPatchKind !== "cursor-only"), nextFrame];
-  }
-
-  if (nextFrame.altScreen === true && nextFrame.renderPatchKind === "alt-row-update") {
-    return [
-      ...existing.filter(
-        (queued) =>
-          queued.renderVt ||
-          (queued.renderPatchKind !== "cursor-only" && queued.renderPatchKind !== "alt-row-update"),
-      ),
-      nextFrame,
-    ];
-  }
-
-  return [...existing.slice(-(MAX_FRAME_QUEUE_PER_PANE - 1)), nextFrame];
 }
 
 function App() {
@@ -474,6 +508,21 @@ function App() {
     deferredCursorFramesRef.current = {};
     const entries = Object.entries(pending);
     if (entries.length === 0) return;
+    const nowMs = Date.now();
+
+    setAvatarStates((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [id, { activityFrame }] of entries) {
+        const resolved = nextAvatarActivity(activityFrame, avatarActivityRef.current[id], nowMs);
+        avatarActivityRef.current[id] = resolved.activity;
+        if (next[id] !== resolved.displayState) {
+          next[id] = resolved.displayState;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
 
     setFrames((prev) => {
       let changed = false;
@@ -562,35 +611,10 @@ function App() {
         return;
       }
       const previousActivity = avatarActivityRef.current[frame.id];
-      const displayState = resolveAvatarDisplayState(activityFrame, previousActivity, nowMs);
-      // Preserve the last known agent kind even after identifying text scrolls off screen.
-      const nextAgent = inspectAvatarState(activityFrame).agent ?? previousActivity?.agent ?? null;
-      const nextPreviewText = (activityFrame.previewLines ?? []).join("\n");
-      avatarActivityRef.current[frame.id] =
-        displayState !== "idle"
-          ? {
-              state: displayState,
-              agent: nextAgent,
-              atMs: nowMs,
-              lastFrameAtMs: nowMs,
-              lastPreviewText: nextPreviewText,
-            }
-          : previousActivity
-            ? {
-                ...previousActivity,
-                agent: nextAgent,
-                lastFrameAtMs: nowMs,
-                lastPreviewText: nextPreviewText,
-              }
-            : {
-                state: "idle",
-                agent: nextAgent,
-                atMs: nowMs,
-                lastFrameAtMs: nowMs,
-                lastPreviewText: nextPreviewText,
-              };
+      const resolved = nextAvatarActivity(activityFrame, previousActivity, nowMs);
+      avatarActivityRef.current[frame.id] = resolved.activity;
       setFrames((prev) => ({ ...prev, [frame.id]: activityFrame }));
-      setAvatarStates((prev) => ({ ...prev, [frame.id]: displayState }));
+      setAvatarStates((prev) => ({ ...prev, [frame.id]: resolved.displayState }));
       setFrameQueues((prev) => {
         const existing = prev[frame.id] ?? [];
         const nextQueue = coalesceQueuedRenderFrames(existing, renderFrame);

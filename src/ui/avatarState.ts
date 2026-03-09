@@ -4,6 +4,7 @@ import type { AvatarVisualState } from "./avatarCatalog";
 export type AgentKind = "opencode" | "codex" | "claude" | null;
 export const CODEX_WORKING_HOLD_MS = 3000;
 export const CODEX_ACTIVE_FRAME_GRACE_MS = 1500;
+export const OPENCODE_WORKING_HOLD_MS = 900;
 
 export interface AvatarInspection {
   state: AvatarVisualState;
@@ -89,15 +90,67 @@ function hasCodexWorkingSignal(recent: string, full: string): boolean {
   return /• [a-z0-9'"/,:+\- ]{1,160}\(\d+s(?: • esc[^)]*)?\)/.test(recent);
 }
 
+function hasOpencodeFooterChrome(lines: string[]): boolean {
+  return lines.some(
+    (line) =>
+      line.includes("ctrl+t variants") || line.includes("tab agents") || line.includes("ctrl+p commands") || line.includes("ask anything"),
+  );
+}
+
+function visibleOpencodeFooterState(frame?: TerminalFrame): "busy" | "idle" | "unknown" {
+  const lines = (frame?.previewLines ?? []).map((line) => normalizeTerminalText(line)).filter(Boolean);
+  const footer = lines.slice(-6);
+  if (!hasOpencodeFooterChrome(footer)) return "unknown";
+  const hasSpinnerRow = footer.some((line) => {
+    if (!line.includes("esc interrupt")) return false;
+    const prefix = line.slice(0, line.indexOf("esc interrupt")).trim();
+    if (prefix.length < 2) return false;
+    return !/[a-z0-9]/.test(prefix);
+  });
+  return hasSpinnerRow ? "busy" : "idle";
+}
+
+function hasOpencodeBusyFooter(frame?: TerminalFrame): boolean {
+  const footer = visibleOpencodeFooterState(frame);
+  if (footer === "busy") return true;
+  if (!frame?.renderPatchKind) return false;
+  const patch = normalizeTerminalText(frame.renderPatchVt ?? "");
+  if (!patch.includes("esc interrupt")) return false;
+  const lines = (frame?.previewLines ?? []).map((line) => normalizeTerminalText(line)).filter(Boolean);
+  const footerLines = lines.slice(-6);
+  if (!hasOpencodeFooterChrome(footerLines)) {
+    return false;
+  }
+
+  const prefix = patch.slice(0, patch.indexOf("esc interrupt")).trim();
+  if (prefix.length < 2) return false;
+  return !/[a-z0-9]/.test(prefix);
+}
+
+function hasOpencodeCallingTranscript(frame?: TerminalFrame): boolean {
+  const lines = (frame?.previewLines ?? []).map((line) => normalizeTerminalText(line)).filter(Boolean);
+  return lines.some((line) => {
+    return (
+      line.includes("delegating...") ||
+      line.startsWith("task ") ||
+      line.startsWith("↳") ||
+      line.includes("view subagents") ||
+      line.includes("toolcalls")
+    );
+  });
+}
+
 export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
   const windows = terminalTextWindows(frame);
   if (!windows.full) return { state: "idle", agent: null };
 
   const { recent, full } = windows;
+  const opencodeQuestionScreen = recent;
   const opencodeSession = isOpencodeSession(full);
   const codexSession = isCodexSession(recent, full);
   const claudeSession = isClaudeSession(recent, full);
   const agent: AgentKind = opencodeSession ? "opencode" : codexSession ? "codex" : claudeSession ? "claude" : null;
+  const opencodeBusyFooter = opencodeSession && hasOpencodeBusyFooter(frame);
 
   const opencodeQuestionMarkers = [
     "permission required",
@@ -106,7 +159,6 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
     "reject permission",
     "type your own answer",
     "tell opencode what to do differently",
-    "△",
     "select all that apply",
     "esc dismiss",
   ];
@@ -131,19 +183,16 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
     "chat about this",
     "to navigate",
   ];
-  const isQuestion = [...opencodeQuestionMarkers, ...codexQuestionMarkers, ...claudeQuestionMarkers].some(
-    (marker) => recent.includes(marker),
-  );
+  const isQuestion =
+    (opencodeSession && opencodeQuestionMarkers.some((marker) => opencodeQuestionScreen.includes(marker))) ||
+    codexQuestionMarkers.some((marker) => recent.includes(marker)) ||
+    claudeQuestionMarkers.some((marker) => recent.includes(marker));
 
-  const opencodeCallingMarkers = ["delegating...", "↳", "subagent session"];
   const codexCallingMarkers = ["subagent", "subagents"];
-  const hasLiveCalling = [...opencodeCallingMarkers, ...codexCallingMarkers].some((marker) =>
-    recent.includes(marker),
-  );
-  const hasCallingContext =
-    (recent.includes("view subagents") && recent.includes("toolcalls") && recent.includes("esc interrupt")) ||
-    (recent.includes("subagent") && recent.includes("esc to interrupt"));
-  const isCalling = hasLiveCalling || hasCallingContext;
+  const hasOpencodeCalling = opencodeBusyFooter && hasOpencodeCallingTranscript(frame);
+  const hasCodexCalling = codexSession && codexCallingMarkers.some((marker) => recent.includes(marker));
+  const hasCodexCallingContext = codexSession && recent.includes("subagent") && recent.includes("esc to interrupt");
+  const isCalling = hasOpencodeCalling || hasCodexCalling || hasCodexCallingContext;
 
   const workingMarkers = [
     "esc interrupt",
@@ -167,18 +216,21 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
     "asking questions",
     " queued ",
   ];
+  const hasGenericWorkingMarker = (codexSession || claudeSession) && workingMarkers.some((marker) => recent.includes(marker));
   const isWorking =
-    workingMarkers.some((marker) => recent.includes(marker)) || (codexSession && hasCodexWorkingSignal(recent, full));
+    hasGenericWorkingMarker ||
+    opencodeBusyFooter ||
+    (codexSession && hasCodexWorkingSignal(recent, full));
 
   const spinnerChars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-  const hasSpinner = [...spinnerChars].some((ch) => recent.includes(ch));
+  const hasSpinner = !opencodeSession && [...spinnerChars].some((ch) => recent.includes(ch));
 
   const isSupportedAgent =
     opencodeSession || codexSession || isQuestion || isCalling || isWorking || hasSpinner;
   if (!isSupportedAgent) return { state: "idle", agent };
 
-  if (isQuestion) return { state: "question", agent };
   if (isCalling) return { state: "calling", agent };
+  if (isQuestion) return { state: "question", agent };
   if (isWorking || hasSpinner) return { state: "working", agent };
   return { state: "idle", agent };
 }
@@ -214,6 +266,14 @@ export function resolveAvatarDisplayState(
     (hasVisibleTextChange ||
       nowMs - previous.lastFrameAtMs <= CODEX_ACTIVE_FRAME_GRACE_MS ||
       nowMs - previous.atMs <= CODEX_WORKING_HOLD_MS)
+  ) {
+    return "working";
+  }
+  if (
+    effectiveAgent === "opencode" &&
+    previous?.state === "working" &&
+    visibleOpencodeFooterState(frame) !== "idle" &&
+    nowMs - previous.atMs <= OPENCODE_WORKING_HOLD_MS
   ) {
     return "working";
   }
