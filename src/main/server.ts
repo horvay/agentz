@@ -91,6 +91,10 @@ export function startTerminalRpcServer(
               terminals.get(parsed.id)?.input(parsed.data, parsed.encoding);
               break;
             }
+            case "flow": {
+              terminals.get(parsed.id)?.setFlowPaused(parsed.paused);
+              break;
+            }
             case "snapshot": {
               const session = terminals.get(parsed.id);
               if (!session) {

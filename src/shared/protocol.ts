@@ -69,6 +69,11 @@ export type ClientMessage =
       encoding?: "utf8" | "binary";
     }
   | {
+      type: "flow";
+      id: TerminalId;
+      paused: boolean;
+    }
+  | {
       type: "snapshot";
       id: TerminalId;
     }

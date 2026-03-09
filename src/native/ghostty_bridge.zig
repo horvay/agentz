@@ -306,12 +306,6 @@ fn emitFrame(
     force_full: bool,
 ) !void {
     const alt_screen = isAltScreen(term);
-    var current_plain_rows = try captureRows(alloc, term, .plain);
-    defer {
-        freeOwnedRows(alloc, &current_plain_rows);
-        current_plain_rows.deinit(alloc);
-    }
-
     var current_render_rows = try captureRows(alloc, term, .vt);
     defer {
         freeOwnedRows(alloc, &current_render_rows);
@@ -379,10 +373,27 @@ fn emitFrame(
     else
         "row-update";
 
-    const plain = if (patch_kind != null and std.mem.eql(u8, patch_kind.?, "cursor-only"))
-        try alloc.dupe(u8, "")
+    var current_plain_rows: OwnedRows = .empty;
+    var has_plain_rows = false;
+    defer if (has_plain_rows) {
+        freeOwnedRows(alloc, &current_plain_rows);
+        current_plain_rows.deinit(alloc);
+    };
+
+    const include_plain = if (patch_kind == null)
+        true
+    else if (std.mem.eql(u8, patch_kind.?, "row-update"))
+        true
     else
-        try joinRows(alloc, current_plain_rows.items);
+        false;
+
+    const plain = if (!include_plain)
+        try alloc.dupe(u8, "")
+    else blk: {
+        current_plain_rows = try captureRows(alloc, term, .plain);
+        has_plain_rows = true;
+        break :blk try joinRows(alloc, current_plain_rows.items);
+    };
     defer alloc.free(plain);
 
     const vt = if (use_full) blk: {
