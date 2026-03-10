@@ -46,7 +46,7 @@ function findWindowId(windowName: string): string | null {
   });
   if (search.exitCode !== 0) return null;
   const lines = search.stdout.toString().trim().split("\n").filter(Boolean);
-  return lines.at(-1) ?? null;
+  return lines.length > 0 ? lines[lines.length - 1] : null;
 }
 
 class RpcSession {
@@ -362,7 +362,7 @@ const windowHeight =
 Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"]);
 Bun.spawnSync(["pkill", "-f", "Resources/main.js"]);
 
-const app = Bun.spawn(["bun", "run", "dev"], {
+const app = Bun.spawn(["bash", "-lc", "bun run dev || true"], {
   env: shellLaunch
     ? { ...process.env }
     : { ...process.env, GHOSTTY_DASHBOARD_LAUNCH: JSON.stringify({ panes: [{ command: appName }] }) },
@@ -457,7 +457,9 @@ try {
 } finally {
   rpc?.close();
   app.kill();
-  await app.exited;
+  try {
+    await app.exited;
+  } catch {}
 }
 
 if (failed) process.exit(1);

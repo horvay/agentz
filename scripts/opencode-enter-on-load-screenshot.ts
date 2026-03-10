@@ -35,7 +35,7 @@ function findWindowId(windowName: string): string | null {
   });
   if (search.exitCode !== 0) return null;
   const lines = search.stdout.toString().trim().split("\n").filter(Boolean);
-  return lines.at(-1) ?? null;
+  return lines.length > 0 ? lines[lines.length - 1] : null;
 }
 
 async function sendInputViaRpc(id: string, data: string): Promise<void> {
@@ -126,7 +126,7 @@ const windowName = "Ghostty Multi-Terminal Dashboard";
 Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"]);
 Bun.spawnSync(["pkill", "-f", "Resources/main.js"]);
 
-const app = Bun.spawn(["bun", "run", "dev"], {
+const app = Bun.spawn(["bash", "-lc", "bun run dev || true"], {
   env: { ...process.env },
   stdio: ["ignore", "inherit", "inherit"],
 });
@@ -181,7 +181,9 @@ try {
   );
 } finally {
   app.kill();
-  await app.exited;
+  try {
+    await app.exited;
+  } catch {}
 }
 
 if (failed) process.exit(1);

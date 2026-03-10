@@ -10,5 +10,6 @@
         "build.zig",
         "build.zig.zon",
         "ghostty_bridge.zig",
+        "pty_host.zig",
     },
 }

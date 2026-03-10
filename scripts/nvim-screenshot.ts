@@ -67,7 +67,7 @@ function findWindowId(windowName: string): string | null {
   });
   if (search.exitCode !== 0) return null;
   const lines = search.stdout.toString().trim().split("\n").filter(Boolean);
-  return lines.at(-1) ?? null;
+  return lines.length > 0 ? lines[lines.length - 1] : null;
 }
 
 class RpcSession {
@@ -183,7 +183,7 @@ runChecked(["rm", "-f", join(tempRoot, fileName)]);
 bestEffortKill("electrobun dev --watch");
 bestEffortKill("Resources/main.js");
 
-const app = Bun.spawn(["bun", "run", "dev"], {
+const app = Bun.spawn(["bash", "-lc", "bun run dev || true"], {
   cwd: process.cwd(),
   env: { ...process.env, ...launchEnv },
   stdio: ["ignore", "inherit", "inherit"],

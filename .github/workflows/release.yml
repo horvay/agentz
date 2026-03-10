@@ -50,7 +50,7 @@ jobs:
           git -C deps/ghostty fetch --depth 1 origin 913c12097bad2feb8977853cf1a60c137a968b50
           git -C deps/ghostty checkout 913c12097bad2feb8977853cf1a60c137a968b50
 
-      - name: Build native bridge
+      - name: Build native host
         run: cd src/native && zig build -Doptimize=ReleaseFast
 
       - name: Build macOS release

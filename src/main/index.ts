@@ -113,7 +113,7 @@ const runX11InputNudge = () => {
     .trim()
     .split("\n")
     .filter(Boolean)
-    .at(-1);
+    .slice(-1)[0];
   if (!windowId) return;
 
   x11InputNudged = true;

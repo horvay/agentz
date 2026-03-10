@@ -4,23 +4,23 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "ghostty-vt-bridge",
+    const host = b.addExecutable(.{
+        .name = "ghostty-pty-host",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("ghostty_bridge.zig"),
+            .root_source_file = b.path("pty_host.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
 
     if (b.lazyDependency("ghostty", .{})) |dep| {
-        exe.root_module.addImport(
+        host.root_module.addImport(
             "ghostty-vt",
             dep.module("ghostty-vt"),
         );
     }
 
-    exe.linkLibC();
+    host.linkLibC();
 
-    b.installArtifact(exe);
+    b.installArtifact(host);
 }
