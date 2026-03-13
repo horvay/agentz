@@ -12,6 +12,17 @@ export interface AvatarInspection {
   agent: AgentKind;
 }
 
+function visibleAgentKind(frame?: TerminalFrame): AgentKind {
+  const windows = terminalTextWindows(frame);
+  const { recent } = windows;
+  if (!recent) return null;
+  const standaloneOpencodeQuestion = hasStandaloneOpencodeQuestionPrompt(recent);
+  if (isOpencodeSession(recent) || standaloneOpencodeQuestion) return "opencode";
+  if (isCodexSession(recent, recent)) return "codex";
+  if (isClaudeSession(recent, recent)) return "claude";
+  return null;
+}
+
 function normalizeTerminalText(raw: string): string {
   return raw
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, " ")
@@ -271,6 +282,7 @@ export function resolveAvatarDisplayState(
   nowMs: number,
 ): AvatarVisualState {
   const inspection = inspectAvatarState(frame);
+  const visibleAgent = visibleAgentKind(frame);
   const effectiveAgent = inspection.agent ?? previous?.agent ?? null;
   if (
     effectiveAgent === "opencode" &&
@@ -305,7 +317,7 @@ export function resolveAvatarDisplayState(
   ) {
     return "working";
   }
-  if (effectiveAgent === null && frame?.shellBusy) {
+  if (visibleAgent === null && frame?.altScreen !== true && frame?.shellBusy) {
     return "working";
   }
   return "idle";

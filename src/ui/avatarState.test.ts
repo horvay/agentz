@@ -243,6 +243,54 @@ describe("detectAvatarState", () => {
     expect(state).toBe("idle");
   });
 
+  test("treats a plain shell as working even if old codex text remains in VT history", () => {
+    const state = resolveAvatarDisplayState(
+      {
+        ...frameFromText(
+          [
+            "agentz master",
+            "$ sleep 50",
+            "",
+          ].join("\n"),
+          {
+            vt: [
+              "OpenAI Codex",
+              "? for shortcuts                                                                100% context left",
+              "agentz master",
+              "$ sleep 50",
+            ].join("\n"),
+            shellBusy: true,
+          },
+        ),
+      },
+      {
+        state: "idle",
+        agent: "codex",
+        atMs: 1_000,
+        lastFrameAtMs: 1_000,
+        lastPreviewText: "OpenAI Codex\n? for shortcuts",
+      },
+      Date.now(),
+    );
+
+    expect(state).toBe("working");
+  });
+
+  test("does not use generic shell-busy fallback while alt screen is active", () => {
+    const state = resolveAvatarDisplayState(
+      {
+        ...frameFromText("top", {
+          altScreen: true,
+          shellBusy: true,
+        }),
+      },
+      undefined,
+      Date.now(),
+    );
+
+    expect(state).toBe("idle");
+  });
+
   test("uses fresh shellBusy signal for opencode when footer has not redrawn yet", () => {
     const state = resolveAvatarDisplayState(
       {
