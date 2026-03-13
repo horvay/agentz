@@ -4,7 +4,7 @@ export default {
 	app: {
 		name: "agentz",
 		identifier: "ghosttydashboard.electrobun.dev",
-		version: "0.0.1",
+		version: "0.0.5",
 	},
 	build: {
 		// Vite builds to dist/, we copy from there

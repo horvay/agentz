@@ -1,6 +1,6 @@
 {
 	"name": "electrobun-react-tailwind-vite",
-	"version": "1.0.0",
+	"version": "0.0.5",
 	"description": "Electrobun app with React, Tailwind CSS, and Vite HMR",
 	"scripts": {
 		"start": "bun run scripts/kill-dashboard-processes.ts && concurrently \"bun run hmr\" \"bun run native:build:host && GHOSTTY_DASHBOARD_ROOT=$PWD GHOSTTY_DASHBOARD_LAUNCH_CWD=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 ELECTROBUN_HMR=1 electrobun dev\"",
