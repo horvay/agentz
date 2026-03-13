@@ -1,15 +1,23 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ghostty_vt = @import("ghostty-vt");
 const c = @cImport({
     @cInclude("errno.h");
     @cInclude("fcntl.h");
+    if (builtin.target.os.tag.isDarwin()) {
+        @cInclude("libproc.h");
+        @cInclude("sys/proc_info.h");
+        @cInclude("util.h");
+    } else {
+        @cInclude("pty.h");
+    }
     @cInclude("poll.h");
-    @cInclude("pty.h");
     @cInclude("signal.h");
     @cInclude("stdio.h");
     @cInclude("stdlib.h");
     @cInclude("string.h");
     @cInclude("sys/ioctl.h");
+    @cInclude("termios.h");
     @cInclude("sys/types.h");
     @cInclude("sys/wait.h");
     @cInclude("unistd.h");
@@ -53,6 +61,7 @@ const CwdMessage = struct {
 const BusyMessage = struct {
     type: []const u8 = "busy",
     busy: bool,
+    at_ms: i64,
 };
 
 const FrameMode = enum {
@@ -423,7 +432,7 @@ fn emitFrame(
 
     const include_plain = if (patch_kind == null)
         true
-    else if (std.mem.eql(u8, patch_kind.?, "row-update"))
+    else if (std.mem.eql(u8, patch_kind.?, "row-update") or std.mem.eql(u8, patch_kind.?, "alt-row-update"))
         true
     else
         false;
@@ -475,6 +484,23 @@ fn readProcPath(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 
 fn resolveTermCwd(alloc: std.mem.Allocator, child_pid: c.pid_t, fallback: []const u8) ![]u8 {
+    if (builtin.target.os.tag.isDarwin()) {
+        var vnode_info: c.struct_proc_vnodepathinfo = undefined;
+        const info_len = c.proc_pidinfo(
+            child_pid,
+            c.PROC_PIDVNODEPATHINFO,
+            0,
+            &vnode_info,
+            @sizeOf(c.struct_proc_vnodepathinfo),
+        );
+        if (info_len == c.PROC_PIDVNODEPATHINFO_SIZE) {
+            const raw_path = std.mem.sliceTo(&vnode_info.pvi_cdir.vip_path, 0);
+            if (raw_path.len > 0) {
+                return try alloc.dupe(u8, raw_path);
+            }
+        }
+        return try alloc.dupe(u8, fallback);
+    }
     const proc_path = try std.fmt.allocPrint(alloc, "/proc/{d}/cwd", .{child_pid});
     defer alloc.free(proc_path);
     return std.fs.cwd().realpathAlloc(alloc, proc_path) catch try alloc.dupe(u8, fallback);
@@ -503,12 +529,33 @@ fn publishCwd(
 }
 
 fn listChildPidsAlloc(alloc: std.mem.Allocator, child_pid: c.pid_t) ![]u8 {
+    if (builtin.target.os.tag.isDarwin()) {
+        var pid_buf: [4096]u8 = undefined;
+        const bytes = c.proc_listchildpids(child_pid, &pid_buf, pid_buf.len);
+        if (bytes <= 0) return try alloc.dupe(u8, "");
+        const pid_count: usize = @intCast(@divTrunc(bytes, @sizeOf(c.pid_t)));
+        const pid_slice = std.mem.bytesAsSlice(c.pid_t, pid_buf[0..@intCast(bytes)]);
+        var builder: std.Io.Writer.Allocating = .init(alloc);
+        defer builder.deinit();
+        for (pid_slice[0..pid_count], 0..) |pid, idx| {
+            if (pid <= 0) continue;
+            if (idx > 0) try builder.writer.writeByte(' ');
+            try builder.writer.print("{d}", .{pid});
+        }
+        return try alloc.dupe(u8, builder.writer.buffered());
+    }
     const children_path = try std.fmt.allocPrint(alloc, "/proc/{d}/task/{d}/children", .{ child_pid, child_pid });
     defer alloc.free(children_path);
     return readProcPath(alloc, children_path) catch try alloc.dupe(u8, "");
 }
 
-fn resolveBusyState(alloc: std.mem.Allocator, child_pid: c.pid_t) !bool {
+fn resolveBusyState(alloc: std.mem.Allocator, master_fd: c_int, child_pid: c.pid_t) !bool {
+    const shell_pgrp = c.getpgid(child_pid);
+    const foreground_pgrp = c.tcgetpgrp(master_fd);
+    if (shell_pgrp > 0 and foreground_pgrp > 0 and foreground_pgrp != shell_pgrp) {
+        return true;
+    }
+
     const raw = try listChildPidsAlloc(alloc, child_pid);
     defer alloc.free(raw);
     var iter = std.mem.tokenizeAny(u8, raw, " \t\r\n");
@@ -519,14 +566,15 @@ fn resolveBusyState(alloc: std.mem.Allocator, child_pid: c.pid_t) !bool {
 fn publishBusyState(
     alloc: std.mem.Allocator,
     stdout_writer: *std.Io.Writer,
+    master_fd: c_int,
     child_pid: c.pid_t,
     last_busy_state: *bool,
     force: bool,
 ) !void {
-    const next_busy = resolveBusyState(alloc, child_pid) catch false;
+    const next_busy = resolveBusyState(alloc, master_fd, child_pid) catch false;
     if (!force and next_busy == last_busy_state.*) return;
     last_busy_state.* = next_busy;
-    try writeJsonLine(stdout_writer, BusyMessage{ .busy = next_busy });
+    try writeJsonLine(stdout_writer, BusyMessage{ .busy = next_busy, .at_ms = std.time.milliTimestamp() });
 }
 
 fn decodeInput(alloc: std.mem.Allocator, encoded: []const u8) ![]u8 {
@@ -652,7 +700,7 @@ pub fn main() !void {
     var child_done = false;
 
     try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true);
-    try publishBusyState(alloc, stdout_writer, child_pid, &last_busy_state, true);
+    try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, true);
     try publishCwd(alloc, stdout_writer, child_pid, &last_known_cwd, &last_published_cwd, true);
 
     var stdin_buffer = std.ArrayList(u8).empty;
@@ -707,7 +755,7 @@ pub fn main() !void {
                             const decoded = decodeInput(alloc, encoded) catch continue;
                             defer alloc.free(decoded);
                             _ = c.write(master_fd, decoded.ptr, decoded.len);
-                            try publishBusyState(alloc, stdout_writer, child_pid, &last_busy_state, false);
+                            try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, false);
                             continue;
                         }
 
@@ -735,7 +783,7 @@ pub fn main() !void {
                         }
 
                         if (std.mem.eql(u8, cmd.type, "busy")) {
-                            try publishBusyState(alloc, stdout_writer, child_pid, &last_busy_state, true);
+                            try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, true);
                             continue;
                         }
 
@@ -760,7 +808,7 @@ pub fn main() !void {
                     try stream.nextSlice(bytes);
                     try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, false);
                     try publishCwd(alloc, stdout_writer, child_pid, &last_known_cwd, &last_published_cwd, false);
-                    try publishBusyState(alloc, stdout_writer, child_pid, &last_busy_state, false);
+                    try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, false);
                 }
             }
         }
@@ -768,7 +816,7 @@ pub fn main() !void {
         const now_ms = std.time.milliTimestamp();
         if (now_ms - last_busy_poll_ms >= BUSY_POLL_INTERVAL_MS) {
             last_busy_poll_ms = now_ms;
-            try publishBusyState(alloc, stdout_writer, child_pid, &last_busy_state, false);
+            try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, false);
         }
 
         if (reapChild(child_pid)) |exit_code| {

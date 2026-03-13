@@ -3,6 +3,7 @@ import type { TerminalFrame } from "../shared/protocol";
 import {
   CODEX_ACTIVE_FRAME_GRACE_MS,
   CODEX_WORKING_HOLD_MS,
+  OPENCODE_BUSY_SIGNAL_HOLD_MS,
   OPENCODE_WORKING_HOLD_MS,
   detectAvatarState,
   inspectAvatarState,
@@ -86,6 +87,32 @@ describe("detectAvatarState", () => {
           renderPatchKind: "row-update",
           renderPatchVt: "......... esc interrupt",
           cursorRow: 1,
+        },
+      ),
+    );
+
+    expect(state).toBe("working");
+  });
+
+  test("treats opencode alt-row footer patches as visible busy updates", () => {
+    const state = detectAvatarState(
+      frameFromText(
+        [
+          "Older transcript line",
+          "Another earlier line",
+          "GPT-5.4 OpenAI · high",
+          "ctrl+t variants  tab agents  ctrl+p commands",
+        ].join("\n"),
+        {
+          renderPatchKind: "alt-row-update",
+          renderPatchVt: "......... esc interrupt",
+          previewLines: [
+            "Older transcript line",
+            "Another earlier line",
+            "GPT-5.4 OpenAI · high",
+            "......... esc interrupt",
+            "ctrl+t variants  tab agents  ctrl+p commands",
+          ],
         },
       ),
     );
@@ -215,6 +242,61 @@ describe("detectAvatarState", () => {
 
     expect(state).toBe("idle");
   });
+
+  test("uses fresh shellBusy signal for opencode when footer has not redrawn yet", () => {
+    const state = resolveAvatarDisplayState(
+      {
+        ...frameFromText(
+          [
+            "opencode",
+            "Build GPT-5.4 OpenAI · high",
+            "......... esc interrupt",
+            "ctrl+t variants  tab agents  ctrl+p commands",
+          ].join("\n"),
+        ),
+        shellBusy: true,
+        shellBusyAtMs: 5_000,
+      },
+        {
+          state: "idle",
+          agent: "opencode",
+          atMs: 4_000,
+          lastFrameAtMs: 4_000,
+          lastPreviewText: "opencode\nBuild GPT-5.4 OpenAI · high",
+        },
+        5_000 + OPENCODE_BUSY_SIGNAL_HOLD_MS - 1,
+      );
+
+    expect(state).toBe("working");
+  });
+
+  test("lets opencode return idle on fresh shellBusy=false even if footer still looks stale", () => {
+    const state = resolveAvatarDisplayState(
+      {
+        ...frameFromText(
+          [
+            "opencode",
+            "Build GPT-5.4 OpenAI · high",
+            "......... esc interrupt",
+            "ctrl+t variants  tab agents  ctrl+p commands",
+          ].join("\n"),
+        ),
+        shellBusy: false,
+        shellBusyAtMs: 8_000,
+      },
+      {
+        state: "working",
+        agent: "opencode",
+        atMs: 7_000,
+        lastFrameAtMs: 7_000,
+        lastPreviewText: "opencode\nBuild GPT-5.4 OpenAI · high",
+      },
+      8_000 + 100,
+    );
+
+    expect(state).toBe("idle");
+  });
+
 
   test("detects codex working state", () => {
     const state = detectAvatarState(
@@ -457,6 +539,27 @@ describe("detectAvatarState", () => {
     );
 
     expect(state).toBe("question");
+  });
+
+  test("detects opencode question prompt even after the header scrolls off", () => {
+    const inspection = inspectAvatarState(
+      frameFromText(
+        [
+          "# Greeting / Quick check-in",
+          "Asked 1 question",
+          "Build GPT-5.4",
+          "What should we talk about next?",
+          "1. Code help",
+          "2. Repo tour",
+          "3. Just chat",
+          "4. Type your own answer",
+          "↑↓ select  enter submit  esc dismiss",
+        ].join("\n"),
+      ),
+    );
+
+    expect(inspection.agent).toBe("opencode");
+    expect(inspection.state).toBe("question");
   });
 
   test("keeps opencode idle when old tool transcript is visible above the prompt", () => {

@@ -43,6 +43,8 @@ export interface TerminalFrame {
   mouseAlternateScroll?: boolean;
   // True when the interactive shell in this PTY currently has a live child process.
   shellBusy?: boolean;
+  // Timestamp from the native host when shellBusy last changed.
+  shellBusyAtMs?: number;
 }
 
 export type ClientMessage =

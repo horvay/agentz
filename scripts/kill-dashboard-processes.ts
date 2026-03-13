@@ -7,6 +7,8 @@ const patterns = [
 	"ghostty-dashboard-mvp",
 	"electrobun dev --watch",
 	"Resources/main.js",
+	"bun src/main/web.ts",
+	"src/main/web.ts",
 ];
 
 function getProtectedPids(): Set<number> {

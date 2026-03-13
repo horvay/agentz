@@ -5,6 +5,7 @@ export type AgentKind = "opencode" | "codex" | "claude" | null;
 export const CODEX_WORKING_HOLD_MS = 3000;
 export const CODEX_ACTIVE_FRAME_GRACE_MS = 1500;
 export const OPENCODE_WORKING_HOLD_MS = 900;
+export const OPENCODE_BUSY_SIGNAL_HOLD_MS = 2000;
 
 export interface AvatarInspection {
   state: AvatarVisualState;
@@ -140,13 +141,29 @@ function hasOpencodeCallingTranscript(frame?: TerminalFrame): boolean {
   });
 }
 
+function hasStandaloneOpencodeQuestionPrompt(recent: string): boolean {
+  const markers = [
+    "type your own answer",
+    "esc dismiss",
+    "enter submit",
+    "select all that apply",
+    "asked 1 question",
+    "what should we talk about next?",
+  ];
+  const markerHits = markers.filter((marker) => recent.includes(marker)).length;
+  const hasPrimaryOption = recent.includes("1. ");
+  const hasAnotherOption = ["2. ", "3. ", "4. ", "5. ", "6. "].some((marker) => recent.includes(marker));
+  return markerHits >= 2 && hasPrimaryOption && hasAnotherOption;
+}
+
 export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
   const windows = terminalTextWindows(frame);
   if (!windows.full) return { state: "idle", agent: null };
 
   const { recent, full } = windows;
   const opencodeQuestionScreen = recent;
-  const opencodeSession = isOpencodeSession(full);
+  const standaloneOpencodeQuestion = hasStandaloneOpencodeQuestionPrompt(recent);
+  const opencodeSession = isOpencodeSession(full) || standaloneOpencodeQuestion;
   const codexSession = isCodexSession(recent, full);
   const claudeSession = isClaudeSession(recent, full);
   const agent: AgentKind = opencodeSession ? "opencode" : codexSession ? "codex" : claudeSession ? "claude" : null;
@@ -184,7 +201,8 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
     "to navigate",
   ];
   const isQuestion =
-    (opencodeSession && opencodeQuestionMarkers.some((marker) => opencodeQuestionScreen.includes(marker))) ||
+    ((opencodeSession || standaloneOpencodeQuestion) &&
+      opencodeQuestionMarkers.some((marker) => opencodeQuestionScreen.includes(marker))) ||
     codexQuestionMarkers.some((marker) => recent.includes(marker)) ||
     claudeQuestionMarkers.some((marker) => recent.includes(marker));
 
@@ -253,8 +271,17 @@ export function resolveAvatarDisplayState(
   nowMs: number,
 ): AvatarVisualState {
   const inspection = inspectAvatarState(frame);
-  if (inspection.state !== "idle") return inspection.state;
   const effectiveAgent = inspection.agent ?? previous?.agent ?? null;
+  if (
+    effectiveAgent === "opencode" &&
+    typeof frame?.shellBusyAtMs === "number" &&
+    nowMs - frame.shellBusyAtMs <= OPENCODE_BUSY_SIGNAL_HOLD_MS &&
+    (inspection.state === "idle" || inspection.state === "working")
+  ) {
+    if (!frame.shellBusy) return "idle";
+    return visibleOpencodeFooterState(frame) === "idle" ? "idle" : "working";
+  }
+  if (inspection.state !== "idle") return inspection.state;
   const currentPreviewText = (frame?.previewLines ?? []).join("\n");
   const hasVisibleTextChange =
     currentPreviewText.length > 0 &&
@@ -272,6 +299,7 @@ export function resolveAvatarDisplayState(
   if (
     effectiveAgent === "opencode" &&
     previous?.state === "working" &&
+    frame?.shellBusyAtMs == null &&
     visibleOpencodeFooterState(frame) !== "idle" &&
     nowMs - previous.atMs <= OPENCODE_WORKING_HOLD_MS
   ) {

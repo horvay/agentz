@@ -50,6 +50,7 @@ export class TerminalSession {
   private rows: number;
   private cwd: string;
   private shellBusy = false;
+  private shellBusyAtMs = 0;
   private lastPreviewLines: string[] = [];
   private exitHandler: ((exitCode: number) => void) | null = null;
   private frameHandler: ((frame: TerminalFrame) => void) | null = null;
@@ -123,6 +124,7 @@ export class TerminalSession {
             code?: number;
             cwd?: string;
             busy?: boolean;
+            at_ms?: number;
             vt_b64?: string;
             plain_b64?: string;
             cols?: number;
@@ -148,6 +150,7 @@ export class TerminalSession {
           code?: number;
           cwd?: string;
           busy?: boolean;
+          at_ms?: number;
           vt_b64?: string;
           plain_b64?: string;
           cols?: number;
@@ -174,7 +177,6 @@ export class TerminalSession {
         if (this.vtBuffer.length > MAX_VT_CHARS) {
           this.vtBuffer = this.vtBuffer.slice(-MAX_VT_CHARS);
         }
-        cb(this.snapshot(decoded, undefined, this.lastPreviewLines, this.lastAltScreen));
         return;
       }
       if (message.type === "exit") {
@@ -191,16 +193,18 @@ export class TerminalSession {
       }
       if (message.type === "busy") {
         const nextBusy = message.busy === true;
-        if (nextBusy === this.shellBusy) return;
+        const nextBusyAtMs = typeof message.at_ms === "number" ? message.at_ms : Date.now();
+        if (nextBusy === this.shellBusy && nextBusyAtMs === this.shellBusyAtMs) return;
         this.shellBusy = nextBusy;
-        cb(this.snapshot(""));
+        this.shellBusyAtMs = nextBusyAtMs;
+        cb(this.snapshot("", undefined, this.lastPreviewLines, this.lastAltScreen));
         return;
       }
       if (message.type !== "frame" || !this.frameHandler) return;
       this.lastAltScreen = message.alt_screen === true;
       const renderedVt = Buffer.from(message.vt_b64 || "", "base64").toString("utf8");
       const previewLines =
-        message.mode === "patch" && (message.patch_kind === "cursor-only" || message.patch_kind === "alt-row-update")
+        message.mode === "patch" && message.patch_kind === "cursor-only"
           ? this.lastPreviewLines
           : Buffer.from(message.plain_b64 || "", "base64")
               .toString("utf8")
@@ -213,11 +217,11 @@ export class TerminalSession {
       this.frameHandler(
         this.snapshot(
           "",
-          this.lastAltScreen ? undefined : message.mode !== "patch" ? renderedVt : undefined,
+          message.mode !== "patch" ? renderedVt : undefined,
           previewLines,
           this.lastAltScreen,
-          this.lastAltScreen ? undefined : message.mode === "patch" ? renderedVt : undefined,
-          this.lastAltScreen ? undefined : message.patch_kind,
+          message.mode === "patch" ? renderedVt : undefined,
+          message.patch_kind,
           message.cursor_visible,
           message.cursor_style,
           message.cursor_blink,
@@ -384,6 +388,7 @@ export class TerminalSession {
       focusEvent,
       mouseAlternateScroll,
       shellBusy: this.shellBusy,
+      shellBusyAtMs: this.shellBusyAtMs,
     };
   }
 

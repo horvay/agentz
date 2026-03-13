@@ -124,9 +124,6 @@ export function TerminalPane({
   const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const resizeSyncTimeoutRef = useRef<number | null>(null);
   const refreshRafRef = useRef<number | null>(null);
-  const syncOutputActiveRef = useRef(false);
-  const syncOutputBufferRef = useRef("");
-  const syncOutputTimeoutRef = useRef<number | null>(null);
   const lastInputModeStateRef = useRef<InputModeState | null>(null);
   const renderQueueRef = useRef<TerminalRenderWorkItem[]>([]);
   const flushRenderQueueRef = useRef<() => void>(() => {});
@@ -515,7 +512,6 @@ export function TerminalPane({
       if (resizeSyncTimeoutRef.current) window.clearTimeout(resizeSyncTimeoutRef.current);
       if (refreshRafRef.current) cancelAnimationFrame(refreshRafRef.current);
       if (renderFlushRafRef.current) cancelAnimationFrame(renderFlushRafRef.current);
-      if (syncOutputTimeoutRef.current) window.clearTimeout(syncOutputTimeoutRef.current);
       if (inputFlushTimerRef.current) window.clearTimeout(inputFlushTimerRef.current);
       flushPendingInput();
       setFlowPaused(false);
@@ -552,12 +548,6 @@ export function TerminalPane({
       }
       const cursorSuffix =
         useOverlayCursor ? "\x1b[?25l" : cursorVisible ? "\x1b[?25h" : "\x1b[?25l";
-      const usePrimaryChunkFastPath = frame.altScreen !== true && Boolean(frame.chunk);
-      const useAltScreenChunkFastPath =
-        frame.altScreen === true &&
-        Boolean(frame.chunk) &&
-        (frame.renderPatchKind === "cursor-only" || frame.renderPatchKind === "alt-row-update");
-
       let transition = "";
       const altScreen = frame.altScreen === true;
       const wasAltScreenActive = altBufferActiveRef.current;
@@ -571,17 +561,7 @@ export function TerminalPane({
         altBufferActiveRef.current = true;
       }
 
-      if (usePrimaryChunkFastPath) {
-        const payload = `${transition}${inputModePrefix}${frame.chunk}${cursorSuffix}`;
-        enqueueRenderRef.current(payload, {
-          patchKind: frame.renderPatchKind,
-        });
-      } else if (useAltScreenChunkFastPath) {
-        const payload = `${transition}${inputModePrefix}${frame.chunk}${cursorSuffix}`;
-        enqueueRenderRef.current(payload, {
-          patchKind: frame.renderPatchKind,
-        });
-      } else if (frame.renderPatchVt) {
+      if (frame.renderPatchVt) {
         enqueueRenderRef.current(`${transition}${inputModePrefix}${frame.renderPatchVt}${cursorSuffix}`, {
           patchKind: frame.renderPatchKind,
         });
@@ -598,64 +578,6 @@ export function TerminalPane({
         enqueueRenderRef.current(payload, {
           patchKind: frame.renderPatchKind,
         });
-      } else if (frame.chunk) {
-        const syncStart = "\x1b[?2026h";
-        const syncEnd = "\x1b[?2026l";
-        let chunk = frame.chunk;
-        const writes: string[] = [];
-
-        const armSyncTimeout = () => {
-          if (syncOutputTimeoutRef.current) window.clearTimeout(syncOutputTimeoutRef.current);
-          // Match ghostty's safety net: never hang rendering forever.
-          syncOutputTimeoutRef.current = window.setTimeout(() => {
-            if (!terminalRef.current || !syncOutputActiveRef.current) return;
-            syncOutputActiveRef.current = false;
-            const buffered = syncOutputBufferRef.current;
-            syncOutputBufferRef.current = "";
-            if (buffered) terminalRef.current.write(buffered);
-          }, 200);
-        };
-
-        while (chunk.length > 0) {
-          if (syncOutputActiveRef.current) {
-            const endIdx = chunk.indexOf(syncEnd);
-            if (endIdx < 0) {
-              syncOutputBufferRef.current += chunk;
-              armSyncTimeout();
-              chunk = "";
-              break;
-            }
-            syncOutputBufferRef.current += chunk.slice(0, endIdx);
-            const buffered = syncOutputBufferRef.current;
-            syncOutputBufferRef.current = "";
-            syncOutputActiveRef.current = false;
-            if (syncOutputTimeoutRef.current) {
-              window.clearTimeout(syncOutputTimeoutRef.current);
-              syncOutputTimeoutRef.current = null;
-            }
-            if (buffered) writes.push(buffered);
-            chunk = chunk.slice(endIdx + syncEnd.length);
-            continue;
-          }
-
-          const startIdx = chunk.indexOf(syncStart);
-          if (startIdx < 0) {
-            writes.push(chunk);
-            chunk = "";
-            break;
-          }
-
-          const before = chunk.slice(0, startIdx);
-          if (before) writes.push(before);
-          syncOutputActiveRef.current = true;
-          syncOutputBufferRef.current = "";
-          armSyncTimeout();
-          chunk = chunk.slice(startIdx + syncStart.length);
-        }
-
-        if (writes.length > 0) {
-          terminal.write(writes.join(""));
-        }
       }
     }
 

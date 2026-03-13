@@ -139,6 +139,7 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     vt: frame.vt.slice(-MAX_ACTIVITY_VT_CHARS),
     previewLines: frame.previewLines,
     shellBusy: frame.shellBusy,
+    shellBusyAtMs: frame.shellBusyAtMs,
     altScreen: frame.altScreen,
     cursorVisible: frame.cursorVisible,
     cursorStyle: frame.cursorStyle,
@@ -237,14 +238,23 @@ interface PendingPaneFrameUpdate {
   renderFrames: TerminalFrame[];
 }
 
+function mergePreviewLines(existing: string[], next: string[] | undefined): string[] {
+  return next && next.length > 0 ? next : existing;
+}
+
 function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalFrame): TerminalFrame {
-  if (!existing || next.renderPatchKind !== "cursor-only") return next;
+  if (!existing) return next;
+  const isCursorOnly = next.renderPatchKind === "cursor-only";
+  const isMetadataOnly = !next.renderVt && !next.renderPatchVt && !next.chunk;
+  if (!isCursorOnly && !isMetadataOnly) return next;
   return {
     ...existing,
     seq: next.seq,
     cols: next.cols,
     rows: next.rows,
     cwd: next.cwd ?? existing.cwd,
+    vt: next.vt || existing.vt,
+    previewLines: mergePreviewLines(existing.previewLines, next.previewLines),
     renderPatchKind: next.renderPatchKind,
     renderPatchVt: next.renderPatchVt,
     altScreen: next.altScreen ?? existing.altScreen,
@@ -258,6 +268,7 @@ function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalF
     focusEvent: next.focusEvent,
     mouseAlternateScroll: next.mouseAlternateScroll,
     shellBusy: next.shellBusy ?? existing.shellBusy,
+    shellBusyAtMs: next.shellBusyAtMs ?? existing.shellBusyAtMs,
   };
 }
 

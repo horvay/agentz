@@ -13,7 +13,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    if (b.lazyDependency("ghostty", .{})) |dep| {
+    if (b.lazyDependency("ghostty", .{
+        .@"emit-macos-app" = false,
+        .@"emit-xcframework" = false,
+    })) |dep| {
         host.root_module.addImport(
             "ghostty-vt",
             dep.module("ghostty-vt"),
@@ -21,6 +24,15 @@ pub fn build(b: *std.Build) void {
     }
 
     host.linkLibC();
+    switch (target.result.os.tag) {
+        .linux, .freebsd, .openbsd, .netbsd, .dragonfly => {
+            host.linkSystemLibrary("util");
+        },
+        else => {},
+    }
+    if (target.result.os.tag.isDarwin()) {
+        host.linkSystemLibrary("proc");
+    }
 
     b.installArtifact(host);
 }
