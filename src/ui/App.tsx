@@ -1535,6 +1535,11 @@ function App() {
     [paneIds.length],
   );
 
+  const paneWidthForId = useCallback(
+    (id: string) => paneWidths[id] ?? defaultPaneWidth,
+    [defaultPaneWidth, paneWidths],
+  );
+
   useEffect(() => {
     const previousQueues = frameQueuesRef.current;
     let changed = false;
@@ -1630,15 +1635,15 @@ function App() {
   const leadSpacerWidth = useMemo(() => {
     if (paneIds.length === 0) return 0;
     const firstId = paneIds[0];
-    const firstWidth = paneWidths[firstId] ?? defaultPaneWidth;
+    const firstWidth = paneWidthForId(firstId);
     return Math.max(0, Math.round(stripWidth / 2 - firstWidth / 2));
-  }, [defaultPaneWidth, paneIds, paneWidths, stripWidth]);
+  }, [paneIds, paneWidthForId, stripWidth]);
   const trailSpacerWidth = useMemo(() => {
     if (paneIds.length === 0) return 0;
     const lastId = paneIds[paneIds.length - 1];
-    const lastWidth = paneWidths[lastId] ?? defaultPaneWidth;
+    const lastWidth = paneWidthForId(lastId);
     return Math.max(0, Math.round(stripWidth / 2 - lastWidth / 2));
-  }, [defaultPaneWidth, paneIds, paneWidths, stripWidth]);
+  }, [paneIds, paneWidthForId, stripWidth]);
   const activeAvatarIndex = useMemo(() => {
     const index = paneIds.indexOf(activePane);
     return index >= 0 ? index : 0;
@@ -1788,7 +1793,7 @@ function App() {
             ref={(node) => {
               paneSlotsRef.current[id] = node;
             }}
-            style={{ width: `${paneWidths[id] ?? defaultPaneWidth}px` }}
+            style={{ width: `${paneWidthForId(id)}px` }}
           >
             {(() => {
               const backgroundId = backgroundTerminalIds[id];
@@ -1882,7 +1887,7 @@ function App() {
                 resizeDragRef.current = {
                   id,
                   startX: event.clientX,
-                  startWidth: paneWidths[id] ?? defaultPaneWidth,
+                  startWidth: paneWidthForId(id),
                 };
                 document.body.classList.add("pane-resize-active");
               }}

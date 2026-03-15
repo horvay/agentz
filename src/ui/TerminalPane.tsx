@@ -14,6 +14,8 @@ const TERMINAL_FONT_SIZE = 14;
 const TERMINAL_LINE_HEIGHT = 1.22;
 const TERMINAL_SCROLLBACK = 5_000;
 const TERMINAL_FONT_FAMILY = '"JetBrainsMonoNerdFontMonoLocal", "JetBrainsMono Nerd Font Mono", monospace';
+const IS_WINDOWS = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+const ALT_SCREEN_FULL_FRAME_MARKER = "\u001b[?1049h\u001b[H";
 
 const TERMINAL_THEME = {
   foreground: "#d9e6ff",
@@ -74,6 +76,9 @@ function hasRenderablePayload(frame: TerminalFrame | undefined): frame is Termin
 }
 
 function loadBestRendererAddon(terminal: Terminal): { dispose(): void } | null {
+  if (IS_WINDOWS) {
+    return null;
+  }
   try {
     const addon = new CanvasAddon();
     terminal.loadAddon(addon);
@@ -86,6 +91,12 @@ function loadBestRendererAddon(terminal: Terminal): { dispose(): void } | null {
 function framePayload(frame: TerminalFrame): string | Uint8Array {
   if (frame.screenMode === "full") return frame.renderVt ?? "";
   return frame.renderPatchBytes ?? frame.renderPatchVt ?? frame.renderVt ?? "";
+}
+
+function extractAltScreenFullFramePayload(payload: string): string {
+  const markerIndex = payload.lastIndexOf(ALT_SCREEN_FULL_FRAME_MARKER);
+  if (markerIndex < 0) return payload;
+  return payload.slice(markerIndex + ALT_SCREEN_FULL_FRAME_MARKER.length);
 }
 
 function isPasteShortcutEvent(event: KeyboardEvent): boolean {
@@ -125,6 +136,12 @@ function getTerminalCellMetrics(terminal: Terminal): { cellWidth: number; cellHe
   };
 }
 
+function refreshTerminalViewport(terminal: Terminal): void {
+  if (terminal.rows <= 0) return;
+  (terminal as Terminal & { clearTextureAtlas?: () => void }).clearTextureAtlas?.();
+  terminal.refresh(0, terminal.rows - 1);
+}
+
 export function TerminalPane({
   id,
   rpc,
@@ -161,16 +178,42 @@ export function TerminalPane({
   userInputHandlerRef.current = onUserInput;
   currentFrameRef.current = currentFrame;
 
-  const queueResizeSync = (cols: number, rows: number) => {
+  const sendResizeSync = (
+    cols: number,
+    rows: number,
+    { requestSnapshot = false, forceSnapshot = false }: { requestSnapshot?: boolean; forceSnapshot?: boolean } = {},
+  ) => {
+    const previous = lastSentSizeRef.current;
+    const sizeChanged = !previous || previous.cols !== cols || previous.rows !== rows;
+    if (sizeChanged) {
+      lastSentSizeRef.current = { cols, rows };
+      rpc.send({ type: "resize", id, cols, rows });
+    }
+    if (requestSnapshot && (forceSnapshot || sizeChanged)) {
+      rpc.send({ type: "snapshot", id });
+    }
+  };
+
+  const queueResizeSync = (
+    cols: number,
+    rows: number,
+    {
+      immediate = false,
+      requestSnapshot = false,
+      forceSnapshot = false,
+    }: { immediate?: boolean; requestSnapshot?: boolean; forceSnapshot?: boolean } = {},
+  ) => {
     if (resizeSyncTimeoutRef.current != null) {
       window.clearTimeout(resizeSyncTimeoutRef.current);
+      resizeSyncTimeoutRef.current = null;
+    }
+    if (immediate) {
+      sendResizeSync(cols, rows, { requestSnapshot, forceSnapshot });
+      return;
     }
     resizeSyncTimeoutRef.current = window.setTimeout(() => {
       resizeSyncTimeoutRef.current = null;
-      const previous = lastSentSizeRef.current;
-      if (previous && previous.cols === cols && previous.rows === rows) return;
-      lastSentSizeRef.current = { cols, rows };
-      rpc.send({ type: "resize", id, cols, rows });
+      sendResizeSync(cols, rows, { requestSnapshot, forceSnapshot });
     }, RESIZE_DEBOUNCE_MS);
   };
 
@@ -256,12 +299,37 @@ export function TerminalPane({
       return;
     }
 
+    if (IS_WINDOWS && terminal.cols > 0 && terminal.rows > 0 && (frame.cols !== terminal.cols || frame.rows !== terminal.rows)) {
+      queueResizeSync(terminal.cols, terminal.rows, {
+        immediate: true,
+        requestSnapshot: true,
+        forceSnapshot: true,
+      });
+      done();
+      return;
+    }
+
     const payload = framePayload(frame);
     if (frame.screenMode === "full") {
       if (payload.length === 0) {
         syncTerminalCursor(terminal, frame);
         syncCursorOverlay();
         done();
+        return;
+      }
+      if (frame.altScreen && typeof payload === "string") {
+        if (IS_WINDOWS) {
+          terminal.reset();
+          terminal.write(payload, () => {
+            done();
+          });
+          return;
+        }
+        const altPayload = extractAltScreenFullFramePayload(payload);
+        // Repaint full-screen TUIs in place. A hard terminal reset causes visible flashes.
+        terminal.write(`\u001b[?1049h\u001b[H\u001b[2J${altPayload}`, () => {
+          done();
+        });
         return;
       }
       const activeBuffer = terminal.buffer.active;
@@ -412,7 +480,7 @@ export function TerminalPane({
       rpc.send({ type: "input", id, data, encoding: "utf8" });
     });
     const resizeSubscription = terminal.onResize(({ cols, rows }) => {
-      queueResizeSync(cols, rows);
+      queueResizeSync(cols, rows, { requestSnapshot: IS_WINDOWS });
     });
 
     terminal.open(screen);
@@ -422,7 +490,11 @@ export function TerminalPane({
     const fitTerminal = () => {
       fitAddon.fit();
       window.requestAnimationFrame(syncCursorOverlay);
-      queueResizeSync(terminal.cols, terminal.rows);
+      refreshTerminalViewport(terminal);
+      queueResizeSync(terminal.cols, terminal.rows, {
+        immediate: IS_WINDOWS,
+        requestSnapshot: IS_WINDOWS,
+      });
     };
 
     fitTerminal();

@@ -11,8 +11,17 @@ describe("resolveTerminalCommand", () => {
   });
 
   test("keeps a valid absolute SHELL path", () => {
-    const resolved = resolveTerminalCommand(undefined, { SHELL: "/bin/sh" }, "linux");
+    if (process.platform === "win32") {
+      const resolved = resolveTerminalCommand(
+        undefined,
+        { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+        "win32",
+      );
+      expect(resolved).toBe("C:\\Windows\\System32\\cmd.exe");
+      return;
+    }
 
+    const resolved = resolveTerminalCommand(undefined, { SHELL: "/bin/sh" }, "linux");
     expect(resolved).toBe("/bin/sh");
   });
 });

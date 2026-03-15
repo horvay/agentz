@@ -3,6 +3,7 @@ import { accessSync, constants as fsConstants, existsSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 import type { TerminalFrame, TerminalScreenRow } from "../shared/protocol";
+import { WindowsTerminalSessionBackend } from "./windowsTerminalSession";
 
 const MAX_ACTIVITY_TEXT_CHARS = 4_000;
 const MAX_PREVIEW_LINES = 200;
@@ -16,18 +17,43 @@ const HOST_PACKET_BUSY = 4;
 const utf8Decoder = new TextDecoder();
 let hasWarnedMissingNativeHost = false;
 
+function getNativeHostBasename(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? "ghostty-pty-host.exe" : "ghostty-pty-host";
+}
+
+function quotePowerShellArg(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function resolveWindowsLaunchCommand(
+  resolvedCommand: string,
+  args: string[],
+  explicitCommand: boolean,
+): { command: string; args: string[] } {
+  if (!explicitCommand) {
+    return { command: resolvedCommand, args };
+  }
+
+  const commandLine = ["&", quotePowerShellArg(resolvedCommand), ...args.map(quotePowerShellArg)].join(" ");
+  return {
+    command: "pwsh.exe",
+    args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", commandLine],
+  };
+}
+
 function resolveNativeHostPath(rootCwd: string): string {
-  const direct = join(rootCwd, "src", "native", "zig-out", "bin", "ghostty-pty-host");
+  const hostBasename = getNativeHostBasename();
+  const direct = join(rootCwd, "src", "native", "zig-out", "bin", hostBasename);
   if (existsSync(direct)) return direct;
 
   const electronResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   if (electronResourcesPath) {
-    const packaged = join(electronResourcesPath, "bin", "ghostty-pty-host");
+    const packaged = join(electronResourcesPath, "bin", hostBasename);
     if (existsSync(packaged)) return packaged;
   }
 
   const execDir = dirname(process.execPath);
-  const packaged = join(execDir, "..", "Resources", "app", "bin", "ghostty-pty-host");
+  const packaged = join(execDir, "..", "Resources", "app", "bin", hostBasename);
   if (existsSync(packaged)) return packaged;
 
   return direct;
@@ -261,7 +287,19 @@ function previewLinesFromPlain(plain: string): string[] {
     .map((entry) => entry.slice(0, 512));
 }
 
-export class TerminalSession {
+interface TerminalSessionBackend {
+  onData(cb: (frame: TerminalFrame) => void): void;
+  onExit(cb: (exitCode: number) => void): void;
+  input(data: string, encoding?: "utf8" | "binary"): void;
+  setFlowPaused(paused: boolean): void;
+  setFrameInterval(intervalMs: number, previewOnly?: boolean): void;
+  requestSnapshot(): void;
+  resize(cols: number, rows: number): void;
+  getCwd(): Promise<string | undefined>;
+  kill(): void;
+}
+
+class PosixTerminalSessionBackend implements TerminalSessionBackend {
   private readonly hostHandle: ChildProcessWithoutNullStreams;
   private seq = 0;
   private cols: number;
@@ -288,22 +326,17 @@ export class TerminalSession {
     readonly id: string,
     cols: number,
     rows: number,
-    command?: string,
-    args?: string[],
-    cwd?: string,
+    rootCwd: string,
+    launchCwd: string,
+    shell: string,
+    shellArgs: string[],
+    hostEnv: NodeJS.ProcessEnv,
   ) {
     this.cols = cols;
     this.rows = rows;
-    const launchBaseCwd = process.env.GHOSTTY_DASHBOARD_LAUNCH_CWD || process.cwd();
-    this.cwd = cwd ?? launchBaseCwd;
-
-    const rootCwd = process.env.GHOSTTY_DASHBOARD_ROOT ?? process.cwd();
-    const launchCwd = cwd ?? launchBaseCwd;
-    const shell = resolveTerminalCommand(command);
-    const shellArgs = args ?? [];
+    this.cwd = launchCwd;
     const hostPath = resolveNativeHostPath(rootCwd);
     const hostBinaryPresent = existsSync(hostPath);
-    const hostEnv = buildTerminalHostEnv(shell, command);
 
     if (!hostBinaryPresent) {
       if (!hasWarnedMissingNativeHost) {
@@ -597,5 +630,76 @@ export class TerminalSession {
     for (const resolve of this.pendingCwdResolvers) resolve(this.cwd);
     this.pendingCwdResolvers.clear();
     this.exitHandler?.(exitCode);
+  }
+}
+
+export class TerminalSession implements TerminalSessionBackend {
+  private readonly backend: TerminalSessionBackend;
+
+  constructor(
+    readonly id: string,
+    cols: number,
+    rows: number,
+    command?: string,
+    args?: string[],
+    cwd?: string,
+  ) {
+    const launchBaseCwd = process.env.GHOSTTY_DASHBOARD_LAUNCH_CWD || process.cwd();
+    const rootCwd = process.env.GHOSTTY_DASHBOARD_ROOT ?? process.cwd();
+    const launchCwd = cwd ?? launchBaseCwd;
+    const shell = resolveTerminalCommand(command);
+    const shellArgs = args ?? [];
+    const hostEnv = buildTerminalHostEnv(shell, command);
+    const windowsLaunch = resolveWindowsLaunchCommand(shell, shellArgs, Boolean(command));
+
+    this.backend =
+      process.platform === "win32"
+        ? new WindowsTerminalSessionBackend(
+            id,
+            cols,
+            rows,
+            windowsLaunch.command,
+            windowsLaunch.args,
+            launchCwd,
+            hostEnv,
+            Boolean(command),
+          )
+        : new PosixTerminalSessionBackend(id, cols, rows, rootCwd, launchCwd, shell, shellArgs, hostEnv);
+  }
+
+  onData(cb: (frame: TerminalFrame) => void): void {
+    this.backend.onData(cb);
+  }
+
+  onExit(cb: (exitCode: number) => void): void {
+    this.backend.onExit(cb);
+  }
+
+  input(data: string, encoding: "utf8" | "binary" = "utf8"): void {
+    this.backend.input(data, encoding);
+  }
+
+  setFlowPaused(paused: boolean): void {
+    this.backend.setFlowPaused(paused);
+  }
+
+  setFrameInterval(intervalMs: number, previewOnly = false): void {
+    this.backend.setFrameInterval(intervalMs, previewOnly);
+  }
+
+  requestSnapshot(): void {
+    this.backend.requestSnapshot();
+  }
+
+  resize(cols: number, rows: number): void {
+    this.backend.resize(cols, rows);
+  }
+
+  getCwd(): Promise<string | undefined> {
+    return this.backend.getCwd();
+  }
+
+  kill(): void {
+    this.backend.kill();
   }
 }
