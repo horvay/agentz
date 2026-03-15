@@ -31,3 +31,7 @@ When diagnosing rendering or blank-screen issues, always use this loop:
 ## Execution Persistence Rule
 
 When solving a user request, continue iterating until the task is fully complete or all discovered issues are fixed. Do not stop to ask whether you should continue unless a true blocker requires user input or approval.
+
+## No Fallbacks Rule
+
+Do not add fallback implementations, compatibility shims, alternate rendering paths, or backup behaviors unless the user explicitly asks for a fallback. Fix the real path first and keep the implementation single-path by default.

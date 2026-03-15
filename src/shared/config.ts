@@ -7,6 +7,7 @@ export const DEFAULT_VISIBLE_LIVE_PANES = 3;
 
 export interface DashboardShortcuts {
   addPane: string;
+  toggleBackgroundTerminal: string;
   focusPrevPane: string;
   focusNextPane: string;
   movePaneLeft: string;
@@ -26,6 +27,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   visibleLivePanes: DEFAULT_VISIBLE_LIVE_PANES,
   shortcuts: {
     addPane: "Ctrl+Shift+N",
+    toggleBackgroundTerminal: "Ctrl+B",
     focusPrevPane: "Ctrl+Shift+ArrowLeft",
     focusNextPane: "Ctrl+Shift+ArrowRight",
     movePaneLeft: "Ctrl+Alt+Shift+ArrowLeft",
@@ -110,6 +112,7 @@ export function cloneDashboardConfig(config: DashboardConfig): DashboardConfig {
     visibleLivePanes: config.visibleLivePanes,
     shortcuts: {
       addPane: config.shortcuts.addPane,
+      toggleBackgroundTerminal: config.shortcuts.toggleBackgroundTerminal,
       focusPrevPane: config.shortcuts.focusPrevPane,
       focusNextPane: config.shortcuts.focusNextPane,
       movePaneLeft: config.shortcuts.movePaneLeft,
@@ -149,6 +152,10 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
         typeof candidate.shortcuts.addPane === "string"
           ? normalizeShortcutCombo(candidate.shortcuts.addPane)
           : null;
+      const normalizedToggleBackgroundTerminal =
+        typeof candidate.shortcuts.toggleBackgroundTerminal === "string"
+          ? normalizeShortcutCombo(candidate.shortcuts.toggleBackgroundTerminal)
+          : null;
       const normalizedFocusPrev =
         typeof candidate.shortcuts.focusPrevPane === "string"
           ? normalizeShortcutCombo(candidate.shortcuts.focusPrevPane)
@@ -176,6 +183,8 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
 
       shortcuts = {
         addPane: normalizedAddPane ?? defaults.shortcuts.addPane,
+        toggleBackgroundTerminal:
+          normalizedToggleBackgroundTerminal ?? defaults.shortcuts.toggleBackgroundTerminal,
         focusPrevPane: normalizedFocusPrev ?? defaults.shortcuts.focusPrevPane,
         focusNextPane: normalizedFocusNext ?? defaults.shortcuts.focusNextPane,
         movePaneLeft: normalizedMovePrev ?? defaults.shortcuts.movePaneLeft,

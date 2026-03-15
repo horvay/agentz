@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "xterm";
 
 import type { TerminalFrame } from "../shared/protocol";
@@ -19,8 +18,8 @@ const TERMINAL_FONT_FAMILY = '"JetBrainsMonoNerdFontMonoLocal", "JetBrainsMono N
 const TERMINAL_THEME = {
   foreground: "#d9e6ff",
   background: "#0a0f1a",
-  cursor: "#ffe066",
-  cursorAccent: "#02060d",
+  cursor: "rgba(0, 0, 0, 0)",
+  cursorAccent: "rgba(0, 0, 0, 0)",
   selectionBackground: "rgba(124, 214, 255, 0.24)",
   black: "#10131b",
   red: "#f07178",
@@ -50,7 +49,15 @@ interface Props {
   shortcuts: DashboardShortcuts;
   onActivate: (id: string) => void;
   onShortcut: (
-    shortcut: "new-pane" | "focus-left" | "focus-right" | "move-left" | "move-right" | "close-pane" | "open-settings",
+    shortcut:
+      | "new-pane"
+      | "toggle-background"
+      | "focus-left"
+      | "focus-right"
+      | "move-left"
+      | "move-right"
+      | "close-pane"
+      | "open-settings",
   ) => void;
   onFramesQueued: (id: string, lastSeq: number) => void;
   onUserInput: (id: string) => void;
@@ -68,17 +75,11 @@ function hasRenderablePayload(frame: TerminalFrame | undefined): frame is Termin
 
 function loadBestRendererAddon(terminal: Terminal): { dispose(): void } | null {
   try {
-    const addon = new WebglAddon();
+    const addon = new CanvasAddon();
     terminal.loadAddon(addon);
     return addon;
   } catch {
-    try {
-      const addon = new CanvasAddon();
-      terminal.loadAddon(addon);
-      return addon;
-    } catch {
-      return null;
-    }
+    return null;
   }
 }
 
@@ -91,6 +92,37 @@ function isPasteShortcutEvent(event: KeyboardEvent): boolean {
   if (event.altKey) return false;
   if (!event.ctrlKey && !event.metaKey) return false;
   return event.key.toLowerCase() === "v";
+}
+
+function syncTerminalCursor(terminal: Terminal, frame: TerminalFrame | undefined) {
+  const cursorStyle = frame?.cursorStyle ?? "block";
+  terminal.options.cursorStyle = cursorStyle;
+  terminal.options.cursorBlink = frame?.cursorBlink ?? true;
+  terminal.options.cursorInactiveStyle = frame?.cursorVisible === false ? "none" : cursorStyle;
+  terminal.options.cursorWidth = 1;
+}
+
+function getTerminalCellMetrics(terminal: Terminal): { cellWidth: number; cellHeight: number } | null {
+  const unsafeTerminal = terminal as Terminal & {
+    _core?: {
+      _renderService?: {
+        dimensions?: {
+          css?: {
+            cell?: {
+              width?: number;
+              height?: number;
+            };
+          };
+        };
+      };
+    };
+  };
+  const dimensions = unsafeTerminal._core?._renderService?.dimensions?.css?.cell;
+  if (!dimensions?.width || !dimensions?.height) return null;
+  return {
+    cellWidth: dimensions.width,
+    cellHeight: dimensions.height,
+  };
 }
 
 export function TerminalPane({
@@ -108,6 +140,7 @@ export function TerminalPane({
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
+  const cursorOverlayRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const resizeSyncTimeoutRef = useRef<number | null>(null);
@@ -120,11 +153,13 @@ export function TerminalPane({
   const shortcutHandlerRef = useRef(onShortcut);
   const framesQueuedHandlerRef = useRef(onFramesQueued);
   const userInputHandlerRef = useRef(onUserInput);
+  const currentFrameRef = useRef(currentFrame);
 
   shortcutsRef.current = shortcuts;
   shortcutHandlerRef.current = onShortcut;
   framesQueuedHandlerRef.current = onFramesQueued;
   userInputHandlerRef.current = onUserInput;
+  currentFrameRef.current = currentFrame;
 
   const queueResizeSync = (cols: number, rows: number) => {
     if (resizeSyncTimeoutRef.current != null) {
@@ -143,6 +178,77 @@ export function TerminalPane({
     terminalRef.current?.focus();
   };
 
+  const syncCursorOverlay = () => {
+    const overlay = cursorOverlayRef.current;
+    const stage = stageRef.current;
+    const screen = screenRef.current;
+    const terminal = terminalRef.current;
+    const frame = currentFrameRef.current;
+    if (!overlay || !stage || !screen || !terminal || !frame) {
+      if (overlay) overlay.hidden = true;
+      return;
+    }
+
+    if (frame.cursorVisible === false) {
+      overlay.hidden = true;
+      return;
+    }
+
+    const cursorRow = frame.cursorRow ?? 0;
+    const cursorCol = frame.cursorCol ?? 0;
+    if (frame.cols <= 0 || frame.rows <= 0 || cursorRow <= 0 || cursorCol <= 0) {
+      overlay.hidden = true;
+      return;
+    }
+
+    const screenRect = screen.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    if (screenRect.width <= 0 || screenRect.height <= 0) {
+      overlay.hidden = true;
+      return;
+    }
+
+    const metrics = getTerminalCellMetrics(terminal);
+    if (!metrics) {
+      overlay.hidden = true;
+      return;
+    }
+
+    const viewportRelativeRow = Math.max(0, cursorRow - 1);
+    const bufferRow = terminal.buffer.active.viewportY + viewportRelativeRow;
+    const bufferLine = terminal.buffer.active.getLine(bufferRow);
+    const bufferCell = bufferLine?.getCell(cursorCol - 1);
+    const cellChars = bufferCell?.getChars() ?? "";
+    const cellWidthUnits = Math.max(1, bufferCell?.getWidth() ?? 1);
+    const { cellWidth, cellHeight } = metrics;
+    const cursorStyle = frame.cursorStyle ?? "block";
+    const width =
+      cursorStyle === "bar"
+        ? 2
+        : Math.max(1, Math.round(cellWidth * cellWidthUnits));
+    const height =
+      cursorStyle === "underline"
+        ? 2
+        : Math.max(1, Math.round(cellHeight));
+    const left = screenRect.left - stageRect.left + Math.max(0, cursorCol - 1) * cellWidth;
+    const top =
+      screenRect.top -
+      stageRect.top +
+      viewportRelativeRow * cellHeight +
+      (cursorStyle === "underline" ? Math.max(0, Math.round(cellHeight) - height) : 0);
+
+    overlay.textContent = cursorStyle === "block" ? cellChars || " " : "";
+    overlay.className = `terminal-cursor-overlay terminal-cursor-overlay-${cursorStyle}${
+      frame.cursorBlink ? " terminal-cursor-overlay-blink" : ""
+    }`;
+    overlay.style.left = `${Math.round(left)}px`;
+    overlay.style.top = `${Math.round(top)}px`;
+    overlay.style.width = `${width}px`;
+    overlay.style.height = `${height}px`;
+    overlay.style.lineHeight = `${Math.max(1, Math.round(cellHeight))}px`;
+    overlay.hidden = false;
+  };
+
   const applyFrame = (frame: TerminalFrame, done: () => void) => {
     const terminal = terminalRef.current;
     if (!terminal) {
@@ -153,6 +259,8 @@ export function TerminalPane({
     const payload = framePayload(frame);
     if (frame.screenMode === "full") {
       if (payload.length === 0) {
+        syncTerminalCursor(terminal, frame);
+        syncCursorOverlay();
         done();
         return;
       }
@@ -160,6 +268,8 @@ export function TerminalPane({
       const scrollbackOffset = Math.max(0, activeBuffer.baseY - activeBuffer.viewportY);
       terminal.reset();
       terminal.write(payload, () => {
+        syncTerminalCursor(terminal, frame);
+        syncCursorOverlay();
         if (scrollbackOffset > 0) {
           const nextTarget = Math.max(0, terminal.buffer.active.baseY - scrollbackOffset);
           terminal.scrollToLine(nextTarget);
@@ -172,11 +282,17 @@ export function TerminalPane({
     }
 
     if (payload.length === 0) {
+      syncTerminalCursor(terminal, frame);
+      syncCursorOverlay();
       done();
       return;
     }
 
-    terminal.write(payload, done);
+    terminal.write(payload, () => {
+      syncTerminalCursor(terminal, frame);
+      syncCursorOverlay();
+      done();
+    });
   };
 
   const compactPendingFrames = (force = false) => {
@@ -226,10 +342,12 @@ export function TerminalPane({
     if (!screen || !stage) return;
 
     const terminal = new Terminal({
-      allowTransparency: true,
+      allowTransparency: false,
       convertEol: false,
       cursorBlink: true,
       cursorStyle: "block",
+      cursorInactiveStyle: "block",
+      cursorWidth: 1,
       drawBoldTextInBrightColors: true,
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: TERMINAL_FONT_SIZE,
@@ -249,6 +367,11 @@ export function TerminalPane({
       if (doesEventMatchShortcut(event, shortcutsRef.current.addPane)) {
         event.preventDefault();
         shortcutHandlerRef.current("new-pane");
+        return false;
+      }
+      if (doesEventMatchShortcut(event, shortcutsRef.current.toggleBackgroundTerminal)) {
+        event.preventDefault();
+        shortcutHandlerRef.current("toggle-background");
         return false;
       }
       if (doesEventMatchShortcut(event, shortcutsRef.current.focusPrevPane)) {
@@ -298,6 +421,7 @@ export function TerminalPane({
 
     const fitTerminal = () => {
       fitAddon.fit();
+      window.requestAnimationFrame(syncCursorOverlay);
       queueResizeSync(terminal.cols, terminal.rows);
     };
 
@@ -364,6 +488,11 @@ export function TerminalPane({
     return () => window.removeEventListener("focus", onWindowFocus);
   }, [active]);
 
+  useEffect(() => {
+    const raf = window.requestAnimationFrame(syncCursorOverlay);
+    return () => window.cancelAnimationFrame(raf);
+  }, [active, currentFrame]);
+
   return (
     <section className={`pane-shell ${active ? "pane-active" : ""}`} style={accentStyle}>
       <div
@@ -379,6 +508,7 @@ export function TerminalPane({
         role="presentation"
       >
         <div ref={screenRef} className="terminal-screen terminal-screen-xterm" />
+        <div ref={cursorOverlayRef} className="terminal-cursor-overlay terminal-cursor-overlay-block" hidden />
       </div>
     </section>
   );

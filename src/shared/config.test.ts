@@ -10,6 +10,9 @@ describe("dashboard config shortcuts", () => {
   test("cloneDashboardConfig preserves pane shortcuts", () => {
     const cloned = cloneDashboardConfig(DEFAULT_DASHBOARD_CONFIG);
     expect(cloned.visibleLivePanes).toBe(DEFAULT_DASHBOARD_CONFIG.visibleLivePanes);
+    expect(cloned.shortcuts.toggleBackgroundTerminal).toBe(
+      DEFAULT_DASHBOARD_CONFIG.shortcuts.toggleBackgroundTerminal,
+    );
     expect(cloned.shortcuts.movePaneLeft).toBe(DEFAULT_DASHBOARD_CONFIG.shortcuts.movePaneLeft);
     expect(cloned.shortcuts.movePaneRight).toBe(DEFAULT_DASHBOARD_CONFIG.shortcuts.movePaneRight);
     expect(cloned.shortcuts.closePane).toBe(DEFAULT_DASHBOARD_CONFIG.shortcuts.closePane);
@@ -18,12 +21,14 @@ describe("dashboard config shortcuts", () => {
   test("normalizeDashboardConfig accepts pane shortcuts", () => {
     const normalized = normalizeDashboardConfig({
       shortcuts: {
+        toggleBackgroundTerminal: "ctrl+b",
         movePaneLeft: "ctrl+alt+shift+left",
         movePaneRight: "ctrl+alt+shift+right",
         closePane: "ctrl+shift+w",
       },
     });
 
+    expect(normalized.shortcuts.toggleBackgroundTerminal).toBe("Ctrl+B");
     expect(normalized.shortcuts.movePaneLeft).toBe("Ctrl+Shift+Alt+ArrowLeft");
     expect(normalized.shortcuts.movePaneRight).toBe("Ctrl+Shift+Alt+ArrowRight");
     expect(normalized.shortcuts.closePane).toBe("Ctrl+Shift+W");
