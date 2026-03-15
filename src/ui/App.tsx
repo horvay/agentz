@@ -906,7 +906,11 @@ function App() {
     setPaneWidths((prev) => {
       const next: Record<string, number> = {};
       for (const id of ids) {
-        next[id] = prev[id] ?? defaultPaneWidthRef.current;
+        next[id] = defaultPaneWidthRef.current;
+      }
+      for (const [id, width] of Object.entries(prev)) {
+        if (ids.includes(id)) continue;
+        next[id] = width;
       }
       return next;
     });

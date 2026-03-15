@@ -47,6 +47,7 @@ async function getMainViewTarget(): Promise<RendererTarget> {
 function requestWindowFocus(window: BrowserWindow): void {
   window.show();
   window.focus();
+  window.webContents.focus();
 }
 
 function runFocusBurst(window: BrowserWindow, delaysMs: number[]): void {

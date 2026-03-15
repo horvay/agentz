@@ -161,6 +161,7 @@ export function TerminalPane({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const resizeSyncTimeoutRef = useRef<number | null>(null);
+  const focusTimeoutRef = useRef<number | null>(null);
   const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFramesRef = useRef<TerminalFrame[]>([]);
   const pendingFrameStartRef = useRef(0);
@@ -219,6 +220,17 @@ export function TerminalPane({
 
   const focusTerminal = () => {
     terminalRef.current?.focus();
+  };
+
+  const scheduleTerminalFocus = () => {
+    if (focusTimeoutRef.current != null) {
+      window.clearTimeout(focusTimeoutRef.current);
+    }
+    // Wait until xterm has attached its helper textarea before focusing.
+    focusTimeoutRef.current = window.setTimeout(() => {
+      focusTimeoutRef.current = null;
+      focusTerminal();
+    }, 0);
   };
 
   const syncCursorOverlay = () => {
@@ -498,6 +510,9 @@ export function TerminalPane({
     };
 
     fitTerminal();
+    if (active) {
+      scheduleTerminalFocus();
+    }
 
     const resizeObserver = new ResizeObserver(() => {
       window.requestAnimationFrame(fitTerminal);
@@ -525,6 +540,10 @@ export function TerminalPane({
         window.clearTimeout(resizeSyncTimeoutRef.current);
         resizeSyncTimeoutRef.current = null;
       }
+      if (focusTimeoutRef.current != null) {
+        window.clearTimeout(focusTimeoutRef.current);
+        focusTimeoutRef.current = null;
+      }
     };
   }, [id, rpc]);
 
@@ -542,8 +561,13 @@ export function TerminalPane({
 
   useEffect(() => {
     if (active) {
-      const focusRaf = window.requestAnimationFrame(() => focusTerminal());
-      return () => window.cancelAnimationFrame(focusRaf);
+      scheduleTerminalFocus();
+      return () => {
+        if (focusTimeoutRef.current != null) {
+          window.clearTimeout(focusTimeoutRef.current);
+          focusTimeoutRef.current = null;
+        }
+      };
     }
     const helper = screenRef.current?.querySelector(".xterm-helper-textarea");
     if (helper instanceof HTMLTextAreaElement) {
@@ -554,7 +578,7 @@ export function TerminalPane({
   useEffect(() => {
     if (!active) return;
     const onWindowFocus = () => {
-      window.requestAnimationFrame(() => focusTerminal());
+      scheduleTerminalFocus();
     };
     window.addEventListener("focus", onWindowFocus);
     return () => window.removeEventListener("focus", onWindowFocus);
@@ -575,7 +599,7 @@ export function TerminalPane({
         }}
         onClick={() => {
           if (!active) onActivate(id);
-          window.requestAnimationFrame(() => focusTerminal());
+          scheduleTerminalFocus();
         }}
         role="presentation"
       >

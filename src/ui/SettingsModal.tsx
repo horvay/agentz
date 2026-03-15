@@ -140,86 +140,88 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
             onClose();
           }}
         >
-          <section className="settings-section">
-            <h3>Default Terminal Width</h3>
-            <div className="settings-width-controls">
-              <input
-                type="range"
-                min={MIN_PANE_WIDTH}
-                max={MAX_PANE_WIDTH}
-                step={10}
-                value={draft.defaultPaneWidth}
-                onChange={(event) => {
-                  const next = Number(event.currentTarget.value);
-                  setDraft((prev) => ({ ...prev, defaultPaneWidth: clampPaneWidth(next) }));
-                }}
-              />
-              <label className="settings-width-input-wrap">
-                <span>Pixels</span>
+          <div className="settings-scroll">
+            <section className="settings-section">
+              <h3>Default Terminal Width</h3>
+              <div className="settings-width-controls">
                 <input
-                  type="number"
+                  type="range"
                   min={MIN_PANE_WIDTH}
                   max={MAX_PANE_WIDTH}
                   step={10}
                   value={draft.defaultPaneWidth}
                   onChange={(event) => {
                     const next = Number(event.currentTarget.value);
-                    if (!Number.isFinite(next)) return;
                     setDraft((prev) => ({ ...prev, defaultPaneWidth: clampPaneWidth(next) }));
                   }}
                 />
-              </label>
-            </div>
-            <p className="settings-note">
-              Range: {MIN_PANE_WIDTH}px - {MAX_PANE_WIDTH}px
-            </p>
-          </section>
-
-          <section className="settings-section">
-            <h3>Live Panes In View</h3>
-            <div className="settings-width-controls">
-              <input
-                type="range"
-                min={MIN_VISIBLE_LIVE_PANES}
-                max={MAX_VISIBLE_LIVE_PANES}
-                step={2}
-                value={draft.visibleLivePanes}
-                onChange={(event) => {
-                  const next = Number(event.currentTarget.value);
-                  if (!Number.isFinite(next)) return;
-                  setDraft((prev) => ({ ...prev, visibleLivePanes: normalizeVisibleLivePanes(next) }));
-                }}
-              />
-              <div className="settings-value-chip" aria-live="polite">
-                {formatVisiblePaneLabel(draft.visibleLivePanes)}
+                <label className="settings-width-input-wrap">
+                  <span>Pixels</span>
+                  <input
+                    type="number"
+                    min={MIN_PANE_WIDTH}
+                    max={MAX_PANE_WIDTH}
+                    step={10}
+                    value={draft.defaultPaneWidth}
+                    onChange={(event) => {
+                      const next = Number(event.currentTarget.value);
+                      if (!Number.isFinite(next)) return;
+                      setDraft((prev) => ({ ...prev, defaultPaneWidth: clampPaneWidth(next) }));
+                    }}
+                  />
+                </label>
               </div>
-            </div>
-            <p className="settings-note">
-              Odd-number cap for fully rendered panes that are currently visible. Default: {DEFAULT_VISIBLE_LIVE_PANES}.
-            </p>
-          </section>
+              <p className="settings-note">
+                Range: {MIN_PANE_WIDTH}px - {MAX_PANE_WIDTH}px
+              </p>
+            </section>
 
-          <section className="settings-section">
-            <h3>Shortcuts</h3>
-            <div className="settings-shortcut-grid">
-              {SHORTCUT_FIELD_ORDER.map((field) => {
-                const isRecording = recordingField === field;
-                return (
-                  <div key={field} className="settings-shortcut-row">
-                    <span>{SHORTCUT_FIELD_LABELS[field]}</span>
-                    <button
-                      type="button"
-                      className={`settings-shortcut-capture ${isRecording ? "settings-shortcut-capture-recording" : ""}`}
-                      onClick={() => setRecordingField(field)}
-                    >
-                      {isRecording ? "Press keys..." : draft.shortcuts[field]}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <p className="settings-note">Use at least one modifier key. Press Escape to cancel recording.</p>
-          </section>
+            <section className="settings-section">
+              <h3>Live Panes In View</h3>
+              <div className="settings-width-controls">
+                <input
+                  type="range"
+                  min={MIN_VISIBLE_LIVE_PANES}
+                  max={MAX_VISIBLE_LIVE_PANES}
+                  step={2}
+                  value={draft.visibleLivePanes}
+                  onChange={(event) => {
+                    const next = Number(event.currentTarget.value);
+                    if (!Number.isFinite(next)) return;
+                    setDraft((prev) => ({ ...prev, visibleLivePanes: normalizeVisibleLivePanes(next) }));
+                  }}
+                />
+                <div className="settings-value-chip" aria-live="polite">
+                  {formatVisiblePaneLabel(draft.visibleLivePanes)}
+                </div>
+              </div>
+              <p className="settings-note">
+                Odd-number cap for fully rendered panes that are currently visible. Default: {DEFAULT_VISIBLE_LIVE_PANES}.
+              </p>
+            </section>
+
+            <section className="settings-section">
+              <h3>Shortcuts</h3>
+              <div className="settings-shortcut-grid">
+                {SHORTCUT_FIELD_ORDER.map((field) => {
+                  const isRecording = recordingField === field;
+                  return (
+                    <div key={field} className="settings-shortcut-row">
+                      <span>{SHORTCUT_FIELD_LABELS[field]}</span>
+                      <button
+                        type="button"
+                        className={`settings-shortcut-capture ${isRecording ? "settings-shortcut-capture-recording" : ""}`}
+                        onClick={() => setRecordingField(field)}
+                      >
+                        {isRecording ? "Press keys..." : draft.shortcuts[field]}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="settings-note">Use at least one modifier key. Press Escape to cancel recording.</p>
+            </section>
+          </div>
 
           <footer className="settings-footer">
             {duplicateShortcutError ? (

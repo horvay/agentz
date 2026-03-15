@@ -1159,9 +1159,18 @@ body.pane-resize-active .pane-resize-handle::before {
 }
 
 .settings-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
   gap: 16px;
-  padding: 18px 22px 22px;
+  padding: 18px 22px 14px;
   overflow: auto;
 }
 
@@ -1278,7 +1287,12 @@ body.pane-resize-active .pane-resize-handle::before {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  margin-top: 4px;
+  flex: 0 0 auto;
+  padding: 16px 22px 22px;
+  border-top: 1px solid rgba(121, 187, 218, 0.18);
+  background:
+    linear-gradient(180deg, rgba(4, 16, 28, 0), rgba(4, 16, 28, 0.94) 24%),
+    rgba(4, 16, 28, 0.96);
 }
 
 .settings-actions {
