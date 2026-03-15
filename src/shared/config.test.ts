@@ -9,6 +9,7 @@ import {
 describe("dashboard config shortcuts", () => {
   test("cloneDashboardConfig preserves pane shortcuts", () => {
     const cloned = cloneDashboardConfig(DEFAULT_DASHBOARD_CONFIG);
+    expect(cloned.visibleLivePanes).toBe(DEFAULT_DASHBOARD_CONFIG.visibleLivePanes);
     expect(cloned.shortcuts.movePaneLeft).toBe(DEFAULT_DASHBOARD_CONFIG.shortcuts.movePaneLeft);
     expect(cloned.shortcuts.movePaneRight).toBe(DEFAULT_DASHBOARD_CONFIG.shortcuts.movePaneRight);
     expect(cloned.shortcuts.closePane).toBe(DEFAULT_DASHBOARD_CONFIG.shortcuts.closePane);
@@ -26,5 +27,10 @@ describe("dashboard config shortcuts", () => {
     expect(normalized.shortcuts.movePaneLeft).toBe("Ctrl+Shift+Alt+ArrowLeft");
     expect(normalized.shortcuts.movePaneRight).toBe("Ctrl+Shift+Alt+ArrowRight");
     expect(normalized.shortcuts.closePane).toBe("Ctrl+Shift+W");
+  });
+
+  test("normalizeDashboardConfig keeps visible live pane cap odd", () => {
+    const normalized = normalizeDashboardConfig({ visibleLivePanes: 6 });
+    expect(normalized.visibleLivePanes).toBe(5);
   });
 });

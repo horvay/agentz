@@ -1,6 +1,9 @@
 export const MIN_PANE_WIDTH = 420;
 export const MAX_PANE_WIDTH = 1400;
 export const DEFAULT_PANE_WIDTH = 780;
+export const MIN_VISIBLE_LIVE_PANES = 1;
+export const MAX_VISIBLE_LIVE_PANES = 9;
+export const DEFAULT_VISIBLE_LIVE_PANES = 3;
 
 export interface DashboardShortcuts {
   addPane: string;
@@ -14,11 +17,13 @@ export interface DashboardShortcuts {
 
 export interface DashboardConfig {
   defaultPaneWidth: number;
+  visibleLivePanes: number;
   shortcuts: DashboardShortcuts;
 }
 
 export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   defaultPaneWidth: DEFAULT_PANE_WIDTH,
+  visibleLivePanes: DEFAULT_VISIBLE_LIVE_PANES,
   shortcuts: {
     addPane: "Ctrl+Shift+N",
     focusPrevPane: "Ctrl+Shift+ArrowLeft",
@@ -37,6 +42,12 @@ function normalizeModifierToken(token: string): "Ctrl" | "Shift" | "Alt" | "Meta
   if (normalized === "alt" || normalized === "option") return "Alt";
   if (normalized === "meta" || normalized === "cmd" || normalized === "command") return "Meta";
   return null;
+}
+
+export function normalizeVisibleLivePanes(value: number): number {
+  const clamped = Math.max(MIN_VISIBLE_LIVE_PANES, Math.min(MAX_VISIBLE_LIVE_PANES, Math.round(value)));
+  if (clamped % 2 === 1) return clamped;
+  return Math.max(MIN_VISIBLE_LIVE_PANES, clamped - 1);
 }
 
 function normalizeKeyToken(token: string): string | null {
@@ -96,6 +107,7 @@ export function normalizeShortcutCombo(value: string): string | null {
 export function cloneDashboardConfig(config: DashboardConfig): DashboardConfig {
   return {
     defaultPaneWidth: config.defaultPaneWidth,
+    visibleLivePanes: config.visibleLivePanes,
     shortcuts: {
       addPane: config.shortcuts.addPane,
       focusPrevPane: config.shortcuts.focusPrevPane,
@@ -111,11 +123,13 @@ export function cloneDashboardConfig(config: DashboardConfig): DashboardConfig {
 export function normalizeDashboardConfig(value: unknown): DashboardConfig {
   const defaults = DEFAULT_DASHBOARD_CONFIG;
   let defaultPaneWidth = defaults.defaultPaneWidth;
+  let visibleLivePanes = defaults.visibleLivePanes;
   let shortcuts: DashboardShortcuts = { ...defaults.shortcuts };
 
   if (typeof value === "object" && value) {
     const candidate = value as {
       defaultPaneWidth?: unknown;
+      visibleLivePanes?: unknown;
       shortcuts?: Partial<Record<keyof DashboardShortcuts, unknown>>;
     };
 
@@ -124,6 +138,10 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
         MIN_PANE_WIDTH,
         Math.min(MAX_PANE_WIDTH, Math.round(candidate.defaultPaneWidth)),
       );
+    }
+
+    if (typeof candidate.visibleLivePanes === "number" && Number.isFinite(candidate.visibleLivePanes)) {
+      visibleLivePanes = normalizeVisibleLivePanes(candidate.visibleLivePanes);
     }
 
     if (candidate.shortcuts && typeof candidate.shortcuts === "object") {
@@ -170,6 +188,7 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
 
   return {
     defaultPaneWidth,
+    visibleLivePanes,
     shortcuts,
   };
 }

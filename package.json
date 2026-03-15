@@ -19,6 +19,7 @@
 		"release:stable": "bun run native:build:host && GHOSTTY_DASHBOARD_ROOT=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 bunx vite build && GHOSTTY_DASHBOARD_ROOT=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 bunx electrobun build --env=stable",
 		"test:opencode": "bun run scripts/opencode-smoke.ts",
 		"test:opencode:screenshot": "bun run scripts/opencode-screenshot.ts",
+		"test:inactive-preview:screenshot": "bun run scripts/inactive-pane-preview-screenshot.ts",
 		"test:opencode:enter:onload:screenshot": "bun run scripts/opencode-enter-on-load-screenshot.ts",
 		"test:opencode:stress:screenshot": "bun run scripts/opencode-stress-screenshot.ts",
 		"test:nvim:screenshot": "bun run scripts/nvim-screenshot.ts",

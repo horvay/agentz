@@ -1,4 +1,5 @@
 import { dirname } from "node:path";
+import { decodeTerminalFramePacket, type TerminalFrame } from "../src/shared/protocol";
 
 function parseFlags(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
@@ -42,14 +43,15 @@ function findWindowId(windowName: string): string | null {
 type RpcMessage = {
   type?: string;
   ids?: unknown;
-  frame?: {
-    id?: string;
-    seq?: number;
-    altScreen?: boolean;
-    previewLines?: string[];
-    vt?: string;
-  };
+  frame?: TerminalFrame;
 };
+
+function decodeBinaryFrame(data: unknown): TerminalFrame | null {
+  if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
+    return decodeTerminalFramePacket(data);
+  }
+  return null;
+}
 
 class RpcSession {
   private readonly ws: WebSocket;
@@ -121,6 +123,16 @@ class RpcSession {
       }, timeoutMs);
 
       const onMessage = (event: MessageEvent) => {
+        const binaryFrame = decodeBinaryFrame(event.data);
+        if (binaryFrame) {
+          const frame = binaryFrame;
+          if (frame.id !== id) return;
+          if (!predicate(frame)) return;
+          clearTimeout(timeout);
+          this.ws.removeEventListener("message", onMessage);
+          resolve(frame);
+          return;
+        }
         let message: RpcMessage | null = null;
         try {
           message = JSON.parse(String(event.data)) as RpcMessage;

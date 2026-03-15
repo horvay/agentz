@@ -62,14 +62,14 @@ describe("coalesceQueuedRenderFrames", () => {
     expect(queue[0]?.renderPatchVt).toBe("rownext");
   });
 
-  test("does not drop incremental frames just because the queue is long", () => {
+  test("caps long patch-only queues to the newest work", () => {
     let queue: TerminalFrame[] = [];
     for (let seq = 1; seq <= MAX_FRAME_QUEUE_PER_PANE + 3; seq += 1) {
       queue = coalesceQueuedRenderFrames(queue, frame(seq, { chunk: `chunk-${seq}` }));
     }
 
-    expect(queue).toHaveLength(MAX_FRAME_QUEUE_PER_PANE + 3);
-    expect(queue[0]?.seq).toBe(1);
+    expect(queue).toHaveLength(MAX_FRAME_QUEUE_PER_PANE);
+    expect(queue[0]?.seq).toBe(4);
     expect(queue[queue.length - 1]?.seq).toBe(MAX_FRAME_QUEUE_PER_PANE + 3);
   });
 

@@ -1,5 +1,5 @@
 import { dirname } from "node:path";
-import type { TerminalFrame } from "../src/shared/protocol";
+import { decodeTerminalFramePacket, type TerminalFrame } from "../src/shared/protocol";
 import type { AvatarVisualState } from "../src/ui/avatarCatalog";
 import {
   detectAvatarState,
@@ -7,6 +7,13 @@ import {
   resolveAvatarDisplayState,
   type AgentKind,
 } from "../src/ui/avatarState";
+
+function decodeBinaryFrame(data: unknown): TerminalFrame | null {
+  if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
+    return decodeTerminalFramePacket(data);
+  }
+  return null;
+}
 
 function parseFlags(argv: string[]): Record<string, string | boolean> {
   const out: Record<string, string | boolean> = {};
@@ -87,6 +94,46 @@ class RpcSession {
       });
 
       this.ws.addEventListener("message", (event) => {
+        const binaryFrame = decodeBinaryFrame(event.data);
+        if (binaryFrame) {
+          const frame = binaryFrame;
+          this.latestFrames.set(frame.id, frame);
+          const nowMs = Date.now();
+          const displayState = resolveAvatarDisplayState(
+            frame,
+            this.avatarActivity.get(frame.id),
+            nowMs,
+          );
+          this.latestDisplayStates.set(frame.id, displayState);
+          const nextAgent = inspectAvatarState(frame).agent ?? this.avatarActivity.get(frame.id)?.agent ?? null;
+          const nextPreviewText = (frame.previewLines ?? []).join("\n");
+          this.avatarActivity.set(
+            frame.id,
+            displayState !== "idle"
+              ? {
+                  state: displayState,
+                  agent: nextAgent,
+                  atMs: nowMs,
+                  lastFrameAtMs: nowMs,
+                  lastPreviewText: nextPreviewText,
+                }
+              : this.avatarActivity.get(frame.id)
+                ? {
+                    ...this.avatarActivity.get(frame.id)!,
+                    agent: nextAgent,
+                    lastFrameAtMs: nowMs,
+                    lastPreviewText: nextPreviewText,
+                  }
+                : {
+                    state: "idle",
+                    agent: nextAgent,
+                    atMs: nowMs,
+                    lastFrameAtMs: nowMs,
+                    lastPreviewText: nextPreviewText,
+                  },
+          );
+          return;
+        }
         let message:
           | { type?: string; frame?: TerminalFrame; id?: unknown; exitCode?: unknown }
           | null = null;

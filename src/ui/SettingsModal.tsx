@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   cloneDashboardConfig,
+  DEFAULT_VISIBLE_LIVE_PANES,
+  MAX_VISIBLE_LIVE_PANES,
   MAX_PANE_WIDTH,
+  MIN_VISIBLE_LIVE_PANES,
   MIN_PANE_WIDTH,
   normalizeDashboardConfig,
+  normalizeVisibleLivePanes,
   type DashboardConfig,
   type DashboardShortcuts,
 } from "../shared/config";
@@ -22,6 +26,10 @@ interface SettingsModalProps {
 
 function clampPaneWidth(value: number): number {
   return Math.max(MIN_PANE_WIDTH, Math.min(MAX_PANE_WIDTH, Math.round(value)));
+}
+
+function formatVisiblePaneLabel(value: number): string {
+  return `${value} live pane${value === 1 ? "" : "s"}`;
 }
 
 function findDuplicateShortcutError(shortcuts: DashboardShortcuts): string | null {
@@ -164,6 +172,30 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
             </div>
             <p className="settings-note">
               Range: {MIN_PANE_WIDTH}px - {MAX_PANE_WIDTH}px
+            </p>
+          </section>
+
+          <section className="settings-section">
+            <h3>Live Panes In View</h3>
+            <div className="settings-width-controls">
+              <input
+                type="range"
+                min={MIN_VISIBLE_LIVE_PANES}
+                max={MAX_VISIBLE_LIVE_PANES}
+                step={2}
+                value={draft.visibleLivePanes}
+                onChange={(event) => {
+                  const next = Number(event.currentTarget.value);
+                  if (!Number.isFinite(next)) return;
+                  setDraft((prev) => ({ ...prev, visibleLivePanes: normalizeVisibleLivePanes(next) }));
+                }}
+              />
+              <div className="settings-value-chip" aria-live="polite">
+                {formatVisiblePaneLabel(draft.visibleLivePanes)}
+              </div>
+            </div>
+            <p className="settings-note">
+              Odd-number cap for fully rendered panes that are currently visible. Default: {DEFAULT_VISIBLE_LIVE_PANES}.
             </p>
           </section>
 

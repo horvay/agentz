@@ -1,4 +1,10 @@
-import type { ClientMessage, LaunchConfig, ServerMessage, TerminalFrame } from "../shared/protocol";
+import {
+  decodeTerminalFramePacket,
+  type ClientMessage,
+  type JsonServerMessage,
+  type LaunchConfig,
+  type TerminalFrame,
+} from "../shared/protocol";
 import type { DashboardConfig } from "../shared/config";
 
 type FrameHandler = (frame: TerminalFrame) => void;
@@ -21,15 +27,19 @@ export class RpcClient {
 
   constructor(url: string) {
     this.ws = new WebSocket(url);
+    this.ws.binaryType = "arraybuffer";
     this.ws.addEventListener("message", (event) => this.onMessage(event));
   }
 
   private onMessage(event: MessageEvent): void {
-    const message = JSON.parse(String(event.data)) as ServerMessage;
+    if (event.data instanceof ArrayBuffer) {
+      const frame = decodeTerminalFramePacket(event.data);
+      this.frameHandlers.forEach((cb) => cb(frame));
+      return;
+    }
+
+    const message = JSON.parse(String(event.data)) as JsonServerMessage;
     switch (message.type) {
-      case "terminal-frame":
-        this.frameHandlers.forEach((cb) => cb(message.frame));
-        break;
       case "terminal-exited":
         this.exitHandlers.forEach((cb) => cb(message.id, message.exitCode));
         break;

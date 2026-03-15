@@ -1,13 +1,18 @@
-import { dirname, join } from "node:path";
-import { ptyToText } from "ghostty-opentui";
+import { accessSync, constants as fsConstants } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 
-import type { TerminalFrame } from "../shared/protocol";
+import type { TerminalFrame, TerminalScreenRow } from "../shared/protocol";
 
-const MAX_VT_CHARS = 250_000;
-const MAX_ACTIVITY_VT_CHARS = 4_000;
+const MAX_ACTIVITY_TEXT_CHARS = 4_000;
 const MAX_PREVIEW_LINES = 200;
-const MAX_HOST_LINE_CHARS = 12_000_000;
+const MAX_HOST_PACKET_BYTES = 16 * 1024 * 1024;
 const WORKER_INPUT_BATCH_MS = 8;
+const DEFAULT_UNIX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const HOST_PACKET_FRAME = 1;
+const HOST_PACKET_EXIT = 2;
+const HOST_PACKET_CWD = 3;
+const HOST_PACKET_BUSY = 4;
+const utf8Decoder = new TextDecoder();
 let hasWarnedMissingNativeHost = false;
 
 function resolveNativeHostPath(rootCwd: string): string {
@@ -21,30 +26,233 @@ function resolveNativeHostPath(rootCwd: string): string {
   return direct;
 }
 
-
-
-function toPreviewLines(vt: string, cols: number, rows: number): string[] {
+function isExecutablePath(path: string): boolean {
+  if (!path) return false;
   try {
-    const plain = ptyToText(vt, {
-      cols: Math.max(40, cols),
-      rows: Math.max(MAX_PREVIEW_LINES, rows),
-    });
-    return plain
-      .split(/\r?\n/)
-      .slice(-MAX_PREVIEW_LINES)
-      .map((line) => line.slice(0, 512));
+    accessSync(path, fsConstants.X_OK);
+    return true;
   } catch {
-    const noAnsi = vt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-    return noAnsi
-      .split(/\r?\n/)
-      .slice(-MAX_PREVIEW_LINES)
-      .map((line) => line.slice(0, 512));
+    return false;
   }
+}
+
+export function resolveTerminalCommand(
+  command?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (command) return command;
+
+  if (platform === "win32") {
+    const comSpec = env.ComSpec?.trim();
+    if (comSpec) return comSpec;
+    return "pwsh.exe";
+  }
+
+  const shell = env.SHELL?.trim();
+  if (shell && (!isAbsolute(shell) || isExecutablePath(shell))) {
+    return shell;
+  }
+
+  for (const candidate of ["/bin/bash", "/usr/bin/bash", "/bin/zsh", "/usr/bin/zsh", "/bin/sh", "/usr/bin/sh"]) {
+    if (isExecutablePath(candidate)) return candidate;
+  }
+
+  return "sh";
+}
+
+export function buildTerminalHostEnv(
+  resolvedCommand: string,
+  command?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const nextEnv = { ...env };
+
+  if (platform !== "win32" && (!nextEnv.PATH || nextEnv.PATH.trim().length === 0)) {
+    nextEnv.PATH = DEFAULT_UNIX_PATH;
+  }
+
+  if (!command) {
+    const shell = nextEnv.SHELL?.trim();
+    if (!shell || (isAbsolute(shell) && !isExecutablePath(shell))) {
+      nextEnv.SHELL = resolvedCommand;
+    }
+  }
+
+  return nextEnv;
+}
+function trimActivityText(text: string): string {
+  return text.length > MAX_ACTIVITY_TEXT_CHARS ? text.slice(-MAX_ACTIVITY_TEXT_CHARS) : text;
+}
+
+interface HostFrameMessage {
+  type: "frame";
+  mode: "full" | "patch";
+  vt: string;
+  plain: string;
+  screenRows: TerminalScreenRow[];
+  cols: number;
+  rows: number;
+  altScreen: boolean;
+  cursorVisible: boolean;
+  cursorStyle: "block" | "underline" | "bar";
+  cursorBlink: boolean;
+  cursorRow: number;
+  cursorCol: number;
+  patchKind?: "cursor-only" | "row-update" | "alt-row-update";
+  mouseTrackingMode: "none" | "x10" | "normal" | "button" | "any";
+  mouseFormat: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
+  focusEvent: boolean;
+  mouseAlternateScroll: boolean;
+}
+
+type HostPacket =
+  | HostFrameMessage
+  | { type: "exit"; code: number }
+  | { type: "cwd"; cwd?: string }
+  | { type: "busy"; busy: boolean; atMs: number };
+
+function appendBytes(
+  existing: Uint8Array<ArrayBufferLike>,
+  next: Uint8Array<ArrayBufferLike>,
+): Uint8Array<ArrayBufferLike> {
+  if (existing.byteLength === 0) return next;
+  const combined = new Uint8Array(existing.byteLength + next.byteLength);
+  combined.set(existing);
+  combined.set(next, existing.byteLength);
+  return combined;
+}
+
+function decodeCursorStyle(value: number): "block" | "underline" | "bar" {
+  if (value === 1) return "underline";
+  if (value === 2) return "bar";
+  return "block";
+}
+
+function decodePatchKind(value: number): HostFrameMessage["patchKind"] {
+  if (value === 1) return "cursor-only";
+  if (value === 2) return "row-update";
+  if (value === 3) return "alt-row-update";
+  return undefined;
+}
+
+function decodeMouseTrackingMode(value: number): HostFrameMessage["mouseTrackingMode"] {
+  if (value === 1) return "x10";
+  if (value === 2) return "normal";
+  if (value === 3) return "button";
+  if (value === 4) return "any";
+  return "none";
+}
+
+function decodeMouseFormat(value: number): HostFrameMessage["mouseFormat"] {
+  if (value === 1) return "utf8";
+  if (value === 2) return "sgr";
+  if (value === 3) return "urxvt";
+  if (value === 4) return "sgr-pixels";
+  return "x10";
+}
+
+function decodeUtf8(bytes: Uint8Array<ArrayBufferLike>): string {
+  return utf8Decoder.decode(bytes);
+}
+
+function decodeHostPacket(kind: number, payload: Uint8Array<ArrayBufferLike>): HostPacket | null {
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+
+  if (kind === HOST_PACKET_FRAME) {
+    if (payload.byteLength < 22) return null;
+    const mode = payload[0] === 0 ? "full" : "patch";
+    const flags = payload[1] ?? 0;
+    const cursorStyle = decodeCursorStyle(payload[2] ?? 0);
+    const patchKind = decodePatchKind(payload[3] ?? 0);
+    const mouseTrackingMode = decodeMouseTrackingMode(payload[4] ?? 0);
+    const mouseFormat = decodeMouseFormat(payload[5] ?? 0);
+    const cols = view.getUint16(6, true);
+    const rows = view.getUint16(8, true);
+    const cursorRow = view.getUint16(10, true);
+    const cursorCol = view.getUint16(12, true);
+    const vtLength = view.getUint32(14, true);
+    const plainLength = view.getUint32(18, true);
+    const vtStart = 22;
+    const plainStart = vtStart + vtLength;
+    const plainEnd = plainStart + plainLength;
+    if (plainEnd > payload.byteLength) return null;
+    let offset = plainEnd;
+    const screenRows: TerminalScreenRow[] = [];
+    if (payload.byteLength - offset >= 2) {
+      const rowCount = view.getUint16(offset, true);
+      offset += 2;
+      for (let index = 0; index < rowCount; index += 1) {
+        if (payload.byteLength - offset < 6) return null;
+        const rowIndex = view.getUint16(offset, true);
+        offset += 2;
+        const rowLength = view.getUint32(offset, true);
+        offset += 4;
+        const rowEnd = offset + rowLength;
+        if (rowEnd > payload.byteLength) return null;
+        screenRows.push({ index: rowIndex, text: decodeUtf8(payload.subarray(offset, rowEnd)) });
+        offset = rowEnd;
+      }
+    }
+    return {
+      type: "frame",
+      mode,
+      vt: decodeUtf8(payload.subarray(vtStart, plainStart)),
+      plain: decodeUtf8(payload.subarray(plainStart, plainEnd)),
+      screenRows,
+      cols,
+      rows,
+      altScreen: (flags & 1) !== 0,
+      cursorVisible: (flags & 2) !== 0,
+      cursorBlink: (flags & 4) !== 0,
+      focusEvent: (flags & 8) !== 0,
+      mouseAlternateScroll: (flags & 16) !== 0,
+      cursorStyle,
+      cursorRow,
+      cursorCol,
+      patchKind,
+      mouseTrackingMode,
+      mouseFormat,
+    };
+  }
+
+  if (kind === HOST_PACKET_EXIT) {
+    if (payload.byteLength < 4) return null;
+    return { type: "exit", code: view.getInt32(0, true) };
+  }
+
+  if (kind === HOST_PACKET_CWD) {
+    if (payload.byteLength < 4) return null;
+    const cwdLength = view.getUint32(0, true);
+    if (cwdLength + 4 > payload.byteLength) return null;
+    return {
+      type: "cwd",
+      cwd: cwdLength > 0 ? decodeUtf8(payload.subarray(4, 4 + cwdLength)) : undefined,
+    };
+  }
+
+  if (kind === HOST_PACKET_BUSY) {
+    if (payload.byteLength < 9) return null;
+    return {
+      type: "busy",
+      busy: payload[0] === 1,
+      atMs: Number(view.getBigInt64(1, true)),
+    };
+  }
+
+  return null;
+}
+
+function previewLinesFromPlain(plain: string): string[] {
+  return plain
+    .split(/\r?\n/)
+    .slice(-MAX_PREVIEW_LINES)
+    .map((entry) => entry.slice(0, 512));
 }
 
 export class TerminalSession {
   private readonly hostHandle: Bun.Subprocess;
-  private vtBuffer = "";
   private seq = 0;
   private cols: number;
   private rows: number;
@@ -54,11 +262,15 @@ export class TerminalSession {
   private lastPreviewLines: string[] = [];
   private exitHandler: ((exitCode: number) => void) | null = null;
   private frameHandler: ((frame: TerminalFrame) => void) | null = null;
-  private stdoutLineBuffer = "";
+  private stdoutPacketBuffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   private hasExited = false;
   private lastAltScreen = false;
+  private lastChunk = "";
+  private lastActivityText = "";
   private pendingCwdResolvers = new Set<(cwd?: string) => void>();
   private flowPaused = false;
+  private frameIntervalMs = 0;
+  private previewOnly = false;
   private pendingWorkerInput: { data: string; encoding: "utf8" | "binary" }[] = [];
   private workerInputTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -77,10 +289,11 @@ export class TerminalSession {
 
     const rootCwd = process.env.GHOSTTY_DASHBOARD_ROOT ?? process.cwd();
     const launchCwd = cwd ?? launchBaseCwd;
-    const shell = command ?? process.env.SHELL ?? (process.platform === "win32" ? "pwsh.exe" : "bash");
+    const shell = resolveTerminalCommand(command);
     const shellArgs = args ?? [];
     const hostPath = resolveNativeHostPath(rootCwd);
     const hostBinaryPresent = Bun.file(hostPath).size > 0;
+    const hostEnv = buildTerminalHostEnv(shell, command);
 
     if (!hostBinaryPresent) {
       if (!hasWarnedMissingNativeHost) {
@@ -100,9 +313,7 @@ export class TerminalSession {
 
     this.hostHandle = Bun.spawn([hostPath, startupPayload], {
       cwd: rootCwd,
-      env: {
-        ...process.env,
-      },
+      env: hostEnv,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -115,72 +326,9 @@ export class TerminalSession {
 
   onData(cb: (frame: TerminalFrame) => void): void {
     this.frameHandler = cb;
-    const handleHostLine = (line: string) => {
-      if (!line.trim()) return;
-      let message:
-        | {
-            type: string;
-            data?: string;
-            code?: number;
-            cwd?: string;
-            busy?: boolean;
-            at_ms?: number;
-            vt_b64?: string;
-            plain_b64?: string;
-            cols?: number;
-            rows?: number;
-            alt_screen?: boolean;
-            cursor_visible?: boolean;
-            cursor_style?: "block" | "underline" | "bar";
-            cursor_blink?: boolean;
-            cursor_row?: number;
-            cursor_col?: number;
-            patch_kind?: "cursor-only" | "row-update" | "alt-row-update";
-            mouse_tracking_mode?: "none" | "x10" | "normal" | "button" | "any";
-            mouse_format?: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
-            focus_event?: boolean;
-            mouse_alternate_scroll?: boolean;
-            mode?: "full" | "patch";
-          }
-        | null = null;
-      try {
-        message = JSON.parse(line) as {
-          type: string;
-          data?: string;
-          code?: number;
-          cwd?: string;
-          busy?: boolean;
-          at_ms?: number;
-          vt_b64?: string;
-          plain_b64?: string;
-          cols?: number;
-          rows?: number;
-          alt_screen?: boolean;
-          cursor_visible?: boolean;
-          cursor_style?: "block" | "underline" | "bar";
-          cursor_blink?: boolean;
-          cursor_row?: number;
-          cursor_col?: number;
-          patch_kind?: "cursor-only" | "row-update" | "alt-row-update";
-          mouse_tracking_mode?: "none" | "x10" | "normal" | "button" | "any";
-          mouse_format?: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
-          focus_event?: boolean;
-          mouse_alternate_scroll?: boolean;
-          mode?: "full" | "patch";
-        };
-      } catch {
-        return;
-      }
-      if (message.type === "data" && typeof message.data === "string") {
-        const decoded = Buffer.from(message.data, "base64").toString("utf8");
-        this.vtBuffer += decoded;
-        if (this.vtBuffer.length > MAX_VT_CHARS) {
-          this.vtBuffer = this.vtBuffer.slice(-MAX_VT_CHARS);
-        }
-        return;
-      }
+    const handleHostPacket = (message: HostPacket) => {
       if (message.type === "exit") {
-        this.emitExit(typeof message.code === "number" ? message.code : 0);
+        this.emitExit(message.code);
         return;
       }
       if (message.type === "cwd") {
@@ -193,44 +341,50 @@ export class TerminalSession {
       }
       if (message.type === "busy") {
         const nextBusy = message.busy === true;
-        const nextBusyAtMs = typeof message.at_ms === "number" ? message.at_ms : Date.now();
+        const nextBusyAtMs = Number.isFinite(message.atMs) ? message.atMs : Date.now();
         if (nextBusy === this.shellBusy && nextBusyAtMs === this.shellBusyAtMs) return;
         this.shellBusy = nextBusy;
         this.shellBusyAtMs = nextBusyAtMs;
-        cb(this.snapshot("", undefined, this.lastPreviewLines, this.lastAltScreen));
+        cb(this.snapshot("", undefined, undefined, undefined, this.lastPreviewLines, this.lastAltScreen));
         return;
       }
-      if (message.type !== "frame" || !this.frameHandler) return;
-      this.lastAltScreen = message.alt_screen === true;
-      const renderedVt = Buffer.from(message.vt_b64 || "", "base64").toString("utf8");
+      if (!this.frameHandler) return;
+      this.lastAltScreen = message.altScreen === true;
+      const renderedVt = message.vt;
       const previewLines =
-        message.mode === "patch" && message.patch_kind === "cursor-only"
+        message.mode === "patch" && message.patchKind === "cursor-only"
           ? this.lastPreviewLines
-          : Buffer.from(message.plain_b64 || "", "base64")
-              .toString("utf8")
-              .split(/\r?\n/)
-              .slice(-MAX_PREVIEW_LINES)
-              .map((entry) => entry.slice(0, 512));
+          : previewLinesFromPlain(message.plain);
+      const previewText = previewLines.join("\n");
+      const activityTail = trimActivityText(renderedVt || previewText);
       this.lastPreviewLines = previewLines;
+      this.lastChunk = activityTail;
+      if (activityTail.length > 0) {
+        this.lastActivityText = trimActivityText(
+          this.lastActivityText ? `${this.lastActivityText}\n${activityTail}` : activityTail,
+        );
+      }
       this.cols = Math.max(2, Math.trunc(message.cols ?? this.cols));
       this.rows = Math.max(2, Math.trunc(message.rows ?? this.rows));
       this.frameHandler(
         this.snapshot(
           "",
-          message.mode !== "patch" ? renderedVt : undefined,
+          message.mode,
+          message.screenRows,
+          message.mode === "full" ? renderedVt : undefined,
           previewLines,
           this.lastAltScreen,
           message.mode === "patch" ? renderedVt : undefined,
-          message.patch_kind,
-          message.cursor_visible,
-          message.cursor_style,
-          message.cursor_blink,
-          message.cursor_row,
-          message.cursor_col,
-          message.mouse_tracking_mode,
-          message.mouse_format,
-          message.focus_event,
-          message.mouse_alternate_scroll,
+          message.patchKind,
+          message.cursorVisible,
+          message.cursorStyle,
+          message.cursorBlink,
+          message.cursorRow,
+          message.cursorCol,
+          message.mouseTrackingMode,
+          message.mouseFormat,
+          message.focusEvent,
+          message.mouseAlternateScroll,
         ),
       );
     };
@@ -238,24 +392,33 @@ export class TerminalSession {
     const pumpStdout = async (stream: ReadableStream<Uint8Array> | null | undefined) => {
       if (!stream) return;
       const reader = stream.getReader();
-      const decoder = new TextDecoder();
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           if (!value) continue;
-          const decoded = decoder.decode(value, { stream: true });
-          this.stdoutLineBuffer += decoded;
-          if (this.stdoutLineBuffer.length > MAX_HOST_LINE_CHARS) {
-            this.stdoutLineBuffer = this.stdoutLineBuffer.slice(-MAX_HOST_LINE_CHARS);
+          this.stdoutPacketBuffer = appendBytes(this.stdoutPacketBuffer, value);
+          let offset = 0;
+          while (this.stdoutPacketBuffer.byteLength - offset >= 5) {
+            const packetType = this.stdoutPacketBuffer[offset] ?? 0;
+            const payloadLength =
+              (this.stdoutPacketBuffer[offset + 1] ?? 0) |
+              ((this.stdoutPacketBuffer[offset + 2] ?? 0) << 8) |
+              ((this.stdoutPacketBuffer[offset + 3] ?? 0) << 16) |
+              ((this.stdoutPacketBuffer[offset + 4] ?? 0) << 24);
+            if (payloadLength < 0 || payloadLength > MAX_HOST_PACKET_BYTES) {
+              throw new Error(`Invalid native host packet length: ${payloadLength}`);
+            }
+            const packetEnd = offset + 5 + payloadLength;
+            if (packetEnd > this.stdoutPacketBuffer.byteLength) break;
+            const payload = this.stdoutPacketBuffer.subarray(offset + 5, packetEnd);
+            const decoded = decodeHostPacket(packetType, payload);
+            if (decoded) {
+              handleHostPacket(decoded);
+            }
+            offset = packetEnd;
           }
-          let newlineIndex = this.stdoutLineBuffer.indexOf("\n");
-          while (newlineIndex >= 0) {
-            const line = this.stdoutLineBuffer.slice(0, newlineIndex);
-            this.stdoutLineBuffer = this.stdoutLineBuffer.slice(newlineIndex + 1);
-            handleHostLine(line);
-            newlineIndex = this.stdoutLineBuffer.indexOf("\n");
-          }
+          this.stdoutPacketBuffer = this.stdoutPacketBuffer.subarray(offset);
         }
       } finally {
         reader.releaseLock();
@@ -312,6 +475,23 @@ export class TerminalSession {
     this.sendHost({ type: "flow", paused });
   }
 
+  setFrameInterval(intervalMs: number, previewOnly = false): void {
+    const nextIntervalMs = Math.max(0, Math.trunc(intervalMs));
+    if (nextIntervalMs === this.frameIntervalMs && previewOnly === this.previewOnly) {
+      return;
+    }
+    this.frameIntervalMs = nextIntervalMs;
+    this.previewOnly = previewOnly;
+    this.flushPendingWorkerInput();
+    this.sendHost({ type: "frame-rate", interval_ms: nextIntervalMs, preview_only: previewOnly });
+  }
+
+  requestSnapshot(): void {
+    if (this.hasExited) return;
+    this.flushPendingWorkerInput();
+    this.sendHost({ type: "snapshot" });
+  }
+
   resize(cols: number, rows: number): void {
     this.cols = Math.max(cols, 2);
     this.rows = Math.max(rows, 2);
@@ -348,6 +528,8 @@ export class TerminalSession {
 
   snapshot(
     chunk = "",
+    screenMode?: "full" | "patch",
+    screenRows?: TerminalScreenRow[],
     renderVt?: string,
     previewLines?: string[],
     altScreen?: boolean,
@@ -370,14 +552,15 @@ export class TerminalSession {
       rows: this.rows,
       seq: this.seq,
       cwd: this.cwd,
+      screenMode,
+      screenRows,
       renderVt,
       renderPatchVt,
       renderPatchKind,
       altScreen,
-      chunk,
-      // UI heuristics only inspect the recent VT tail, so don't ship the whole buffer.
-      vt: this.vtBuffer.slice(-MAX_ACTIVITY_VT_CHARS),
-      previewLines: previewLines ?? toPreviewLines(this.vtBuffer, this.cols, this.rows),
+      chunk: trimActivityText(chunk || this.lastChunk),
+      vt: this.lastActivityText,
+      previewLines: previewLines ?? this.lastPreviewLines,
       cursorVisible,
       cursorStyle,
       cursorBlink,
