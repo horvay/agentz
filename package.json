@@ -5,25 +5,26 @@
 	"main": ".electron/index.js",
 	"scripts": {
 		"start": "bun run dev",
-		"dev": "bun run scripts/kill-dashboard-processes.ts && concurrently \"bun run hmr\" \"bun run electron:watch\" \"bun run electron:run\"",
-		"web": "bun run scripts/kill-dashboard-processes.ts && concurrently \"vite --host 0.0.0.0 --port 5173\" \"bun run native:build:host && GHOSTTY_DASHBOARD_ROOT=$PWD GHOSTTY_DASHBOARD_LAUNCH_CWD=$PWD GHOSTTY_DASHBOARD_RPC_HOST=0.0.0.0 bun src/main/web.ts\"",
+		"dev": "bun run scripts/dev.ts",
+		"web": "bun run scripts/web-dev.ts",
 		"dev:hmr": "bun run dev",
 		"dev:launch": "bun run scripts/dev-launch.ts",
 		"hmr": "vite --host 127.0.0.1 --port 5173",
 		"electron:build-main": "bun run scripts/build-electron.ts",
-		"electron:watch": "bun run native:build:host && bun --watch scripts/build-electron.ts",
-		"electron:run": "bunx wait-on tcp:127.0.0.1:5173 .electron/index.js && GHOSTTY_DASHBOARD_ROOT=$PWD GHOSTTY_DASHBOARD_LAUNCH_CWD=$PWD WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 ELECTRON_HMR=1 electronmon .",
-		"build:desktop": "bun run native:build:host && bunx vite build && bun run electron:build-main",
+		"electron:watch": "bun run scripts/electron-watch.ts",
+		"electron:run": "bun run scripts/electron-run.ts",
+		"build:desktop": "bun run scripts/build-desktop.ts",
 		"build:canary": "bun run build:desktop",
-		"native:build:ghostty-vt": "ROOT=$PWD; ZIG=zig; if [ -x \"$ROOT/.tools/zig-x86_64-linux-0.15.2/zig\" ]; then ZIG=\"$ROOT/.tools/zig-x86_64-linux-0.15.2/zig\"; fi; cd deps/ghostty && \"$ZIG\" build lib-vt -Doptimize=ReleaseFast -Demit-macos-app=false -Demit-xcframework=false",
+		"native:build:ghostty-vt": "bun run scripts/native-build-ghostty-vt.ts",
 		"setup:zig": "bun run .tools/setup.ts",
 		"native:build": "bun run native:build:ghostty-vt",
-		"native:build:host": "ROOT=$PWD; ZIG=zig; if [ -x \"$ROOT/.tools/zig-x86_64-linux-0.15.2/zig\" ]; then ZIG=\"$ROOT/.tools/zig-x86_64-linux-0.15.2/zig\"; fi; cd src/native && \"$ZIG\" build -Doptimize=ReleaseFast",
+		"native:build:host": "bun run scripts/native-build-host.ts",
 		"native:build:bridge": "bun run native:build:host",
 		"release:portable": "bun run build:desktop && electron-builder --publish never --dir",
 		"release:stable": "bun run build:desktop && electron-builder --publish never",
 		"test:opencode": "bun run scripts/opencode-smoke.ts",
 		"test:opencode:screenshot": "bun run scripts/opencode-screenshot.ts",
+		"test:opencode:add-pane:screenshot": "bun run scripts/opencode-add-pane-screenshot.ts",
 		"test:inactive-preview:screenshot": "bun run scripts/inactive-pane-preview-screenshot.ts",
 		"test:opencode:enter:onload:screenshot": "bun run scripts/opencode-enter-on-load-screenshot.ts",
 		"test:opencode:stress:screenshot": "bun run scripts/opencode-stress-screenshot.ts",
@@ -38,8 +39,11 @@
 	"dependencies": {
 		"@xterm/addon-canvas": "^0.7.0",
 		"@xterm/addon-fit": "^0.11.0",
+		"@xterm/addon-serialize": "^0.14.0",
 		"@xterm/addon-webgl": "^0.19.0",
+		"@xterm/headless": "^6.0.0",
 		"ghostty-opentui": "^1.4.5",
+		"node-pty": "^1.1.0",
 		"react": "^18.3.1",
 		"react-dom": "^18.3.1",
 		"ws": "^8.18.3",
@@ -73,10 +77,12 @@
 		],
 		"extraResources": [
 			{
-				"from": "src/native/zig-out/bin/ghostty-pty-host",
-				"to": "bin/ghostty-pty-host"
+				"from": "src/native/zig-out/bin",
+				"to": "bin",
+				"filter": ["ghostty-pty-host", "ghostty-pty-host.exe"]
 			}
 		],
+		"asarUnpack": ["node_modules/node-pty/**/*"],
 		"linux": {
 			"category": "Development",
 			"target": ["tar.gz"]

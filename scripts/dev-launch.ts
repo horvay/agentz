@@ -1,3 +1,6 @@
+import { killDashboardProcesses } from "./kill-dashboard-processes";
+import { resolveBunExecutable } from "./runtime";
+
 interface PaneLaunchConfig {
   command?: string;
   args?: string[];
@@ -69,11 +72,9 @@ const launchJson = JSON.stringify(launch);
 console.log("Launching app with config:", launchJson);
 
 // Ensure only one app instance owns the RPC port.
-	Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"]);
-Bun.spawnSync(["pkill", "-f", "electronmon|\\.electron/index\\.js"]);
-Bun.spawnSync(["pkill", "-f", "\\.electron/index\\.js"]);
+killDashboardProcesses();
 
-const proc = Bun.spawn(["bun", "run", "dev"], {
+const proc = Bun.spawn([resolveBunExecutable(), "run", "dev"], {
   env: {
     ...process.env,
     GHOSTTY_DASHBOARD_LAUNCH: launchJson,

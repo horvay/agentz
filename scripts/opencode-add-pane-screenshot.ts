@@ -64,10 +64,7 @@ if ($null -ne $proc) {
 }
 
 function findWindowId(windowName: string): string | null {
-  if (process.platform === "win32") {
-    return findWindowIdWindows(windowName);
-  }
-  return findWindowIdPosix(windowName);
+  return process.platform === "win32" ? findWindowIdWindows(windowName) : findWindowIdPosix(windowName);
 }
 
 function prepareWindow(windowId: string): void {
@@ -107,6 +104,30 @@ $handle = [IntPtr]::new([int64]'${windowId}')
 [void][Win32]::ShowWindowAsync($handle, 9)
 [void][Win32]::MoveWindow($handle, 80, 80, ${width}, ${height}, $true)
 [void][Win32]::SetForegroundWindow($handle)
+`);
+}
+
+function sendAddPaneShortcut(windowId: string): void {
+  if (process.platform !== "win32") {
+    runChecked(["xdotool", "key", "--clearmodifiers", "ctrl+shift+n"]);
+    return;
+  }
+
+  runPowerShell(`
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Win32 {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+}
+"@
+$handle = [IntPtr]::new([int64]'${windowId}')
+[void][Win32]::ShowWindowAsync($handle, 9)
+[void][Win32]::SetForegroundWindow($handle)
+Start-Sleep -Milliseconds 300
+[System.Windows.Forms.SendKeys]::SendWait('^+n')
 `);
 }
 
@@ -190,9 +211,9 @@ class RpcSession {
     });
   }
 
-  async listFirstTerminalId(): Promise<string> {
+  async listTerminalIds(): Promise<string[]> {
     await this.ready;
-    return await new Promise<string>((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.ws.removeEventListener("message", onMessage);
         reject(new Error("RPC terminal list timeout"));
@@ -206,14 +227,9 @@ class RpcSession {
           return;
         }
         if (message.type !== "terminal-list" || !Array.isArray(message.ids)) return;
-        const first = message.ids.find((entry): entry is string => typeof entry === "string");
         clearTimeout(timeout);
         this.ws.removeEventListener("message", onMessage);
-        if (!first) {
-          reject(new Error("No terminals available"));
-          return;
-        }
-        resolve(first);
+        resolve(message.ids.filter((entry): entry is string => typeof entry === "string"));
       };
 
       this.ws.addEventListener("message", onMessage);
@@ -221,16 +237,26 @@ class RpcSession {
     });
   }
 
+  async waitForTerminalCount(count: number, timeoutMs = 12_000): Promise<string[]> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const ids = await this.listTerminalIds();
+      if (ids.length >= count) return ids;
+      await sleep(250);
+    }
+    throw new Error(`Timed out waiting for ${count} terminals`);
+  }
+
   async waitForFrame(
     id: string,
-    predicate: (frame: NonNullable<RpcMessage["frame"]>) => boolean,
+    predicate: (frame: TerminalFrame) => boolean,
     timeoutMs = 20_000,
-  ): Promise<NonNullable<RpcMessage["frame"]>> {
+  ): Promise<TerminalFrame> {
     await this.ready;
     return await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.ws.removeEventListener("message", onMessage);
-        reject(new Error("RPC frame wait timeout"));
+        reject(new Error(`RPC frame wait timeout for ${id}`));
       }, timeoutMs);
 
       const onMessage = (event: MessageEvent) => {
@@ -260,11 +286,6 @@ class RpcSession {
     });
   }
 
-  async sendInput(id: string, data: string): Promise<void> {
-    await this.ready;
-    this.ws.send(JSON.stringify({ type: "input", id, data }));
-  }
-
   close(): void {
     try {
       this.ws.close();
@@ -276,7 +297,7 @@ const flags = parseFlags(process.argv.slice(2));
 const screenshotPath =
   typeof flags.out === "string" && flags.out.trim().length > 0
     ? flags.out.trim()
-    : "screenshots/opencode-hi.png";
+    : "screenshots/opencode-add-pane.png";
 const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(500, Number(flags["wait-ms"]))
@@ -313,21 +334,27 @@ try {
   await sleep(1_500);
 
   rpc = new RpcSession();
-  const terminalId = await rpc.listFirstTerminalId();
-  await rpc.waitForFrame(terminalId, (frame) => {
-    const text = Array.isArray(frame.previewLines) ? frame.previewLines.join("\n") : "";
+  const [primaryId] = await rpc.waitForTerminalCount(1);
+  if (!primaryId) {
+    throw new Error("No initial terminal available");
+  }
+
+  await rpc.waitForFrame(primaryId, (frame) => {
+    const text = frame.previewLines.join("\n");
     return frame.altScreen === true || text.includes("opencode") || text.includes("Ask anything");
   });
-  await sleep(800);
-  await rpc.sendInput(terminalId, "hi\r");
-  await rpc.waitForFrame(terminalId, (frame) => typeof frame.seq === "number" && frame.seq > 1, 12_000);
-  await sleep(5_000);
+
+  await sleep(1_000);
+  sendAddPaneShortcut(windowId);
+
+  await rpc.waitForTerminalCount(2);
+  await sleep(4_000);
 
   captureWindow(windowId, screenshotPath);
-  console.log(`opencode-screenshot: saved ${screenshotPath}`);
+  console.log(`opencode-add-pane: saved ${screenshotPath}`);
 } catch (error) {
   failed = true;
-  console.error(`opencode-screenshot: ${error instanceof Error ? error.message : "unexpected failure"}`);
+  console.error(`opencode-add-pane: ${error instanceof Error ? error.message : "unexpected failure"}`);
 } finally {
   rpc?.close();
   app.kill();
