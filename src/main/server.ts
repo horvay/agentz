@@ -1,7 +1,13 @@
 import type { ServerWebSocket } from "bun";
 import { TerminalManager } from "./terminalManager";
 import type { DashboardConfigManager } from "./configManager";
-import type { ClientMessage, LaunchConfig, ServerMessage } from "../shared/protocol";
+import {
+  encodeTerminalFramePacket,
+  type ClientMessage,
+  type JsonServerMessage,
+  type LaunchConfig,
+  type TerminalFrame,
+} from "../shared/protocol";
 
 const HOST = "127.0.0.1";
 const PORT = 4599;
@@ -25,12 +31,17 @@ export function startTerminalRpcServer(
   const terminals = new TerminalManager();
   const clients = new Set<ServerWebSocket<WsData>>();
 
-  function send(ws: ServerWebSocket<WsData>, message: ServerMessage): void {
+  function send(ws: ServerWebSocket<WsData>, message: JsonServerMessage): void {
     ws.send(JSON.stringify(message));
   }
 
-  function broadcast(message: ServerMessage): void {
+  function broadcast(message: JsonServerMessage): void {
     const payload = JSON.stringify(message);
+    for (const ws of clients) ws.send(payload);
+  }
+
+  function broadcastFrame(frame: TerminalFrame): void {
+    const payload = encodeTerminalFramePacket(frame);
     for (const ws of clients) ws.send(payload);
   }
 
@@ -62,23 +73,19 @@ export function startTerminalRpcServer(
         try {
           switch (parsed.type) {
             case "create": {
-              const inheritedCwd =
-                !parsed.cwd && parsed.inheritCwdFromId
-                  ? await terminals.get(parsed.inheritCwdFromId)?.getCwd()
-                  : undefined;
               terminals.create(
                 parsed.id,
                 parsed.cols,
                 parsed.rows,
                 {
-                  onFrame: (frame) => broadcast({ type: "terminal-frame", frame }),
+                  onFrame: (frame) => broadcastFrame(frame),
                   onExit: (id, exitCode) => {
                     broadcast({ type: "terminal-exited", id, exitCode });
                   },
                 },
                 parsed.command,
                 parsed.args,
-                parsed.cwd ?? inheritedCwd,
+                parsed.cwd,
               );
               broadcast({ type: "terminal-created", id: parsed.id });
               break;
@@ -95,6 +102,10 @@ export function startTerminalRpcServer(
               terminals.get(parsed.id)?.setFlowPaused(parsed.paused);
               break;
             }
+            case "frame-rate": {
+              terminals.get(parsed.id)?.setFrameInterval(parsed.intervalMs, parsed.previewOnly);
+              break;
+            }
             case "snapshot": {
               const session = terminals.get(parsed.id);
               if (!session) {
@@ -105,7 +116,7 @@ export function startTerminalRpcServer(
                 });
                 return;
               }
-              send(ws, { type: "terminal-frame", frame: session.snapshot() });
+              session.requestSnapshot();
               break;
             }
             case "list": {

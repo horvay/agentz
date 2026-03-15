@@ -35,12 +35,10 @@ function loadConfigFile(configPath: string): DashboardConfig {
   try {
     const raw = readFileSync(configPath, "utf8");
     const parsed = JSON.parse(raw) as unknown;
-    const normalized = normalizeDashboardConfig(parsed);
-    return normalized;
-  } catch {
-    const fallback = cloneDashboardConfig(DEFAULT_DASHBOARD_CONFIG);
-    writeConfigFile(configPath, fallback);
-    return fallback;
+    return normalizeDashboardConfig(parsed);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown config error";
+    throw new Error(`Invalid dashboard config at ${configPath}: ${message}`);
   }
 }
 

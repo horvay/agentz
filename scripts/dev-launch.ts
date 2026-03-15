@@ -6,9 +6,6 @@ interface PaneLaunchConfig {
 
 interface LaunchConfig {
   panes?: PaneLaunchConfig[];
-  // Legacy shape still accepted by app for compatibility.
-  paneA?: PaneLaunchConfig;
-  paneB?: PaneLaunchConfig;
 }
 
 function parseCsv(input: string | undefined): string[] | undefined {
@@ -35,18 +32,6 @@ function parseFlags(argv: string[]): Record<string, string | boolean> {
   return out;
 }
 
-function buildPaneFromFlags(
-  flags: Record<string, string | boolean>,
-  prefix: string,
-): PaneLaunchConfig | undefined {
-  const pane: PaneLaunchConfig = {};
-  if (typeof flags[`${prefix}-cmd`] === "string") pane.command = flags[`${prefix}-cmd`];
-  if (typeof flags[`${prefix}-args`] === "string") pane.args = parseCsv(flags[`${prefix}-args`]);
-  if (typeof flags[`${prefix}-cwd`] === "string") pane.cwd = flags[`${prefix}-cwd`];
-  if (flags[`${prefix}-opencode`] === true) pane.command = "opencode";
-  return Object.keys(pane).length > 0 ? pane : undefined;
-}
-
 function getLaunchConfig(flags: Record<string, string | boolean>): LaunchConfig {
   const panesByIndex = new Map<number, PaneLaunchConfig>();
   const indexedPattern = /^pane-(\d+)-(cmd|args|cwd|opencode)$/;
@@ -69,19 +54,6 @@ function getLaunchConfig(flags: Record<string, string | boolean>): LaunchConfig 
     .filter((pane) => Object.keys(pane).length > 0);
   if (indexedPanes.length > 0) {
     return { panes: indexedPanes };
-  }
-
-  const paneA = buildPaneFromFlags(flags, "pane-a");
-  const paneB = buildPaneFromFlags(flags, "pane-b");
-  const legacyPanes = [paneA, paneB].filter(
-    (pane): pane is PaneLaunchConfig => Boolean(pane),
-  );
-  if (legacyPanes.length > 0) {
-    return {
-      panes: legacyPanes,
-      paneA,
-      paneB,
-    };
   }
   return {
     panes: [{}],

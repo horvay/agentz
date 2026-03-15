@@ -1,29 +1,43 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
-import { Terminal } from "xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import { CanvasAddon } from "@xterm/addon-canvas";
+import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { Terminal } from "xterm";
+
 import type { TerminalFrame } from "../shared/protocol";
 import type { DashboardShortcuts } from "../shared/config";
 import type { RpcClient } from "./rpcClient";
-import { coalesceTerminalRenderQueue, type TerminalRenderWorkItem } from "./renderQueues";
 import { doesEventMatchShortcut } from "./shortcuts";
 
 const RESIZE_DEBOUNCE_MS = 40;
-const CURSOR_FILL = "#ffe066";
-const CURSOR_TEXT = "#02060d";
-const TERMINAL_FONT_FAMILY = "JetBrainsMonoNerdFontMonoLocal, JetBrainsMono Nerd Font Mono, monospace";
 const TERMINAL_FONT_SIZE = 14;
 const TERMINAL_LINE_HEIGHT = 1.22;
-const FLOW_CONTROL_HIGH_WATERMARK = 128_000;
-const FLOW_CONTROL_LOW_WATERMARK = 32_000;
-const INPUT_BATCH_MS = 8;
+const TERMINAL_FONT_FAMILY = '"JetBrainsMonoNerdFontMonoLocal", "JetBrainsMono Nerd Font Mono", monospace';
 
-interface PendingInputChunk {
-  data: string;
-  encoding: "utf8" | "binary";
-}
+const TERMINAL_THEME = {
+  foreground: "#d9e6ff",
+  background: "#0a0f1a",
+  cursor: "#ffe066",
+  cursorAccent: "#02060d",
+  selectionBackground: "rgba(124, 214, 255, 0.24)",
+  black: "#10131b",
+  red: "#f07178",
+  green: "#7fdc8f",
+  yellow: "#ffcb6b",
+  blue: "#79b8ff",
+  magenta: "#c792ea",
+  cyan: "#7fd4f9",
+  white: "#d0d7e3",
+  brightBlack: "#5b6472",
+  brightRed: "#ff8b95",
+  brightGreen: "#a2f2a8",
+  brightYellow: "#ffd98e",
+  brightBlue: "#9fccff",
+  brightMagenta: "#ddb7ff",
+  brightCyan: "#a6e8ff",
+  brightWhite: "#f4f8ff",
+};
 
 interface Props {
   id: string;
@@ -38,68 +52,33 @@ interface Props {
     shortcut: "new-pane" | "focus-left" | "focus-right" | "move-left" | "move-right" | "close-pane" | "open-settings",
   ) => void;
   onFramesQueued: (id: string, lastSeq: number) => void;
+  onUserInput: (id: string) => void;
 }
 
-interface OverlayCursorState {
-  visible: boolean;
-  style: "block" | "underline" | "bar";
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-interface InputModeState {
-  mouseTrackingMode: "none" | "x10" | "normal" | "button" | "any";
-  mouseFormat: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
-  focusEvent: boolean;
-  mouseAlternateScroll: boolean;
-}
-
-function shouldUseOverlayCursor(frame?: TerminalFrame): boolean {
+function hasRenderablePayload(frame: TerminalFrame | undefined): frame is TerminalFrame {
   if (!frame) return false;
-  if (typeof frame.cursorRow !== "number" || typeof frame.cursorCol !== "number") return false;
-  return frame.altScreen === true && (frame.cursorStyle ?? "block") === "block";
+  return frame.screenMode === "full" || typeof frame.renderVt === "string" || typeof frame.renderPatchVt === "string";
 }
 
-function getInputModeState(frame?: TerminalFrame): InputModeState | null {
-  if (!frame) return null;
-  if (
-    !frame.mouseTrackingMode &&
-    !frame.mouseFormat &&
-    typeof frame.focusEvent !== "boolean" &&
-    typeof frame.mouseAlternateScroll !== "boolean"
-  ) {
-    return null;
+function loadBestRendererAddon(terminal: Terminal): { dispose(): void } | null {
+  try {
+    const addon = new WebglAddon();
+    terminal.loadAddon(addon);
+    return addon;
+  } catch {
+    try {
+      const addon = new CanvasAddon();
+      terminal.loadAddon(addon);
+      return addon;
+    } catch {
+      return null;
+    }
   }
-
-  return {
-    mouseTrackingMode: frame.mouseTrackingMode ?? "none",
-    mouseFormat: frame.mouseFormat ?? "x10",
-    focusEvent: frame.focusEvent === true,
-    mouseAlternateScroll: frame.mouseAlternateScroll === true,
-  };
 }
 
-function buildInputModePrefix(next: InputModeState, previous?: InputModeState | null): string {
-  const privateMode = (code: number, enabled: boolean) => `\x1b[?${code}${enabled ? "h" : "l"}`;
-  const writes: string[] = [];
-  const writeIfChanged = (code: number, enabled: boolean, prevEnabled: boolean | undefined) => {
-    if (prevEnabled === enabled) return;
-    writes.push(privateMode(code, enabled));
-  };
-
-  writeIfChanged(9, next.mouseTrackingMode === "x10", previous?.mouseTrackingMode === "x10");
-  writeIfChanged(1000, next.mouseTrackingMode === "normal", previous?.mouseTrackingMode === "normal");
-  writeIfChanged(1002, next.mouseTrackingMode === "button", previous?.mouseTrackingMode === "button");
-  writeIfChanged(1003, next.mouseTrackingMode === "any", previous?.mouseTrackingMode === "any");
-  writeIfChanged(1004, next.focusEvent, previous?.focusEvent);
-  writeIfChanged(1005, next.mouseFormat === "utf8", previous?.mouseFormat === "utf8");
-  writeIfChanged(1006, next.mouseFormat === "sgr", previous?.mouseFormat === "sgr");
-  writeIfChanged(1007, next.mouseAlternateScroll, previous?.mouseAlternateScroll);
-  writeIfChanged(1015, next.mouseFormat === "urxvt", previous?.mouseFormat === "urxvt");
-  writeIfChanged(1016, next.mouseFormat === "sgr-pixels", previous?.mouseFormat === "sgr-pixels");
-  return writes.join("");
+function framePayload(frame: TerminalFrame): string {
+  if (frame.screenMode === "full") return frame.renderVt ?? "";
+  return frame.renderPatchVt ?? frame.renderVt ?? "";
 }
 
 export function TerminalPane({
@@ -113,352 +92,165 @@ export function TerminalPane({
   onActivate,
   onShortcut,
   onFramesQueued,
+  onUserInput,
 }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const screenRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const webglAddonRef = useRef<WebglAddon | null>(null);
-  const canvasAddonRef = useRef<CanvasAddon | null>(null);
-  const syncedSizeRef = useRef(false);
-  const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const resizeSyncTimeoutRef = useRef<number | null>(null);
-  const refreshRafRef = useRef<number | null>(null);
-  const lastInputModeStateRef = useRef<InputModeState | null>(null);
-  const renderQueueRef = useRef<TerminalRenderWorkItem[]>([]);
-  const flushRenderQueueRef = useRef<() => void>(() => {});
-  const enqueueRenderRef = useRef<
-    (
-      payload: string,
-      options?: {
-        reset?: boolean;
-        dedupeKey?: string;
-        replaceQueuedFull?: boolean;
-        patchKind?: "cursor-only" | "row-update" | "alt-row-update";
-      },
-    ) => void
-  >(() => {});
-  const renderFlushRafRef = useRef<number | null>(null);
-  const pendingWriteBytesRef = useRef(0);
-  const flowPausedRef = useRef(false);
-  const lastAppliedRenderRef = useRef<string>("");
-  const altBufferActiveRef = useRef(false);
-  const pendingInputRef = useRef<PendingInputChunk[]>([]);
-  const inputFlushTimerRef = useRef<number | null>(null);
-  const shortcutHandlerRef = useRef(onShortcut);
+  const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const pendingFramesRef = useRef<TerminalFrame[]>([]);
+  const pendingFrameStartRef = useRef(0);
+  const processingFramesRef = useRef(false);
+  const lastAppliedSeqRef = useRef(0);
   const shortcutsRef = useRef(shortcuts);
-  const [overlayCursor, setOverlayCursor] = useState<OverlayCursorState | null>(null);
-  shortcutHandlerRef.current = onShortcut;
+  const shortcutHandlerRef = useRef(onShortcut);
+  const framesQueuedHandlerRef = useRef(onFramesQueued);
+  const userInputHandlerRef = useRef(onUserInput);
+
   shortcutsRef.current = shortcuts;
+  shortcutHandlerRef.current = onShortcut;
+  framesQueuedHandlerRef.current = onFramesQueued;
+  userInputHandlerRef.current = onUserInput;
 
-  useEffect(() => {
+  const queueResizeSync = (cols: number, rows: number) => {
+    if (resizeSyncTimeoutRef.current != null) {
+      window.clearTimeout(resizeSyncTimeoutRef.current);
+    }
+    resizeSyncTimeoutRef.current = window.setTimeout(() => {
+      resizeSyncTimeoutRef.current = null;
+      const previous = lastSentSizeRef.current;
+      if (previous && previous.cols === cols && previous.rows === rows) return;
+      lastSentSizeRef.current = { cols, rows };
+      rpc.send({ type: "resize", id, cols, rows });
+    }, RESIZE_DEBOUNCE_MS);
+  };
+
+  const focusTerminal = () => {
+    terminalRef.current?.focus();
+  };
+
+  const applyFrame = (frame: TerminalFrame, done: () => void) => {
     const terminal = terminalRef.current;
-    const host = hostRef.current;
-    const stage = stageRef.current;
-    if (
-      !terminal ||
-      !host ||
-      !stage ||
-      !shouldUseOverlayCursor(currentFrame) ||
-      typeof currentFrame?.cursorRow !== "number" ||
-      typeof currentFrame?.cursorCol !== "number"
-    ) {
-      setOverlayCursor(null);
+    if (!terminal) {
+      done();
       return;
     }
 
-    const renderDims = (terminal as unknown as {
-      _core?: {
-        _renderService?: {
-          dimensions?: {
-            css?: {
-              cell?: { width?: number; height?: number };
-            };
-          };
-        };
-      };
-    })._core?._renderService?.dimensions?.css;
-    const cellWidth = renderDims?.cell?.width ?? 0;
-    const cellHeight = renderDims?.cell?.height ?? 0;
-    const screen = host.querySelector(".xterm-screen") as HTMLElement | null;
-    if (!screen || cellWidth <= 0 || cellHeight <= 0) {
-      setOverlayCursor(null);
+    const payload = framePayload(frame);
+    if (frame.screenMode === "full") {
+      if (payload.length === 0) {
+        done();
+        return;
+      }
+      terminal.write(payload, done);
       return;
     }
 
-    const stageRect = stage.getBoundingClientRect();
-    const screenRect = screen.getBoundingClientRect();
-    const rowIndex = Math.max(0, currentFrame.cursorRow - 1);
-    const colIndex = Math.max(0, currentFrame.cursorCol - 1);
+    if (payload.length === 0) {
+      done();
+      return;
+    }
 
-    setOverlayCursor({
-      visible: active && (currentFrame.cursorVisible ?? true),
-      style: currentFrame.cursorStyle ?? "block",
-      left: screenRect.left - stageRect.left + colIndex * cellWidth,
-      top: screenRect.top - stageRect.top + rowIndex * cellHeight,
-      width: cellWidth,
-      height: cellHeight,
+    terminal.write(payload, done);
+  };
+
+  const compactPendingFrames = (force = false) => {
+    const start = pendingFrameStartRef.current;
+    if (start === 0) return;
+    const frames = pendingFramesRef.current;
+    if (!force && start < 32 && start * 2 < frames.length) return;
+    pendingFramesRef.current = frames.slice(start);
+    pendingFrameStartRef.current = 0;
+  };
+
+  const drainFrameQueue = () => {
+    if (processingFramesRef.current) return;
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const nextIndex = pendingFrameStartRef.current;
+    const nextFrame = pendingFramesRef.current[nextIndex];
+    if (!nextFrame) return;
+
+    pendingFrameStartRef.current = nextIndex + 1;
+    processingFramesRef.current = true;
+    applyFrame(nextFrame, () => {
+      lastAppliedSeqRef.current = Math.max(lastAppliedSeqRef.current, nextFrame.seq);
+      processingFramesRef.current = false;
+      compactPendingFrames();
+      if (pendingFrameStartRef.current < pendingFramesRef.current.length) {
+        drainFrameQueue();
+        return;
+      }
+      pendingFramesRef.current = [];
+      pendingFrameStartRef.current = 0;
+      framesQueuedHandlerRef.current(id, lastAppliedSeqRef.current);
     });
-  }, [active, currentFrame]);
+  };
+
+  const enqueueFrames = (frames: TerminalFrame[]) => {
+    const highestQueuedSeq = pendingFramesRef.current[pendingFramesRef.current.length - 1]?.seq ?? lastAppliedSeqRef.current;
+    const nextFrames = frames.filter((frame) => hasRenderablePayload(frame) && frame.seq > highestQueuedSeq);
+    if (nextFrames.length === 0) return;
+    pendingFramesRef.current.push(...nextFrames);
+    drainFrameQueue();
+  };
 
   useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-
-    const scheduleFullRefresh = () => {
-      if (webglAddonRef.current) return;
-      if (refreshRafRef.current) cancelAnimationFrame(refreshRafRef.current);
-      refreshRafRef.current = requestAnimationFrame(() => {
-        refreshRafRef.current = null;
-        if (!terminalRef.current) return;
-        terminalRef.current.refresh(0, Math.max(terminalRef.current.rows - 1, 0));
-      });
-    };
-
-    const setFlowPaused = (paused: boolean) => {
-      if (flowPausedRef.current === paused) return;
-      flowPausedRef.current = paused;
-      rpc.send({ type: "flow", id, paused });
-    };
-
-    const updateFlowControl = () => {
-      if (!altBufferActiveRef.current) {
-        setFlowPaused(false);
-        return;
-      }
-      if (pendingWriteBytesRef.current >= FLOW_CONTROL_HIGH_WATERMARK) {
-        setFlowPaused(true);
-        return;
-      }
-      if (pendingWriteBytesRef.current <= FLOW_CONTROL_LOW_WATERMARK) {
-        setFlowPaused(false);
-      }
-    };
-
-    const flushPendingInput = () => {
-      inputFlushTimerRef.current = null;
-      const pending = pendingInputRef.current;
-      if (pending.length === 0) return;
-      pendingInputRef.current = [];
-
-      let combined = "";
-      let currentEncoding: "utf8" | "binary" | null = null;
-      const flushChunk = () => {
-        if (!currentEncoding || combined.length === 0) return;
-        rpc.send({ type: "input", id, data: combined, encoding: currentEncoding });
-        combined = "";
-      };
-
-      for (const chunk of pending) {
-        if (currentEncoding !== chunk.encoding) {
-          flushChunk();
-          currentEncoding = chunk.encoding;
-        }
-        combined += chunk.data;
-      }
-      flushChunk();
-    };
-
-    const queueInput = (data: string, encoding: "utf8" | "binary") => {
-      const pending = pendingInputRef.current;
-      const last = pending[pending.length - 1];
-      if (last?.encoding === encoding) {
-        last.data += data;
-      } else {
-        pending.push({ data, encoding });
-      }
-      if (inputFlushTimerRef.current == null) {
-        inputFlushTimerRef.current = window.setTimeout(flushPendingInput, INPUT_BATCH_MS);
-      }
-    };
-
-    const flushRenderQueue = () => {
-      if (!terminalRef.current) return;
-      if (renderFlushRafRef.current != null) return;
-      renderFlushRafRef.current = requestAnimationFrame(() => {
-        renderFlushRafRef.current = null;
-        if (!terminalRef.current) return;
-        const queue = renderQueueRef.current;
-        if (queue.length === 0) return;
-        renderQueueRef.current = [];
-
-        let payload = "";
-        let reset = false;
-        let dedupeKey = "";
-        const flushBatch = () => {
-          if (!terminalRef.current) return;
-          if (!payload && !reset) return;
-          const batchBytes = payload.length;
-          if (reset) terminalRef.current.reset();
-          if (payload) {
-            pendingWriteBytesRef.current += batchBytes;
-            updateFlowControl();
-            terminalRef.current.write(payload, () => {
-              pendingWriteBytesRef.current = Math.max(0, pendingWriteBytesRef.current - batchBytes);
-              updateFlowControl();
-            });
-          }
-          payload = "";
-          reset = false;
-        };
-
-        for (const item of queue) {
-          if (item.reset) flushBatch();
-          reset = reset || item.reset;
-          payload += item.payload;
-          dedupeKey = item.dedupeKey ?? dedupeKey;
-        }
-
-        flushBatch();
-        lastAppliedRenderRef.current = dedupeKey;
-        scheduleFullRefresh();
-        if (renderQueueRef.current.length > 0) flushRenderQueue();
-      });
-    };
-
-    const queueResizeSync = (cols: number, rows: number) => {
-      if (resizeSyncTimeoutRef.current) {
-        window.clearTimeout(resizeSyncTimeoutRef.current);
-      }
-      resizeSyncTimeoutRef.current = window.setTimeout(() => {
-        resizeSyncTimeoutRef.current = null;
-        const prevSize = lastSentSizeRef.current;
-        if (prevSize && prevSize.cols === cols && prevSize.rows === rows) return;
-        lastSentSizeRef.current = { cols, rows };
-        rpc.send({ type: "resize", id, cols, rows });
-      }, RESIZE_DEBOUNCE_MS);
-    };
-
-    const enqueueRender = (
-      payload: string,
-      options?: {
-        reset?: boolean;
-        dedupeKey?: string;
-        replaceQueuedFull?: boolean;
-        patchKind?: "cursor-only" | "row-update" | "alt-row-update";
-      },
-    ) => {
-      if (options?.dedupeKey && payload === lastAppliedRenderRef.current) return;
-      renderQueueRef.current = coalesceTerminalRenderQueue(
-        renderQueueRef.current,
-        {
-          payload,
-          reset: options?.reset === true,
-          dedupeKey: options?.dedupeKey,
-          patchKind: options?.patchKind,
-        },
-        options?.replaceQueuedFull === true,
-      );
-      flushRenderQueue();
-    };
-    flushRenderQueueRef.current = flushRenderQueue;
-    enqueueRenderRef.current = enqueueRender;
+    const screen = screenRef.current;
+    const stage = stageRef.current;
+    if (!screen || !stage) return;
 
     const terminal = new Terminal({
+      allowTransparency: true,
+      convertEol: false,
+      cursorBlink: true,
+      cursorStyle: "block",
+      drawBoldTextInBrightColors: true,
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: TERMINAL_FONT_SIZE,
-      fontWeight: "400",
-      fontWeightBold: "700",
       lineHeight: TERMINAL_LINE_HEIGHT,
-      letterSpacing: 0,
-      cursorBlink: false,
-      cursorStyle: "block",
-      cursorInactiveStyle: "bar",
-      cursorWidth: 2,
-      convertEol: false,
-      scrollback: 2000,
-      minimumContrastRatio: 4.5,
-      theme: {
-        background: "#0a0f1a",
-        foreground: "#d9e6ff",
-        cursor: CURSOR_FILL,
-        cursorAccent: CURSOR_TEXT,
-        selectionBackground: "rgba(117, 219, 255, 0.25)",
-        black: "#10131b",
-        red: "#f07178",
-        green: "#7fdc8f",
-        yellow: "#ffcb6b",
-        blue: "#79b8ff",
-        magenta: "#c792ea",
-        cyan: "#7fd4f9",
-        white: "#d0d7e3",
-        brightBlack: "#5b6472",
-        brightRed: "#ff8b95",
-        brightGreen: "#a2f2a8",
-        brightYellow: "#ffd98e",
-        brightBlue: "#9fccff",
-        brightMagenta: "#ddb7ff",
-        brightCyan: "#a6e8ff",
-        brightWhite: "#f4f8ff",
-      },
+      scrollback: 5000,
+      smoothScrollDuration: 0,
+      theme: TERMINAL_THEME,
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    let canvasAddon: CanvasAddon | null = null;
-    const activateCanvasRenderer = () => {
-      if (canvasAddon) return;
-      canvasAddon = new CanvasAddon();
-      terminal.loadAddon(canvasAddon);
-      canvasAddonRef.current = canvasAddon;
-      webglAddonRef.current = null;
-    };
-    try {
-      const webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        webglAddonRef.current = null;
-        activateCanvasRenderer();
-        scheduleFullRefresh();
-      });
-      terminal.loadAddon(webglAddon);
-      webglAddonRef.current = webglAddon;
-      canvasAddonRef.current = null;
-    } catch {
-      activateCanvasRenderer();
-    }
-    terminal.open(host);
-    if (active) {
-      requestAnimationFrame(() => terminal.focus());
-    }
+    const rendererAddon = loadBestRendererAddon(terminal);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
-      if (event.key === "Escape" && !event.ctrlKey && !event.altKey && !event.metaKey) {
-        // Bare Escape is used by terminal apps like Codex for in-band interrupt.
-        event.preventDefault();
-        rpc.send({ type: "input", id, data: "\x1b" });
-        return false;
-      }
-      const bindings = shortcutsRef.current;
-      if (doesEventMatchShortcut(event, bindings.addPane)) {
+      if (doesEventMatchShortcut(event, shortcutsRef.current.addPane)) {
         event.preventDefault();
         shortcutHandlerRef.current("new-pane");
         return false;
       }
-      if (doesEventMatchShortcut(event, bindings.focusPrevPane)) {
+      if (doesEventMatchShortcut(event, shortcutsRef.current.focusPrevPane)) {
         event.preventDefault();
         shortcutHandlerRef.current("focus-left");
         return false;
       }
-      if (doesEventMatchShortcut(event, bindings.focusNextPane)) {
+      if (doesEventMatchShortcut(event, shortcutsRef.current.focusNextPane)) {
         event.preventDefault();
         shortcutHandlerRef.current("focus-right");
         return false;
       }
-      if (doesEventMatchShortcut(event, bindings.movePaneLeft)) {
+      if (doesEventMatchShortcut(event, shortcutsRef.current.movePaneLeft)) {
         event.preventDefault();
         shortcutHandlerRef.current("move-left");
         return false;
       }
-      if (doesEventMatchShortcut(event, bindings.movePaneRight)) {
+      if (doesEventMatchShortcut(event, shortcutsRef.current.movePaneRight)) {
         event.preventDefault();
         shortcutHandlerRef.current("move-right");
         return false;
       }
-      if (doesEventMatchShortcut(event, bindings.closePane)) {
+      if (doesEventMatchShortcut(event, shortcutsRef.current.closePane)) {
         event.preventDefault();
         shortcutHandlerRef.current("close-pane");
         return false;
       }
-      if (doesEventMatchShortcut(event, bindings.openSettings)) {
+      if (doesEventMatchShortcut(event, shortcutsRef.current.openSettings)) {
         event.preventDefault();
         shortcutHandlerRef.current("open-settings");
         return false;
@@ -466,200 +258,101 @@ export function TerminalPane({
       return true;
     });
 
-    let raf = 0;
-    const fitAndSync = () => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        fitAddon.fit();
-        scheduleFullRefresh();
-        const nextCols = terminal.cols;
-        const nextRows = terminal.rows;
-        queueResizeSync(nextCols, nextRows);
-      });
-    };
-
-    fitAndSync();
-
-    terminal.onData((data) => queueInput(data, "utf8"));
-    terminal.onBinary((data) => queueInput(data, "binary"));
-    terminal.onResize((size) => queueResizeSync(size.cols, size.rows));
-
-    terminalRef.current = terminal;
-    fitAddonRef.current = fitAddon;
-    syncedSizeRef.current = false;
-    renderQueueRef.current = [];
-    pendingWriteBytesRef.current = 0;
-    flowPausedRef.current = false;
-    lastAppliedRenderRef.current = "";
-    altBufferActiveRef.current = false;
-    lastInputModeStateRef.current = null;
-
-    const onWindowResize = () => fitAndSync();
-    const resizeObserver = new ResizeObserver(() => fitAndSync());
-    resizeObserver.observe(host);
-    if (stageRef.current) resizeObserver.observe(stageRef.current);
-
-    void document.fonts?.ready.then(() => {
-      fitAndSync();
-      scheduleFullRefresh();
+    const dataSubscription = terminal.onData((data) => {
+      userInputHandlerRef.current(id);
+      rpc.send({ type: "input", id, data, encoding: "utf8" });
+    });
+    const resizeSubscription = terminal.onResize(({ cols, rows }) => {
+      queueResizeSync(cols, rows);
     });
 
-    window.addEventListener("resize", onWindowResize);
+    terminal.open(screen);
+    terminalRef.current = terminal;
+    fitAddonRef.current = fitAddon;
+
+    const fitTerminal = () => {
+      fitAddon.fit();
+      queueResizeSync(terminal.cols, terminal.rows);
+    };
+
+    fitTerminal();
+
+    const resizeObserver = new ResizeObserver(() => {
+      window.requestAnimationFrame(fitTerminal);
+    });
+    resizeObserver.observe(stage);
+
+    void document.fonts?.ready.then(() => {
+      fitTerminal();
+    });
+
     return () => {
-      window.removeEventListener("resize", onWindowResize);
       resizeObserver.disconnect();
-      if (raf) cancelAnimationFrame(raf);
-      if (resizeSyncTimeoutRef.current) window.clearTimeout(resizeSyncTimeoutRef.current);
-      if (refreshRafRef.current) cancelAnimationFrame(refreshRafRef.current);
-      if (renderFlushRafRef.current) cancelAnimationFrame(renderFlushRafRef.current);
-      if (inputFlushTimerRef.current) window.clearTimeout(inputFlushTimerRef.current);
-      flushPendingInput();
-      setFlowPaused(false);
+      dataSubscription.dispose();
+      resizeSubscription.dispose();
+      rendererAddon?.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
-      webglAddonRef.current = null;
-      canvasAddonRef.current = null;
-      flushRenderQueueRef.current = () => {};
-      enqueueRenderRef.current = () => {};
+      pendingFramesRef.current = [];
+      pendingFrameStartRef.current = 0;
+      processingFramesRef.current = false;
+      lastAppliedSeqRef.current = 0;
+      lastSentSizeRef.current = null;
+      if (resizeSyncTimeoutRef.current != null) {
+        window.clearTimeout(resizeSyncTimeoutRef.current);
+        resizeSyncTimeoutRef.current = null;
+      }
     };
   }, [id, rpc]);
 
   useEffect(() => {
-    if (!pendingFrames?.length || !terminalRef.current) return;
-    const terminal = terminalRef.current;
-
-    for (const frame of pendingFrames) {
-      if (frame.cursorStyle) {
-        terminal.options.cursorStyle = frame.cursorStyle;
-        terminal.options.cursorInactiveStyle = frame.cursorStyle;
-      }
-      if (typeof frame.cursorBlink === "boolean") {
-        terminal.options.cursorBlink = frame.cursorBlink;
-      }
-      const useOverlayCursor = shouldUseOverlayCursor(frame);
-      const cursorVisible = active && (frame.cursorVisible ?? true);
-      const nextInputModeState = getInputModeState(frame);
-      const inputModePrefix = nextInputModeState
-        ? buildInputModePrefix(nextInputModeState, lastInputModeStateRef.current)
-        : "";
-      if (nextInputModeState) {
-        lastInputModeStateRef.current = nextInputModeState;
-      }
-      const cursorSuffix =
-        useOverlayCursor ? "\x1b[?25l" : cursorVisible ? "\x1b[?25h" : "\x1b[?25l";
-      let transition = "";
-      const altScreen = frame.altScreen === true;
-      const wasAltScreenActive = altBufferActiveRef.current;
-      if (altScreen && !wasAltScreenActive) {
-        transition = "\x1b[?1049h\x1b[H\x1b[2J";
-        altBufferActiveRef.current = true;
-      } else if (!altScreen && wasAltScreenActive) {
-        transition = "\x1b[?1049l\x1b[H\x1b[2J";
-        altBufferActiveRef.current = false;
-      } else if (altScreen) {
-        altBufferActiveRef.current = true;
-      }
-
-      if (frame.renderPatchVt) {
-        enqueueRenderRef.current(`${transition}${inputModePrefix}${frame.renderPatchVt}${cursorSuffix}`, {
-          patchKind: frame.renderPatchKind,
-        });
-      } else if (frame.renderVt) {
-        const framePrefix = altScreen ? "" : "\x1b[H\x1b[2J";
-        const payload = `${transition}${inputModePrefix}${framePrefix}${frame.renderVt}${cursorSuffix}`;
-        enqueueRenderRef.current(payload, {
-          reset: false,
-          dedupeKey: payload,
-          replaceQueuedFull: true,
-        });
-      } else if (transition || inputModePrefix) {
-        const payload = `${transition}${inputModePrefix}${cursorSuffix}`;
-        enqueueRenderRef.current(payload, {
-          patchKind: frame.renderPatchKind,
-        });
-      }
-    }
-
-    onFramesQueued(id, pendingFrames[pendingFrames.length - 1]?.seq ?? 0);
-
-    if (!syncedSizeRef.current && fitAddonRef.current && terminalRef.current) {
-      fitAddonRef.current.fit();
-      lastSentSizeRef.current = { cols: terminalRef.current.cols, rows: terminalRef.current.rows };
-      rpc.send({
-        type: "resize",
-        id,
-        cols: terminalRef.current.cols,
-        rows: terminalRef.current.rows,
-      });
-      syncedSizeRef.current = true;
-    }
-  }, [pendingFrames, active, id, onFramesQueued, rpc]);
+    if (!pendingFrames?.length) return;
+    enqueueFrames(pendingFrames);
+  }, [pendingFrames]);
 
   useEffect(() => {
-    if (!terminalRef.current) return;
+    if (pendingFrames?.length) return;
+    if (!hasRenderablePayload(currentFrame)) return;
+    if (currentFrame.seq <= lastAppliedSeqRef.current) return;
+    enqueueFrames([currentFrame]);
+  }, [currentFrame, pendingFrames]);
+
+  useEffect(() => {
     if (active) {
-      terminalRef.current.focus();
-      const focusRaf = requestAnimationFrame(() => {
-        terminalRef.current?.focus();
-      });
-      return () => {
-        cancelAnimationFrame(focusRaf);
-      };
+      const focusRaf = window.requestAnimationFrame(() => focusTerminal());
+      return () => window.cancelAnimationFrame(focusRaf);
     }
-    terminalRef.current.write("\x1b[?25l");
-    terminalRef.current.blur();
+    const helper = screenRef.current?.querySelector(".xterm-helper-textarea");
+    if (helper instanceof HTMLTextAreaElement) {
+      helper.blur();
+    }
   }, [active]);
 
   useEffect(() => {
-    if (!terminalRef.current) return;
-    terminalRef.current.write(
-      active && !shouldUseOverlayCursor(currentFrame)
-        ? "\x1b[?25h"
-        : "\x1b[?25l",
-    );
-  }, [active, currentFrame]);
-
-  const overlayCursorStyle: CSSProperties | undefined = overlayCursor
-    ? {
-        left: `${overlayCursor.left}px`,
-        top: `${overlayCursor.top}px`,
-        width: `${overlayCursor.width}px`,
-        height: `${overlayCursor.height}px`,
-        backgroundColor: overlayCursor.style === "block" ? CURSOR_FILL : undefined,
-        color: overlayCursor.style === "block" ? CURSOR_TEXT : undefined,
-        fontFamily: overlayCursor.style === "block" ? TERMINAL_FONT_FAMILY : undefined,
-        fontSize: overlayCursor.style === "block" ? `${TERMINAL_FONT_SIZE}px` : undefined,
-        lineHeight: overlayCursor.style === "block" ? TERMINAL_LINE_HEIGHT : undefined,
-        fontWeight: overlayCursor.style === "block" ? 400 : undefined,
-        paddingLeft: overlayCursor.style === "block" ? "1px" : undefined,
-        boxShadow: overlayCursor.style === "block" ? "inset 0 0 0 1px rgba(255, 216, 138, 0.22)" : undefined,
-      }
-    : undefined;
+    if (!active) return;
+    const onWindowFocus = () => {
+      window.requestAnimationFrame(() => focusTerminal());
+    };
+    window.addEventListener("focus", onWindowFocus);
+    return () => window.removeEventListener("focus", onWindowFocus);
+  }, [active]);
 
   return (
     <section className={`pane-shell ${active ? "pane-active" : ""}`} style={accentStyle}>
       <div
         ref={stageRef}
-        className="terminal-stage"
+        className="terminal-stage terminal-stage-selectable"
         onMouseDownCapture={() => {
           if (!active) onActivate(id);
-          terminalRef.current?.focus();
         }}
         onClick={() => {
           if (!active) onActivate(id);
-          terminalRef.current?.focus();
+          window.requestAnimationFrame(() => focusTerminal());
         }}
         role="presentation"
       >
-        <div ref={hostRef} className="xterm-host" />
-        {overlayCursor?.visible && (
-          <div
-            className={`terminal-cursor-overlay terminal-cursor-overlay-${overlayCursor.style}`}
-            style={overlayCursorStyle}
-            aria-hidden="true"
-          />
-        )}
+        <div ref={screenRef} className="terminal-screen terminal-screen-xterm" />
       </div>
     </section>
   );

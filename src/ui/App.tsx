@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { LaunchConfig, PaneLaunchConfig, TerminalFrame } from "../shared/protocol";
 import {
@@ -14,6 +14,14 @@ import { TerminalPane } from "./TerminalPane";
 import type { AvatarDefinition, AvatarId, AvatarVisualState } from "./avatarCatalog";
 import { avatarCatalog } from "./avatarCatalog";
 import { inspectAvatarState, resolveAvatarDisplayState, type AgentKind } from "./avatarState";
+import { previewTextForPane } from "./panePreview";
+import {
+  paneRuntimeStore,
+  type PaneRuntimeState,
+  type PaneRuntimeStatus,
+  usePaneFrameCount,
+  usePaneRuntime,
+} from "./paneRuntimeStore";
 import {
   FOLDER_ACCENT_PALETTE,
   folderAccentKey,
@@ -21,6 +29,7 @@ import {
 } from "./folderAccent";
 import { coalesceQueuedRenderFrames } from "./renderQueues";
 import { doesEventMatchShortcut } from "./shortcuts";
+import { selectLivePaneIds } from "./livePaneSelection";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
 
@@ -30,6 +39,9 @@ const WIDTH_STORAGE_KEY = "ghostty.dashboard.paneWidths.v1";
 const MAX_AVATAR_PANES = avatarCatalog.length;
 const MAX_ACTIVITY_CHUNK_CHARS = 4_000;
 const MAX_ACTIVITY_VT_CHARS = 4_000;
+const ACTIVE_INPUT_FLOW_HOLD_MS = 180;
+const LIVE_VISIBLE_PANE_FRAME_INTERVAL_MS = 90;
+const VISIBLE_PANE_INTERSECTION_RATIO = 0.2;
 const AVATAR_IDS = avatarCatalog.map((avatar) => avatar.id);
 const avatarById: Record<AvatarId, AvatarDefinition> = Object.fromEntries(
   avatarCatalog.map((avatar) => [avatar.id, avatar]),
@@ -41,14 +53,7 @@ function paneTitle(index: number): string {
 }
 
 function normalizeLaunchPanes(config: LaunchConfig): PaneLaunchConfig[] {
-  if (Array.isArray(config.panes) && config.panes.length > 0) {
-    return config.panes;
-  }
-  const legacy = [config.paneA, config.paneB].filter(
-    (pane): pane is PaneLaunchConfig => Boolean(pane),
-  );
-  if (legacy.length > 0) return legacy;
-  return [{}];
+  return Array.isArray(config.panes) ? config.panes : [];
 }
 
 function loadStoredPaneWidths(): Record<string, number> {
@@ -116,13 +121,16 @@ function accentVars(accent: (typeof FOLDER_ACCENT_PALETTE)[number]): CSSProperti
   } as CSSProperties;
 }
 
+const ACCENT_STYLE_BY_SLOT = FOLDER_ACCENT_PALETTE.map((accent) => accentVars(accent));
+
 function isEditableEventTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return (
     target.tagName === "INPUT" ||
     target.tagName === "TEXTAREA" ||
     target.isContentEditable ||
-    Boolean(target.closest(".xterm-helper-textarea"))
+    Boolean(target.closest(".xterm-helper-textarea")) ||
+    Boolean(target.closest(".terminal-input-capture"))
   );
 }
 
@@ -213,6 +221,8 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     rows: frame.rows,
     seq: frame.seq,
     cwd: frame.cwd,
+    screenMode: frame.screenMode,
+    screenRows: frame.screenRows,
     renderVt: frame.renderVt,
     renderPatchVt: frame.renderPatchVt,
     renderPatchKind: frame.renderPatchKind,
@@ -245,7 +255,7 @@ function mergePreviewLines(existing: string[], next: string[] | undefined): stri
 function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalFrame): TerminalFrame {
   if (!existing) return next;
   const isCursorOnly = next.renderPatchKind === "cursor-only";
-  const isMetadataOnly = !next.renderVt && !next.renderPatchVt && !next.chunk;
+  const isMetadataOnly = !next.renderVt && !next.renderPatchVt && !next.screenRows?.length && !next.chunk;
   if (!isCursorOnly && !isMetadataOnly) return next;
   return {
     ...existing,
@@ -272,31 +282,223 @@ function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalF
   };
 }
 
+function backgroundFrameIntervalForPaneCount(paneCount: number): number {
+  if (paneCount <= 1) return 0;
+  if (paneCount >= 8) return 480;
+  if (paneCount >= 5) return 320;
+  if (paneCount >= 3) return 220;
+  return 150;
+}
+
+interface AvatarChipProps {
+  id: string;
+  index: number;
+  avatar?: AvatarDefinition;
+  avatarState: AvatarVisualState;
+  cwd?: string;
+  isActive: boolean;
+  offset: number;
+  scale: number;
+  zIndex: number;
+  accentStyle?: CSSProperties;
+  onActivate: (id: string) => void;
+}
+
+const AvatarChip = memo(function AvatarChip({
+  id,
+  index,
+  avatar,
+  avatarState,
+  cwd,
+  isActive,
+  offset,
+  scale,
+  zIndex,
+  accentStyle,
+  onActivate,
+}: AvatarChipProps) {
+  const folderName = folderLabel(cwd);
+  const avatarStyle = useMemo(
+    () =>
+      ({
+        "--offset": `${offset}px`,
+        "--scale": scale,
+        "--opacity": 1,
+        zIndex: `${zIndex}`,
+        ...(accentStyle ?? {}),
+      }) as CSSProperties,
+    [accentStyle, offset, scale, zIndex],
+  );
+
+  return (
+    <button
+      type="button"
+      className={`avatar-chip ${isActive ? "avatar-chip-active" : ""}`}
+      style={avatarStyle}
+      onClick={() => onActivate(id)}
+      aria-label={`Focus ${paneTitle(index)}`}
+      title={`${avatar?.label ?? "Unassigned"} - ${folderName}${cwd ? ` (${cwd})` : ""}`}
+    >
+      <span className="avatar-folder" title={cwd ?? folderName}>
+        {folderName}
+      </span>
+      <span className="avatar-image-wrap">
+        {avatar ? (
+          <img src={avatarSrcForState(avatar, avatarState)} alt={avatar.label} className="avatar-image" />
+        ) : (
+          <span className="avatar-fallback">{paneTitle(index).slice(-1)}</span>
+        )}
+        {avatarState === "idle" && <img src={idleIconUrl} alt="" className="avatar-state-badge avatar-badge-idle" />}
+        {avatarState === "question" && (
+          <img src={questionIconUrl} alt="" className="avatar-state-badge avatar-badge-question" />
+        )}
+      </span>
+      <span className="avatar-name">{avatar?.label ?? "Unassigned"}</span>
+    </button>
+  );
+});
+
+AvatarChip.displayName = "AvatarChip";
+
+interface PanePreviewProps {
+  id: string;
+  index: number;
+  frame?: TerminalFrame;
+  paneState: PaneRuntimeStatus;
+  queuedCount: number;
+  accentStyle?: CSSProperties;
+  onActivate: (id: string) => void;
+}
+
+const PanePreview = memo(function PanePreview({
+  id,
+  index,
+  frame,
+  paneState,
+  queuedCount,
+  accentStyle,
+  onActivate,
+}: PanePreviewProps) {
+  const previewText = useMemo(() => previewTextForPane(frame), [frame]);
+
+  return (
+    <section className="pane-shell pane-preview-shell" style={accentStyle}>
+      <button
+        type="button"
+        className="pane-preview"
+        onClick={() => onActivate(id)}
+        aria-label={`Activate ${paneTitle(index)}`}
+        title={`Activate ${paneTitle(index)}`}
+      >
+        <div className="pane-preview-meta">
+          <span className="pane-preview-title">{paneTitle(index)}</span>
+          <span className={`pane-preview-badge pane-preview-badge-${frame?.shellBusy ? "busy" : paneState}`}>
+            {frame?.shellBusy ? "busy" : paneState}
+          </span>
+        </div>
+        <div className="pane-preview-path">{frame?.cwd ?? "Starting session..."}</div>
+        <pre className="pane-preview-text">{previewText}</pre>
+        <div className="pane-preview-foot">
+          <span>{frame?.altScreen ? "Interactive app" : "Shell view"}</span>
+          <span>{queuedCount > 0 ? `${queuedCount} queued` : "Preview mode"}</span>
+        </div>
+      </button>
+    </section>
+  );
+});
+
+PanePreview.displayName = "PanePreview";
+
+interface AvatarChipContainerProps {
+  id: string;
+  index: number;
+  avatar?: AvatarDefinition;
+  isActive: boolean;
+  offset: number;
+  scale: number;
+  zIndex: number;
+  accentStyle?: CSSProperties;
+  onActivate: (id: string) => void;
+}
+
+const AvatarChipContainer = memo(function AvatarChipContainer(props: AvatarChipContainerProps) {
+  const pane = usePaneRuntime(props.id);
+  return <AvatarChip {...props} avatarState={pane.avatarState ?? "idle"} cwd={pane.frame?.cwd} />;
+});
+
+AvatarChipContainer.displayName = "AvatarChipContainer";
+
+interface PanePreviewContainerProps {
+  id: string;
+  index: number;
+  accentStyle?: CSSProperties;
+  onActivate: (id: string) => void;
+}
+
+const PanePreviewContainer = memo(function PanePreviewContainer(props: PanePreviewContainerProps) {
+  const pane = usePaneRuntime(props.id);
+  return (
+    <PanePreview
+      {...props}
+      frame={pane.frame}
+      paneState={pane.status ?? "booting"}
+      queuedCount={pane.queuedFrames?.length ?? 0}
+    />
+  );
+});
+
+PanePreviewContainer.displayName = "PanePreviewContainer";
+
+interface ActiveTerminalPaneProps {
+  id: string;
+  rpc: RpcClient;
+  active: boolean;
+  accentStyle?: CSSProperties;
+  shortcuts: DashboardConfig["shortcuts"];
+  onActivate: (id: string) => void;
+  onShortcut: (
+    shortcut: "new-pane" | "focus-left" | "focus-right" | "move-left" | "move-right" | "close-pane" | "open-settings",
+  ) => void;
+  onFramesQueued: (id: string, lastSeq: number) => void;
+  onUserInput: (id: string) => void;
+}
+
+const ActiveTerminalPane = memo(function ActiveTerminalPane(props: ActiveTerminalPaneProps) {
+  const pane = usePaneRuntime(props.id);
+  return <TerminalPane {...props} currentFrame={pane.frame} pendingFrames={pane.queuedFrames} />;
+});
+
+ActiveTerminalPane.displayName = "ActiveTerminalPane";
+
+const StatusMetric = memo(function StatusMetric({ paneCount }: { paneCount: number }) {
+  const frameCount = usePaneFrameCount();
+  return <span className="status-metric">{paneCount} panes · {frameCount} active frames</span>;
+});
+
+StatusMetric.displayName = "StatusMetric";
+
 function App() {
   const [paneIds, setPaneIds] = useState<string[]>([FIRST_ID]);
-  const [frames, setFrames] = useState<Record<string, TerminalFrame>>({});
-  const [frameQueues, setFrameQueues] = useState<Record<string, TerminalFrame[]>>({});
   const [status, setStatus] = useState("Connecting...");
-  const [, setPaneStatus] = useState<Record<string, "booting" | "running" | "exited" | "error">>({
-    [FIRST_ID]: "booting",
-  });
   const [dashboardConfig, setDashboardConfig] = useState<DashboardConfig>(() =>
     cloneDashboardConfig(DEFAULT_DASHBOARD_CONFIG),
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [inputPriorityActive, setInputPriorityActive] = useState(false);
   const [activePane, setActivePane] = useState(FIRST_ID);
   const [paneWidths, setPaneWidths] = useState<Record<string, number>>(() => loadStoredPaneWidths());
   const [paneAvatarIds, setPaneAvatarIds] = useState<Record<string, AvatarId>>(() =>
     assignUniqueAvatars([FIRST_ID]),
   );
-  const [avatarStates, setAvatarStates] = useState<Record<string, AvatarVisualState>>({
-    [FIRST_ID]: "idle",
-  });
+  const [paneCwds, setPaneCwds] = useState<Record<string, string | undefined>>({});
+  const [visiblePaneIds, setVisiblePaneIds] = useState<string[]>([FIRST_ID]);
   const [stripWidth, setStripWidth] = useState(0);
   const [avatarStripWidth, setAvatarStripWidth] = useState(0);
   const activePaneRef = useRef(FIRST_ID);
   const framesRef = useRef<Record<string, TerminalFrame>>({});
   const frameQueuesRef = useRef<Record<string, TerminalFrame[]>>({});
+  const livePaneIdsRef = useRef<string[]>([FIRST_ID]);
+  const paneStatusRef = useRef<Record<string, PaneRuntimeStatus>>({ [FIRST_ID]: "booting" });
   const avatarStatesRef = useRef<Record<string, AvatarVisualState>>({ [FIRST_ID]: "idle" });
   const paneIdsRef = useRef<string[]>([FIRST_ID]);
   const nextPaneOrdinalRef = useRef(2);
@@ -322,20 +524,26 @@ function App() {
   const historicalFolderAccentSlotsRef = useRef<Record<string, number>>({});
   const pendingFrameUpdatesRef = useRef<Record<string, PendingPaneFrameUpdate>>({});
   const pendingFrameFlushRafRef = useRef<number | null>(null);
+  const inputPriorityTimerRef = useRef<number | null>(null);
+  const inputPriorityActiveRef = useRef(false);
+  const paneFlowPausedRef = useRef<Record<string, boolean>>({});
   const bootstrappedRef = useRef(false);
   const hasLaunchConfigRef = useRef(false);
   const hasDashboardConfigRef = useRef(false);
-  const bootstrapFallbackTimerRef = useRef<number | null>(null);
   const shortcuts = dashboardConfig.shortcuts;
   const defaultPaneWidth = dashboardConfig.defaultPaneWidth;
   const defaultPaneWidthRef = useRef(defaultPaneWidth);
 
   activePaneRef.current = activePane;
-  framesRef.current = frames;
-  frameQueuesRef.current = frameQueues;
-  avatarStatesRef.current = avatarStates;
   paneIdsRef.current = paneIds;
   defaultPaneWidthRef.current = defaultPaneWidth;
+
+  const livePaneIds = useMemo(
+    () => selectLivePaneIds(paneIds, visiblePaneIds, activePane, dashboardConfig.visibleLivePanes),
+    [activePane, dashboardConfig.visibleLivePanes, paneIds, visiblePaneIds],
+  );
+  const livePaneIdSet = useMemo(() => new Set(livePaneIds), [livePaneIds]);
+  livePaneIdsRef.current = livePaneIds;
 
   const centerNode = useCallback((container: HTMLElement | null, node: HTMLElement | null, behavior: ScrollBehavior) => {
     if (!container || !node) return;
@@ -352,14 +560,32 @@ function App() {
     [centerNode],
   );
 
-  const setActivePaneCentered = useCallback(
-    (id: string, behavior: ScrollBehavior = "smooth") => {
-      setActivePane(id);
+  const centerPaneWhenReady = useCallback(
+    (id: string, behavior: ScrollBehavior = "smooth", attempts = 8) => {
+      const node = paneSlotsRef.current[id];
+      const strip = stripRef.current;
+      if (node && strip && node.offsetWidth > 0) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            centerPane(id, behavior);
+          });
+        });
+        return;
+      }
+      if (attempts <= 0) return;
       requestAnimationFrame(() => {
-        centerPane(id, behavior);
+        centerPaneWhenReady(id, behavior, attempts - 1);
       });
     },
     [centerPane],
+  );
+
+  const setActivePaneCentered = useCallback(
+    (id: string, behavior: ScrollBehavior = "smooth") => {
+      setActivePane(id);
+      centerPaneWhenReady(id, behavior);
+    },
+    [centerPaneWhenReady],
   );
 
   useEffect(() => {
@@ -371,6 +597,54 @@ function App() {
     observer.observe(strip);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+
+    let frame = 0;
+    const measureVisiblePanes = () => {
+      frame = 0;
+      const stripRect = strip.getBoundingClientRect();
+      const nextVisible = paneIds.filter((id) => {
+        const node = paneSlotsRef.current[id];
+        if (!node) return false;
+        const rect = node.getBoundingClientRect();
+        const overlap = Math.max(0, Math.min(rect.right, stripRect.right) - Math.max(rect.left, stripRect.left));
+        if (overlap <= 0 || rect.width <= 0) return false;
+        return overlap / rect.width >= VISIBLE_PANE_INTERSECTION_RATIO;
+      });
+
+      setVisiblePaneIds((prev) => {
+        if (prev.length === nextVisible.length && prev.every((id, index) => id === nextVisible[index])) {
+          return prev;
+        }
+        return nextVisible.length > 0 ? nextVisible : [activePaneRef.current];
+      });
+    };
+
+    const scheduleMeasure = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(measureVisiblePanes);
+    };
+
+    scheduleMeasure();
+    strip.addEventListener("scroll", scheduleMeasure, { passive: true });
+    window.addEventListener("resize", scheduleMeasure);
+    const observer = new ResizeObserver(scheduleMeasure);
+    observer.observe(strip);
+    for (const id of paneIds) {
+      const node = paneSlotsRef.current[id];
+      if (node) observer.observe(node);
+    }
+
+    return () => {
+      strip.removeEventListener("scroll", scheduleMeasure);
+      window.removeEventListener("resize", scheduleMeasure);
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [paneIds, paneWidths]);
 
   useEffect(() => {
     const avatarStrip = avatarStripRef.current;
@@ -385,7 +659,6 @@ function App() {
   const createTerminal = useCallback((
     id: string,
     launch?: PaneLaunchConfig,
-    options?: { inheritCwdFromId?: string },
   ) => {
     if (createdIdsRef.current.has(id)) return;
     createdIdsRef.current.add(id);
@@ -397,7 +670,6 @@ function App() {
       command: launch?.command,
       args: launch?.args,
       cwd: launch?.cwd,
-      inheritCwdFromId: launch?.cwd ? undefined : options?.inheritCwdFromId,
     });
   }, []);
 
@@ -413,7 +685,7 @@ function App() {
     for (const id of ids) statusInit[id] = "booting";
     nextPaneOrdinalRef.current = ids.length + 1;
     setPaneIds(ids);
-    setPaneStatus(statusInit);
+    paneStatusRef.current = statusInit;
     setPaneWidths((prev) => {
       const next: Record<string, number> = {};
       for (const id of ids) {
@@ -422,7 +694,15 @@ function App() {
       return next;
     });
     setPaneAvatarIds(assignUniqueAvatars(ids));
-    setAvatarStates(Object.fromEntries(ids.map((id) => [id, "idle" as const])));
+    setPaneCwds({});
+    framesRef.current = {};
+    frameQueuesRef.current = {};
+    avatarStatesRef.current = Object.fromEntries(ids.map((id) => [id, "idle" as const]));
+    paneRuntimeStore.replaceAll(
+      Object.fromEntries(
+        ids.map((id) => [id, { status: "booting" as const, avatarState: "idle" as const }]),
+      ),
+    );
     avatarActivityRef.current = {};
     const firstId = ids[0] ?? FIRST_ID;
     setActivePaneCentered(firstId, "auto");
@@ -431,29 +711,12 @@ function App() {
     });
   }, [createTerminal, setActivePaneCentered]);
 
-  const maybeBootstrapTerminals = useCallback(
-    (force = false) => {
-      if (bootstrappedRef.current) return;
-      if (!force && (!hasLaunchConfigRef.current || !hasDashboardConfigRef.current)) return;
-      bootstrappedRef.current = true;
-      if (bootstrapFallbackTimerRef.current) {
-        window.clearTimeout(bootstrapFallbackTimerRef.current);
-        bootstrapFallbackTimerRef.current = null;
-      }
-      ensureBootstrapTerminals();
-    },
-    [ensureBootstrapTerminals],
-  );
-
-  const armBootstrapFallback = useCallback(() => {
-    if (bootstrapFallbackTimerRef.current) {
-      window.clearTimeout(bootstrapFallbackTimerRef.current);
-    }
-    bootstrapFallbackTimerRef.current = window.setTimeout(() => {
-      bootstrapFallbackTimerRef.current = null;
-      maybeBootstrapTerminals(true);
-    }, 1200);
-  }, [maybeBootstrapTerminals]);
+  const maybeBootstrapTerminals = useCallback(() => {
+    if (bootstrappedRef.current) return;
+    if (!hasLaunchConfigRef.current || !hasDashboardConfigRef.current) return;
+    bootstrappedRef.current = true;
+    ensureBootstrapTerminals();
+  }, [ensureBootstrapTerminals]);
 
   const addTerminalPane = useCallback(() => {
     if (paneIdsRef.current.length >= MAX_AVATAR_PANES) {
@@ -474,7 +737,7 @@ function App() {
       next.splice(activeIndex + 1, 0, id);
       return next;
     });
-    setPaneStatus((prev) => ({ ...prev, [id]: "booting" }));
+    paneStatusRef.current = { ...paneStatusRef.current, [id]: "booting" };
     setPaneWidths((prev) => ({ ...prev, [id]: defaultPaneWidth }));
     setPaneAvatarIds((prev) => {
       const used = new Set(Object.values(prev));
@@ -482,9 +745,10 @@ function App() {
       if (!avatarId) return prev;
       return { ...prev, [id]: avatarId };
     });
-    setAvatarStates((prev) => ({ ...prev, [id]: "idle" }));
+    avatarStatesRef.current = { ...avatarStatesRef.current, [id]: "idle" };
+    paneRuntimeStore.patchPane(id, { status: "booting", avatarState: "idle", queuedFrames: [] });
     setActivePaneCentered(id);
-    createTerminal(id, undefined, { inheritCwdFromId: activePaneRef.current });
+    createTerminal(id);
   }, [createTerminal, defaultPaneWidth, setActivePaneCentered]);
 
   const moveActivePane = useCallback(
@@ -521,10 +785,10 @@ function App() {
       });
 
       requestAnimationFrame(() => {
-        centerPane(activePaneRef.current, "smooth");
+        centerPaneWhenReady(activePaneRef.current, "smooth");
       });
     },
-    [centerPane],
+    [centerPaneWhenReady],
   );
 
   const openSettings = useCallback(() => {
@@ -544,6 +808,47 @@ function App() {
     setStatus("Settings saved");
   }, []);
 
+  const handlePaneShortcut = useCallback(
+    (
+      shortcut: "new-pane" | "focus-left" | "focus-right" | "move-left" | "move-right" | "close-pane" | "open-settings",
+    ) => {
+      if (shortcut === "new-pane") {
+        addTerminalPane();
+        return;
+      }
+      if (shortcut === "move-left" || shortcut === "move-right") {
+        reorderActivePane(shortcut === "move-right" ? "right" : "left");
+        return;
+      }
+      if (shortcut === "close-pane") {
+        closeActivePane();
+        return;
+      }
+      if (shortcut === "open-settings") {
+        openSettings();
+        return;
+      }
+      moveActivePane(shortcut === "focus-right" ? "right" : "left");
+    },
+    [addTerminalPane, closeActivePane, moveActivePane, openSettings, reorderActivePane],
+  );
+
+  const handlePaneUserInput = useCallback((id: string) => {
+    if (id !== activePaneRef.current) return;
+    if (!inputPriorityActiveRef.current) {
+      inputPriorityActiveRef.current = true;
+      setInputPriorityActive(true);
+    }
+    if (inputPriorityTimerRef.current != null) {
+      window.clearTimeout(inputPriorityTimerRef.current);
+    }
+    inputPriorityTimerRef.current = window.setTimeout(() => {
+      inputPriorityTimerRef.current = null;
+      inputPriorityActiveRef.current = false;
+      setInputPriorityActive(false);
+    }, ACTIVE_INPUT_FLOW_HOLD_MS);
+  }, []);
+
   const flushPendingFrames = useCallback(() => {
     pendingFrameFlushRafRef.current = null;
     const pending = pendingFrameUpdatesRef.current;
@@ -555,30 +860,45 @@ function App() {
     const nextFrames = { ...framesRef.current };
     const nextFrameQueues = { ...frameQueuesRef.current };
     const nextAvatarStates = { ...avatarStatesRef.current };
+    const nextPaneStatus = { ...paneStatusRef.current };
+    const runtimeUpdates: Record<string, PaneRuntimeState> = {};
+    const cwdUpdates: Record<string, string | undefined> = {};
 
     for (const [id, update] of entries) {
-      const activityFrame = mergeActivityFrame(nextFrames[id], update.activityFrame);
+      const activityFrame = update.activityFrame;
       const resolved = nextAvatarActivity(activityFrame, avatarActivityRef.current[id], nowMs);
       avatarActivityRef.current[id] = resolved.activity;
       nextFrames[id] = activityFrame;
-      nextFrameQueues[id] = update.renderFrames;
+      if (update.renderFrames.length > 0 && livePaneIdsRef.current.includes(id)) {
+        nextFrameQueues[id] = update.renderFrames;
+      } else {
+        delete nextFrameQueues[id];
+      }
       nextAvatarStates[id] = resolved.displayState;
+      if (nextPaneStatus[id] !== "running") {
+        nextPaneStatus[id] = "running";
+      }
+      runtimeUpdates[id] = {
+        frame: activityFrame,
+        queuedFrames: nextFrameQueues[id] ?? [],
+        avatarState: resolved.displayState,
+        status: nextPaneStatus[id] ?? "running",
+      };
+      cwdUpdates[id] = activityFrame.cwd;
     }
 
     framesRef.current = nextFrames;
     frameQueuesRef.current = nextFrameQueues;
     avatarStatesRef.current = nextAvatarStates;
-    setFrames(nextFrames);
-    setFrameQueues(nextFrameQueues);
-    setAvatarStates(nextAvatarStates);
-    setPaneStatus((prev) => {
+    paneStatusRef.current = nextPaneStatus;
+    paneRuntimeStore.patchMany(runtimeUpdates);
+    setPaneCwds((prev) => {
       let changed = false;
       const next = { ...prev };
-      for (const [id] of entries) {
-        if (next[id] !== "running") {
-          next[id] = "running";
-          changed = true;
-        }
+      for (const [id, cwd] of Object.entries(cwdUpdates)) {
+        if (next[id] === cwd) continue;
+        next[id] = cwd;
+        changed = true;
       }
       return changed ? next : prev;
     });
@@ -590,7 +910,6 @@ function App() {
       setStatus("Connected");
       rpc.send({ type: "launch-config" });
       rpc.send({ type: "get-config" });
-      armBootstrapFallback();
     });
     const disposeConfig = rpc.onConfig((config) => {
       defaultPaneWidthRef.current = config.defaultPaneWidth;
@@ -604,7 +923,8 @@ function App() {
       maybeBootstrapTerminals();
     });
     const disposeCreated = rpc.onCreated((id) => {
-      setPaneStatus((prev) => ({ ...prev, [id]: "running" }));
+      paneStatusRef.current = { ...paneStatusRef.current, [id]: "running" };
+      paneRuntimeStore.patchPane(id, { status: "running" });
       setStatus("Connected");
     });
     const disposeFrame = rpc.onFrame((frame) => {
@@ -612,10 +932,13 @@ function App() {
       const renderFrame = compactFrameForRender(frame);
       const pending = pendingFrameUpdatesRef.current[frame.id];
       const baseActivityFrame = pending?.activityFrame ?? framesRef.current[frame.id];
-      const baseRenderFrames = pending?.renderFrames ?? frameQueuesRef.current[frame.id] ?? [];
+      const shouldQueueRenderFrames = livePaneIdsRef.current.includes(frame.id);
+      const baseRenderFrames = shouldQueueRenderFrames
+        ? pending?.renderFrames ?? frameQueuesRef.current[frame.id] ?? []
+        : [];
       pendingFrameUpdatesRef.current[frame.id] = {
         activityFrame: mergeActivityFrame(baseActivityFrame, activityFrame),
-        renderFrames: coalesceQueuedRenderFrames(baseRenderFrames, renderFrame),
+        renderFrames: shouldQueueRenderFrames ? coalesceQueuedRenderFrames(baseRenderFrames, renderFrame) : [],
       };
       if (pendingFrameFlushRafRef.current == null) {
         pendingFrameFlushRafRef.current = window.requestAnimationFrame(flushPendingFrames);
@@ -623,7 +946,9 @@ function App() {
     });
     const disposeError = rpc.onError((message) => {
       setStatus(`RPC error: ${message}`);
-      setPaneStatus((prev) => ({ ...prev, [activePaneRef.current]: "error" }));
+      const id = activePaneRef.current;
+      paneStatusRef.current = { ...paneStatusRef.current, [id]: "error" };
+      paneRuntimeStore.patchPane(id, { status: "error" });
     });
     const disposeExit = rpc.onExit((id, code) => {
       setStatus(`${id} exited (${code})`);
@@ -632,6 +957,7 @@ function App() {
       delete framesRef.current[id];
       delete frameQueuesRef.current[id];
       delete avatarStatesRef.current[id];
+      delete paneStatusRef.current[id];
       setPaneIds((prev) => {
         const closedIndex = prev.indexOf(id);
         if (closedIndex < 0) return prev;
@@ -642,17 +968,7 @@ function App() {
         }
         return next;
       });
-      setPaneStatus((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
       setPaneAvatarIds((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
-      setAvatarStates((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
@@ -662,30 +978,25 @@ function App() {
         delete next[id];
         return next;
       });
-      setFrames((prev) => {
+      setPaneCwds((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
       });
-      setFrameQueues((prev) => {
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
+      paneRuntimeStore.removePane(id);
     });
 
     rpc.send({ type: "launch-config" });
     rpc.send({ type: "get-config" });
-    armBootstrapFallback();
 
     return () => {
       if (pendingFrameFlushRafRef.current != null) {
         window.cancelAnimationFrame(pendingFrameFlushRafRef.current);
         pendingFrameFlushRafRef.current = null;
       }
-      if (bootstrapFallbackTimerRef.current) {
-        window.clearTimeout(bootstrapFallbackTimerRef.current);
-        bootstrapFallbackTimerRef.current = null;
+      if (inputPriorityTimerRef.current != null) {
+        window.clearTimeout(inputPriorityTimerRef.current);
+        inputPriorityTimerRef.current = null;
       }
       disposeReady();
       disposeConfig();
@@ -695,24 +1006,37 @@ function App() {
       disposeError();
       disposeExit();
     };
-  }, [armBootstrapFallback, flushPendingFrames, maybeBootstrapTerminals, setActivePaneCentered]);
+  }, [flushPendingFrames, maybeBootstrapTerminals, setActivePaneCentered]);
+
+  useEffect(() => {
+    const paneIdSet = new Set(paneIds);
+    for (const id of Object.keys(paneFlowPausedRef.current)) {
+      if (!paneIdSet.has(id)) delete paneFlowPausedRef.current[id];
+    }
+
+    for (const id of paneIds) {
+      const paused = inputPriorityActive && id !== activePane;
+      if (paneFlowPausedRef.current[id] === paused) continue;
+      paneFlowPausedRef.current[id] = paused;
+      rpc.send({ type: "flow", id, paused });
+    }
+  }, [activePane, inputPriorityActive, paneIds]);
 
   const handleFramesQueued = useCallback((id: string, lastSeq: number) => {
-    setFrameQueues((prev) => {
-      const pending = prev[id];
-      if (!pending?.length) return prev;
-      const nextPending = pending.filter((frame) => frame.seq > lastSeq);
-      if (nextPending.length === pending.length) return prev;
-      if (nextPending.length === 0) {
-        const next = { ...prev };
-        delete next[id];
-        frameQueuesRef.current = next;
-        return next;
-      }
-      const next = { ...prev, [id]: nextPending };
+    const pending = frameQueuesRef.current[id];
+    if (!pending?.length) return;
+    const nextPending = pending.filter((frame) => frame.seq > lastSeq);
+    if (nextPending.length === pending.length) return;
+    if (nextPending.length === 0) {
+      const next = { ...frameQueuesRef.current };
+      delete next[id];
       frameQueuesRef.current = next;
-      return next;
-    });
+      paneRuntimeStore.patchPane(id, { queuedFrames: [] });
+      return;
+    }
+    const next = { ...frameQueuesRef.current, [id]: nextPending };
+    frameQueuesRef.current = next;
+    paneRuntimeStore.patchPane(id, { queuedFrames: nextPending });
   }, []);
 
   useEffect(() => {
@@ -761,43 +1085,115 @@ function App() {
   }, [addTerminalPane, closeActivePane, moveActivePane, openSettings, reorderActivePane, settingsOpen, shortcuts]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      const nowMs = Date.now();
-      setAvatarStates((prev) => {
-        let changed = false;
-        const next = { ...prev };
-        for (const [id, currentState] of Object.entries(prev)) {
-          if (currentState !== "working") continue;
-          const activity = avatarActivityRef.current[id];
-          const frame = frames[id];
-          const nextState = resolveAvatarDisplayState(frame, activity, nowMs);
-          if (nextState === currentState) continue;
-          next[id] = nextState;
-          changed = true;
-          if (activity) {
-            avatarActivityRef.current[id] = {
-              ...activity,
-              state: nextState,
-            };
-          }
-        }
-        return changed ? next : prev;
-      });
-    }, 400);
-    return () => window.clearInterval(timer);
-  }, [frames]);
+    const onPaste = (event: ClipboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (settingsOpen) return;
+      if (isEditableEventTarget(event.target)) return;
+      const text = event.clipboardData?.getData("text/plain");
+      if (!text) return;
+      const id = activePaneRef.current;
+      if (!id) return;
+      event.preventDefault();
+      handlePaneUserInput(id);
+      rpc.send({ type: "input", id, data: text, encoding: "utf8" });
+    };
+
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [handlePaneUserInput, settingsOpen]);
 
   useEffect(() => {
-    centerPane(activePane, "smooth");
-  }, [activePane, centerPane]);
+    const timer = window.setInterval(() => {
+      const nowMs = Date.now();
+      const nextAvatarStates = { ...avatarStatesRef.current };
+      const runtimeUpdates: Record<string, PaneRuntimeState> = {};
+      let changed = false;
+      for (const [id, currentState] of Object.entries(avatarStatesRef.current)) {
+        if (currentState !== "working") continue;
+        const activity = avatarActivityRef.current[id];
+        const frame = framesRef.current[id];
+        const nextState = resolveAvatarDisplayState(frame, activity, nowMs);
+        if (nextState === currentState) continue;
+        nextAvatarStates[id] = nextState;
+        runtimeUpdates[id] = { avatarState: nextState };
+        changed = true;
+        if (activity) {
+          avatarActivityRef.current[id] = {
+            ...activity,
+            state: nextState,
+          };
+        }
+      }
+      if (!changed) return;
+      avatarStatesRef.current = nextAvatarStates;
+      paneRuntimeStore.patchMany(runtimeUpdates);
+    }, 400);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const backgroundFrameIntervalMs = useMemo(
+    () => backgroundFrameIntervalForPaneCount(paneIds.length),
+    [paneIds.length],
+  );
+
+  useEffect(() => {
+    const previousQueues = frameQueuesRef.current;
+    let changed = false;
+    const next: Record<string, TerminalFrame[]> = {};
+    const runtimeUpdates: Record<string, PaneRuntimeState> = {};
+    const livePaneSet = new Set(livePaneIds);
+    for (const [id, queue] of Object.entries(previousQueues)) {
+      if (livePaneSet.has(id)) {
+        if (queue?.length) {
+          next[id] = queue;
+        }
+        continue;
+      }
+      if (!queue?.length) continue;
+      changed = true;
+      runtimeUpdates[id] = { queuedFrames: [] };
+    }
+    for (const id of livePaneIds) {
+      const queue = next[id] ?? [];
+      runtimeUpdates[id] = { queuedFrames: queue };
+    }
+    if (changed || livePaneIds.some((id) => previousQueues[id] !== next[id])) {
+      frameQueuesRef.current = next;
+      paneRuntimeStore.patchMany(runtimeUpdates);
+    } else if (Object.keys(runtimeUpdates).length > 0) {
+      paneRuntimeStore.patchMany(runtimeUpdates);
+    }
+
+    for (const id of paneIds) {
+      const isLive = livePaneSet.has(id);
+      rpc.send({
+        type: "frame-rate",
+        id,
+        intervalMs: id === activePane ? 0 : isLive ? LIVE_VISIBLE_PANE_FRAME_INTERVAL_MS : backgroundFrameIntervalMs,
+        previewOnly: !isLive,
+      });
+    }
+    for (const id of livePaneIds) {
+      rpc.send({ type: "snapshot", id });
+    }
+  }, [activePane, backgroundFrameIntervalMs, livePaneIds, paneIds]);
+
+  useEffect(() => {
+    centerPaneWhenReady(activePane, "smooth");
+  }, [activePane, centerPaneWhenReady]);
+
+  useLayoutEffect(() => {
+    if (!activePane) return;
+    centerPaneWhenReady(activePane, "auto");
+  }, [activePane, paneIds, paneWidths, stripWidth, centerPaneWhenReady]);
 
   useEffect(() => {
     const firstId = paneIds[0];
     if (!firstId) return;
     requestAnimationFrame(() => {
-      centerPane(activePaneRef.current || firstId, "auto");
+      centerPaneWhenReady(activePaneRef.current || firstId, "auto");
     });
-  }, [paneIds, stripWidth, centerPane]);
+  }, [paneIds, stripWidth, centerPaneWhenReady]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -816,7 +1212,7 @@ function App() {
       if (!resizeDragRef.current) return;
       resizeDragRef.current = null;
       document.body.classList.remove("pane-resize-active");
-      centerPane(activePaneRef.current, "auto");
+      centerPaneWhenReady(activePaneRef.current, "auto");
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -825,10 +1221,9 @@ function App() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [centerPane]);
+  }, [centerPaneWhenReady]);
 
-  const frameCount = useMemo(() => Object.keys(frames).length, [frames]);
-  const rpcReady = frameCount > 0;
+  const rpcReady = status !== "Connecting..." && !status.startsWith("RPC error");
   const leadSpacerWidth = useMemo(() => {
     if (paneIds.length === 0) return 0;
     const firstId = paneIds[0];
@@ -870,8 +1265,9 @@ function App() {
       right: buildSide(rightCount),
     };
   }, [activeAvatarIndex, avatarStripWidth, paneIds.length]);
+  const paneCwdSignature = paneIds.map((id) => paneCwds[id] ?? "").join("\n");
   const paneAccentStyles = useMemo(() => {
-    const folderKeys = paneIds.map((id) => folderAccentKey(frames[id]?.cwd));
+    const folderKeys = paneIds.map((id) => folderAccentKey(paneCwds[id]));
     const next = resolveFolderAccentAssignments(
       folderKeys,
       liveFolderAccentSlotsRef.current,
@@ -882,12 +1278,12 @@ function App() {
 
     const out: Record<string, CSSProperties> = {};
     for (const id of paneIds) {
-      const key = folderAccentKey(frames[id]?.cwd);
+      const key = folderAccentKey(paneCwds[id]);
       const slot = next.liveAssignments[key] ?? 0;
-      out[id] = accentVars(FOLDER_ACCENT_PALETTE[slot]);
+      out[id] = ACCENT_STYLE_BY_SLOT[slot] ?? ACCENT_STYLE_BY_SLOT[0];
     }
     return out;
-  }, [frames, paneIds]);
+  }, [paneCwdSignature, paneIds]);
 
   return (
     <main className="app-shell">
@@ -902,9 +1298,7 @@ function App() {
           aria-label={rpcReady ? "Local terminal backend connected" : "Local terminal backend disconnected"}
         />
         <div className="topbar-meta">
-          <span className="status-metric">
-            {paneIds.length} panes · {frameCount} active frames
-          </span>
+          <StatusMetric paneCount={paneIds.length} />
           <div className="shortcut-cluster" aria-label="Keyboard shortcuts">
             <span className="shortcut-pill">
               <span className="shortcut-label">Add</span>
@@ -943,9 +1337,6 @@ function App() {
           {paneIds.map((id, index) => {
             const avatarId = paneAvatarIds[id];
             const avatar = avatarId ? avatarById[avatarId] : undefined;
-            const avatarState = avatarStates[id] ?? "idle";
-            const cwd = frames[id]?.cwd;
-            const folderName = folderLabel(cwd);
             const isActive = activePane === id;
             const relative = index - activeAvatarIndex;
             const direction = relative === 0 ? 0 : relative > 0 ? 1 : -1;
@@ -960,42 +1351,20 @@ function App() {
             const offset = direction * spread;
             const distance = Math.abs(relative);
             const scale = isActive ? 1 : Math.max(0.72, 0.9 - distance * 0.11);
-            const avatarStyle = {
-              "--offset": `${offset}px`,
-              "--scale": scale,
-              "--opacity": 1,
-              zIndex: `${120 - distance}`,
-              ...(paneAccentStyles[id] ?? {}),
-            } as CSSProperties;
 
             return (
-              <button
+              <AvatarChipContainer
                 key={`avatar-${id}`}
-                type="button"
-                className={`avatar-chip ${isActive ? "avatar-chip-active" : ""}`}
-                style={avatarStyle}
-                onClick={() => setActivePaneCentered(id)}
-                aria-label={`Focus ${paneTitle(index)}`}
-                title={`${avatar?.label ?? "Unassigned"} - ${folderName}${cwd ? ` (${cwd})` : ""}`}
-              >
-                <span className="avatar-folder" title={cwd ?? folderName}>
-                  {folderName}
-                </span>
-                <span className="avatar-image-wrap">
-                  {avatar ? (
-                    <img src={avatarSrcForState(avatar, avatarState)} alt={avatar.label} className="avatar-image" />
-                  ) : (
-                    <span className="avatar-fallback">{paneTitle(index).slice(-1)}</span>
-                  )}
-                  {avatarState === "idle" && (
-                    <img src={idleIconUrl} alt="" className="avatar-state-badge avatar-badge-idle" />
-                  )}
-                  {avatarState === "question" && (
-                    <img src={questionIconUrl} alt="" className="avatar-state-badge avatar-badge-question" />
-                  )}
-                </span>
-                <span className="avatar-name">{avatar?.label ?? "Unassigned"}</span>
-              </button>
+                id={id}
+                index={index}
+                avatar={avatar}
+                isActive={isActive}
+                offset={offset}
+                scale={scale}
+                zIndex={120 - distance}
+                accentStyle={paneAccentStyles[id]}
+                onActivate={setActivePaneCentered}
+              />
             );
           })}
         </div>
@@ -1012,36 +1381,26 @@ function App() {
             }}
             style={{ width: `${paneWidths[id] ?? defaultPaneWidth}px` }}
           >
-            <TerminalPane
-              id={id}
-              rpc={rpc}
-              currentFrame={frames[id]}
-              pendingFrames={frameQueues[id]}
-              active={activePane === id}
-              accentStyle={paneAccentStyles[id]}
-              shortcuts={shortcuts}
-              onActivate={(nextId) => setActivePaneCentered(nextId)}
-              onFramesQueued={handleFramesQueued}
-              onShortcut={(shortcut) => {
-                if (shortcut === "new-pane") {
-                  addTerminalPane();
-                  return;
-                }
-                if (shortcut === "move-left" || shortcut === "move-right") {
-                  reorderActivePane(shortcut === "move-right" ? "right" : "left");
-                  return;
-                }
-                if (shortcut === "close-pane") {
-                  closeActivePane();
-                  return;
-                }
-                if (shortcut === "open-settings") {
-                  openSettings();
-                  return;
-                }
-                moveActivePane(shortcut === "focus-right" ? "right" : "left");
-              }}
-            />
+            {livePaneIdSet.has(id) ? (
+              <ActiveTerminalPane
+                id={id}
+                rpc={rpc}
+                active={activePane === id}
+                accentStyle={paneAccentStyles[id]}
+                shortcuts={shortcuts}
+                onActivate={setActivePaneCentered}
+                onFramesQueued={handleFramesQueued}
+                onShortcut={handlePaneShortcut}
+                onUserInput={handlePaneUserInput}
+              />
+            ) : (
+              <PanePreviewContainer
+                id={id}
+                index={index}
+                accentStyle={paneAccentStyles[id]}
+                onActivate={setActivePaneCentered}
+              />
+            )}
             <div
               className="pane-resize-handle"
               role="separator"

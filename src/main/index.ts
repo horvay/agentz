@@ -6,37 +6,14 @@ import type { LaunchConfig } from "../shared/protocol";
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
 
-function normalizeLaunchConfig(config: LaunchConfig): LaunchConfig {
-  if (Array.isArray(config.panes) && config.panes.length > 0) {
-    return {
-      ...config,
-      panes: config.panes.map((pane) => ({
-        command: pane?.command,
-        args: pane?.args,
-        cwd: pane?.cwd,
-      })),
-    };
-  }
-  const legacyPanes = [config.paneA, config.paneB].filter(
-    (pane): pane is NonNullable<LaunchConfig["paneA"]> => Boolean(pane),
-  );
-  if (legacyPanes.length > 0) {
-    return {
-      ...config,
-      panes: legacyPanes,
-    };
-  }
-  return config;
-}
-
 function parseLaunchConfigFromEnv(): LaunchConfig | null {
   const raw = process.env.GHOSTTY_DASHBOARD_LAUNCH;
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as LaunchConfig;
-    return normalizeLaunchConfig(parsed);
-  } catch {
-    return null;
+    return JSON.parse(raw) as LaunchConfig;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown launch config error";
+    throw new Error(`Invalid GHOSTTY_DASHBOARD_LAUNCH: ${message}`);
   }
 }
 

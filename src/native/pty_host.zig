@@ -40,28 +40,9 @@ const Command = struct {
     cols: ?u16 = null,
     rows: ?u16 = null,
     paused: ?bool = null,
+    interval_ms: ?u16 = null,
+    preview_only: ?bool = null,
     encoding: ?[]const u8 = null,
-};
-
-const DataMessage = struct {
-    type: []const u8 = "data",
-    data: []const u8,
-};
-
-const ExitMessage = struct {
-    type: []const u8 = "exit",
-    code: i32,
-};
-
-const CwdMessage = struct {
-    type: []const u8 = "cwd",
-    cwd: []const u8,
-};
-
-const BusyMessage = struct {
-    type: []const u8 = "busy",
-    busy: bool,
-    at_ms: i64,
 };
 
 const FrameMode = enum {
@@ -69,27 +50,18 @@ const FrameMode = enum {
     patch,
 };
 
-const FrameMessage = struct {
-    type: []const u8 = "frame",
-    mode: FrameMode,
-    vt_b64: []const u8,
-    plain_b64: []const u8,
-    patch_kind: ?[]const u8 = null,
-    cols: u16,
-    rows: u16,
-    alt_screen: bool,
-    cursor_visible: bool,
-    cursor_style: []const u8,
-    cursor_blink: bool,
-    cursor_row: u16,
-    cursor_col: u16,
-    mouse_tracking_mode: []const u8,
-    mouse_format: []const u8,
-    focus_event: bool,
-    mouse_alternate_scroll: bool,
+const HostPacketType = enum(u8) {
+    frame = 1,
+    exit = 2,
+    cwd = 3,
+    busy = 4,
 };
 
 const OwnedRows = std.ArrayList([]u8);
+const ScreenRowPayload = struct {
+    index: u16,
+    text: []const u8,
+};
 
 const ExecSpec = struct {
     command_z: [:0]u8,
@@ -292,68 +264,124 @@ fn buildPatchVt(
     return try alloc.dupe(u8, builder.writer.buffered());
 }
 
+fn appendU16(buffer: *std.ArrayList(u8), alloc: std.mem.Allocator, value: u16) !void {
+    try buffer.append(alloc, @intCast(value & 0xff));
+    try buffer.append(alloc, @intCast((value >> 8) & 0xff));
+}
+
+fn appendU32(buffer: *std.ArrayList(u8), alloc: std.mem.Allocator, value: u32) !void {
+    try buffer.append(alloc, @intCast(value & 0xff));
+    try buffer.append(alloc, @intCast((value >> 8) & 0xff));
+    try buffer.append(alloc, @intCast((value >> 16) & 0xff));
+    try buffer.append(alloc, @intCast((value >> 24) & 0xff));
+}
+
+fn appendI32(buffer: *std.ArrayList(u8), alloc: std.mem.Allocator, value: i32) !void {
+    try appendU32(buffer, alloc, @bitCast(value));
+}
+
+fn appendU64(buffer: *std.ArrayList(u8), alloc: std.mem.Allocator, value: u64) !void {
+    try buffer.append(alloc, @intCast(value & 0xff));
+    try buffer.append(alloc, @intCast((value >> 8) & 0xff));
+    try buffer.append(alloc, @intCast((value >> 16) & 0xff));
+    try buffer.append(alloc, @intCast((value >> 24) & 0xff));
+    try buffer.append(alloc, @intCast((value >> 32) & 0xff));
+    try buffer.append(alloc, @intCast((value >> 40) & 0xff));
+    try buffer.append(alloc, @intCast((value >> 48) & 0xff));
+    try buffer.append(alloc, @intCast((value >> 56) & 0xff));
+}
+
+fn appendI64(buffer: *std.ArrayList(u8), alloc: std.mem.Allocator, value: i64) !void {
+    try appendU64(buffer, alloc, @bitCast(value));
+}
+
+fn writePacket(stdout_writer: *std.Io.Writer, kind: HostPacketType, payload: []const u8) !void {
+    var header: [5]u8 = .{
+        @intFromEnum(kind),
+        0,
+        0,
+        0,
+        0,
+    };
+    const payload_len: u32 = @intCast(payload.len);
+    header[1] = @intCast(payload_len & 0xff);
+    header[2] = @intCast((payload_len >> 8) & 0xff);
+    header[3] = @intCast((payload_len >> 16) & 0xff);
+    header[4] = @intCast((payload_len >> 24) & 0xff);
+    try stdout_writer.writeAll(&header);
+    try stdout_writer.writeAll(payload);
+}
+
 fn writeFrame(
     alloc: std.mem.Allocator,
     stdout_writer: *std.Io.Writer,
     mode: FrameMode,
     vt: []const u8,
     plain: []const u8,
+    screen_rows: []const ScreenRowPayload,
     patch_kind: ?[]const u8,
     term: *ghostty_vt.Terminal,
     alt_screen: bool,
 ) !void {
-    const vt_b64_len = std.base64.standard.Encoder.calcSize(vt.len);
-    const plain_b64_len = std.base64.standard.Encoder.calcSize(plain.len);
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(alloc);
 
-    const vt_b64 = try alloc.alloc(u8, vt_b64_len);
-    defer alloc.free(vt_b64);
-    _ = std.base64.standard.Encoder.encode(vt_b64, vt);
+    var flags: u8 = 0;
+    if (alt_screen) flags |= 1;
+    if (term.modes.get(.cursor_visible)) flags |= 1 << 1;
+    if (term.modes.get(.cursor_blinking)) flags |= 1 << 2;
+    if (term.modes.get(.focus_event)) flags |= 1 << 3;
+    if (term.modes.get(.mouse_alternate_scroll)) flags |= 1 << 4;
 
-    const plain_b64 = try alloc.alloc(u8, plain_b64_len);
-    defer alloc.free(plain_b64);
-    _ = std.base64.standard.Encoder.encode(plain_b64, plain);
+    const cursor_style: u8 = switch (term.screens.active.cursor.cursor_style) {
+        .block, .block_hollow => 0,
+        .underline => 1,
+        .bar => 2,
+    };
+    const patch_kind_byte: u8 = if (patch_kind == null)
+        0
+    else if (std.mem.eql(u8, patch_kind.?, "cursor-only"))
+        1
+    else if (std.mem.eql(u8, patch_kind.?, "row-update"))
+        2
+    else
+        3;
+    const mouse_tracking_mode: u8 = switch (term.flags.mouse_event) {
+        .none => 0,
+        .x10 => 1,
+        .normal => 2,
+        .button => 3,
+        .any => 4,
+    };
+    const mouse_format: u8 = switch (term.flags.mouse_format) {
+        .x10 => 0,
+        .utf8 => 1,
+        .sgr => 2,
+        .urxvt => 3,
+        .sgr_pixels => 4,
+    };
 
-    try std.json.Stringify.value(
-        FrameMessage{
-            .mode = mode,
-            .vt_b64 = vt_b64,
-            .plain_b64 = plain_b64,
-            .patch_kind = patch_kind,
-            .cols = @as(u16, @intCast(term.cols)),
-            .rows = @as(u16, @intCast(term.rows)),
-            .alt_screen = alt_screen,
-            .cursor_visible = term.modes.get(.cursor_visible),
-            .cursor_style = switch (term.screens.active.cursor.cursor_style) {
-                .block => "block",
-                .block_hollow => "block",
-                .underline => "underline",
-                .bar => "bar",
-            },
-            .cursor_blink = term.modes.get(.cursor_blinking),
-            .cursor_row = @as(u16, @intCast(term.screens.active.cursor.y)) + 1,
-            .cursor_col = @as(u16, @intCast(term.screens.active.cursor.x)) + 1,
-            .mouse_tracking_mode = switch (term.flags.mouse_event) {
-                .none => "none",
-                .x10 => "x10",
-                .normal => "normal",
-                .button => "button",
-                .any => "any",
-            },
-            .mouse_format = switch (term.flags.mouse_format) {
-                .x10 => "x10",
-                .utf8 => "utf8",
-                .sgr => "sgr",
-                .urxvt => "urxvt",
-                .sgr_pixels => "sgr-pixels",
-            },
-            .focus_event = term.modes.get(.focus_event),
-            .mouse_alternate_scroll = term.modes.get(.mouse_alternate_scroll),
-        },
-        .{},
-        stdout_writer,
-    );
-    try stdout_writer.writeByte('\n');
-    try stdout_writer.flush();
+    try payload.append(alloc, if (mode == .full) 0 else 1);
+    try payload.append(alloc, flags);
+    try payload.append(alloc, cursor_style);
+    try payload.append(alloc, patch_kind_byte);
+    try payload.append(alloc, mouse_tracking_mode);
+    try payload.append(alloc, mouse_format);
+    try appendU16(&payload, alloc, @as(u16, @intCast(term.cols)));
+    try appendU16(&payload, alloc, @as(u16, @intCast(term.rows)));
+    try appendU16(&payload, alloc, @as(u16, @intCast(term.screens.active.cursor.y)) + 1);
+    try appendU16(&payload, alloc, @as(u16, @intCast(term.screens.active.cursor.x)) + 1);
+    try appendU32(&payload, alloc, @intCast(vt.len));
+    try appendU32(&payload, alloc, @intCast(plain.len));
+    try payload.appendSlice(alloc, vt);
+    try payload.appendSlice(alloc, plain);
+    try appendU16(&payload, alloc, @intCast(screen_rows.len));
+    for (screen_rows) |row| {
+        try appendU16(&payload, alloc, row.index);
+        try appendU32(&payload, alloc, @intCast(row.text.len));
+        try payload.appendSlice(alloc, row.text);
+    }
+    try writePacket(stdout_writer, .frame, payload.items);
 }
 
 fn emitFrame(
@@ -364,8 +392,31 @@ fn emitFrame(
     previous_alt_screen: *bool,
     has_snapshot: *bool,
     force_full: bool,
+    preview_only: bool,
 ) !void {
     const alt_screen = isAltScreen(term);
+    if (preview_only) {
+        var current_plain_rows = try captureRows(alloc, term, .plain);
+        defer {
+            freeOwnedRows(alloc, &current_plain_rows);
+            current_plain_rows.deinit(alloc);
+        }
+
+        const plain = try joinRows(alloc, current_plain_rows.items);
+        defer alloc.free(plain);
+
+        var screen_rows: std.ArrayList(ScreenRowPayload) = .empty;
+        defer screen_rows.deinit(alloc);
+        for (current_plain_rows.items, 0..) |row, idx| {
+            try screen_rows.append(alloc, .{ .index = @intCast(idx), .text = row });
+        }
+
+        try writeFrame(alloc, stdout_writer, .full, "", plain, screen_rows.items, null, term, alt_screen);
+        previous_alt_screen.* = alt_screen;
+        has_snapshot.* = true;
+        return;
+    }
+
     var current_render_rows = try captureRows(alloc, term, .vt);
     defer {
         freeOwnedRows(alloc, &current_render_rows);
@@ -446,6 +497,21 @@ fn emitFrame(
     };
     defer alloc.free(plain);
 
+    var screen_rows: std.ArrayList(ScreenRowPayload) = .empty;
+    defer screen_rows.deinit(alloc);
+    if (include_plain) {
+        if (use_full) {
+            for (current_render_rows.items, 0..) |row, idx| {
+                try screen_rows.append(alloc, .{ .index = @intCast(idx), .text = row });
+            }
+        } else {
+            for (current_render_rows.items, 0..) |row_vt, idx| {
+                if (std.mem.eql(u8, previous_render_rows.items[idx], row_vt)) continue;
+                try screen_rows.append(alloc, .{ .index = @intCast(idx), .text = row_vt });
+            }
+        }
+    }
+
     const vt = if (use_full) blk: {
         mode = .full;
         break :blk try buildFullVt(alloc, term, current_render_rows.items);
@@ -455,28 +521,47 @@ fn emitFrame(
     };
     defer alloc.free(vt);
 
-    try writeFrame(alloc, stdout_writer, mode, vt, plain, patch_kind, term, alt_screen);
+    try writeFrame(alloc, stdout_writer, mode, vt, plain, screen_rows.items, patch_kind, term, alt_screen);
     replaceOwnedRows(alloc, previous_render_rows, &current_render_rows);
     previous_alt_screen.* = alt_screen;
     has_snapshot.* = true;
 }
 
-fn writeJsonLine(stdout_writer: *std.Io.Writer, value: anytype) !void {
-    try std.json.Stringify.value(value, .{}, stdout_writer);
-    try stdout_writer.writeByte('\n');
-    try stdout_writer.flush();
-}
+fn maybeEmitPendingFrame(
+    alloc: std.mem.Allocator,
+    stdout_writer: *std.Io.Writer,
+    term: *ghostty_vt.Terminal,
+    previous_render_rows: *OwnedRows,
+    previous_alt_screen: *bool,
+    has_snapshot: *bool,
+    pending_frame: *bool,
+    frame_interval_ms: i64,
+    last_frame_emit_ms: *i64,
+    force_full: bool,
+    preview_only: bool,
+) !bool {
+    if (!pending_frame.* and !force_full) return false;
 
-fn emitData(alloc: std.mem.Allocator, stdout_writer: *std.Io.Writer, bytes: []const u8) !void {
-    const encoded_len = std.base64.standard.Encoder.calcSize(bytes.len);
-    const encoded = try alloc.alloc(u8, encoded_len);
-    defer alloc.free(encoded);
-    _ = std.base64.standard.Encoder.encode(encoded, bytes);
-    try writeJsonLine(stdout_writer, DataMessage{ .data = encoded });
+    const now_ms = std.time.milliTimestamp();
+    if (!force_full and frame_interval_ms > 0 and now_ms - last_frame_emit_ms.* < frame_interval_ms) {
+        return false;
+    }
+
+    try emitFrame(alloc, stdout_writer, term, previous_render_rows, previous_alt_screen, has_snapshot, force_full, preview_only);
+    pending_frame.* = false;
+    last_frame_emit_ms.* = now_ms;
+    return true;
 }
 
 fn emitExit(stdout_writer: *std.Io.Writer, code: i32) !void {
-    try writeJsonLine(stdout_writer, ExitMessage{ .code = code });
+    const raw: u32 = @bitCast(code);
+    const payload: [4]u8 = .{
+        @intCast(raw & 0xff),
+        @intCast((raw >> 8) & 0xff),
+        @intCast((raw >> 16) & 0xff),
+        @intCast((raw >> 24) & 0xff),
+    };
+    try writePacket(stdout_writer, .exit, payload[0..]);
 }
 
 fn readProcPath(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -525,7 +610,11 @@ fn publishCwd(
 
     alloc.free(last_published_cwd.*);
     last_published_cwd.* = try alloc.dupe(u8, next);
-    try writeJsonLine(stdout_writer, CwdMessage{ .cwd = next });
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(alloc);
+    try appendU32(&payload, alloc, @intCast(next.len));
+    try payload.appendSlice(alloc, next);
+    try writePacket(stdout_writer, .cwd, payload.items);
 }
 
 fn listChildPidsAlloc(alloc: std.mem.Allocator, child_pid: c.pid_t) ![]u8 {
@@ -574,7 +663,11 @@ fn publishBusyState(
     const next_busy = resolveBusyState(alloc, master_fd, child_pid) catch false;
     if (!force and next_busy == last_busy_state.*) return;
     last_busy_state.* = next_busy;
-    try writeJsonLine(stdout_writer, BusyMessage{ .busy = next_busy, .at_ms = std.time.milliTimestamp() });
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(alloc);
+    try payload.append(alloc, if (next_busy) 1 else 0);
+    try appendI64(&payload, alloc, std.time.milliTimestamp());
+    try writePacket(stdout_writer, .busy, payload.items);
 }
 
 fn decodeInput(alloc: std.mem.Allocator, encoded: []const u8) ![]u8 {
@@ -696,12 +789,18 @@ pub fn main() !void {
     var last_busy_state = false;
     var last_busy_poll_ms = std.time.milliTimestamp();
     var flow_paused = false;
+    var frame_interval_ms: i64 = 0;
+    var last_frame_emit_ms = std.time.milliTimestamp();
+    var pending_frame = false;
+    var preview_only = false;
     var stdin_open = true;
     var child_done = false;
 
-    try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true);
+    try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true, preview_only);
+    last_frame_emit_ms = std.time.milliTimestamp();
     try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, true);
     try publishCwd(alloc, stdout_writer, child_pid, &last_known_cwd, &last_published_cwd, true);
+    try stdout_writer.flush();
 
     var stdin_buffer = std.ArrayList(u8).empty;
     defer stdin_buffer.deinit(alloc);
@@ -719,7 +818,18 @@ pub fn main() !void {
             poll_count += 1;
         }
 
-        const poll_rc = c.poll(&pollfds, @intCast(poll_count), 100);
+        var poll_timeout_ms: i32 = 100;
+        if (!flow_paused and pending_frame and frame_interval_ms > 0) {
+            const now_ms = std.time.milliTimestamp();
+            const remaining_ms = frame_interval_ms - (now_ms - last_frame_emit_ms);
+            if (remaining_ms <= 0) {
+                poll_timeout_ms = 0;
+            } else if (remaining_ms < poll_timeout_ms) {
+                poll_timeout_ms = @intCast(remaining_ms);
+            }
+        }
+
+        const poll_rc = c.poll(&pollfds, @intCast(poll_count), poll_timeout_ms);
         if (poll_rc < 0) {
             return error.PollFailed;
         }
@@ -756,6 +866,7 @@ pub fn main() !void {
                             defer alloc.free(decoded);
                             _ = c.write(master_fd, decoded.ptr, decoded.len);
                             try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, false);
+                            try stdout_writer.flush();
                             continue;
                         }
 
@@ -764,26 +875,61 @@ pub fn main() !void {
                             continue;
                         }
 
+                        if (std.mem.eql(u8, cmd.type, "frame-rate")) {
+                            frame_interval_ms = @intCast(cmd.interval_ms orelse 0);
+                            const next_preview_only = cmd.preview_only orelse false;
+                            if (next_preview_only != preview_only) {
+                                preview_only = next_preview_only;
+                                freeOwnedRows(alloc, &previous_render_rows);
+                                has_snapshot = false;
+                            }
+                            if (!flow_paused) {
+                                _ = try maybeEmitPendingFrame(
+                                    alloc,
+                                    stdout_writer,
+                                    &term,
+                                    &previous_render_rows,
+                                    &previous_alt_screen,
+                                    &has_snapshot,
+                                    &pending_frame,
+                                    frame_interval_ms,
+                                    &last_frame_emit_ms,
+                                    false,
+                                    preview_only,
+                                );
+                            }
+                            try stdout_writer.flush();
+                            continue;
+                        }
+
                         if (std.mem.eql(u8, cmd.type, "resize")) {
                             const next_cols = cmd.cols orelse startup.cols;
                             const next_rows = cmd.rows orelse startup.rows;
                             applyResize(master_fd, &term, alloc, next_cols, next_rows) catch {};
-                            try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true);
+                            try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true, preview_only);
+                            pending_frame = false;
+                            last_frame_emit_ms = std.time.milliTimestamp();
+                            try stdout_writer.flush();
                             continue;
                         }
 
                         if (std.mem.eql(u8, cmd.type, "snapshot")) {
-                            try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true);
+                            try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true, false);
+                            pending_frame = false;
+                            last_frame_emit_ms = std.time.milliTimestamp();
+                            try stdout_writer.flush();
                             continue;
                         }
 
                         if (std.mem.eql(u8, cmd.type, "cwd")) {
                             try publishCwd(alloc, stdout_writer, child_pid, &last_known_cwd, &last_published_cwd, true);
+                            try stdout_writer.flush();
                             continue;
                         }
 
                         if (std.mem.eql(u8, cmd.type, "busy")) {
                             try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, true);
+                            try stdout_writer.flush();
                             continue;
                         }
 
@@ -804,23 +950,57 @@ pub fn main() !void {
                 const read_len = c.read(master_fd, &pty_buf, pty_buf.len);
                 if (read_len > 0) {
                     const bytes = pty_buf[0..@intCast(read_len)];
-                    try emitData(alloc, stdout_writer, bytes);
                     try stream.nextSlice(bytes);
-                    try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, false);
-                    try publishCwd(alloc, stdout_writer, child_pid, &last_known_cwd, &last_published_cwd, false);
-                    try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, false);
+                    pending_frame = true;
+                    if (try maybeEmitPendingFrame(
+                        alloc,
+                        stdout_writer,
+                        &term,
+                        &previous_render_rows,
+                        &previous_alt_screen,
+                        &has_snapshot,
+                        &pending_frame,
+                        frame_interval_ms,
+                        &last_frame_emit_ms,
+                        false,
+                        preview_only,
+                    )) {
+                        try publishCwd(alloc, stdout_writer, child_pid, &last_known_cwd, &last_published_cwd, false);
+                        try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, false);
+                    }
+                    try stdout_writer.flush();
                 }
             }
+        }
+
+        if (!flow_paused and try maybeEmitPendingFrame(
+            alloc,
+            stdout_writer,
+            &term,
+            &previous_render_rows,
+            &previous_alt_screen,
+            &has_snapshot,
+            &pending_frame,
+            frame_interval_ms,
+            &last_frame_emit_ms,
+            false,
+            preview_only,
+        )) {
+            try publishCwd(alloc, stdout_writer, child_pid, &last_known_cwd, &last_published_cwd, false);
+            try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, false);
+            try stdout_writer.flush();
         }
 
         const now_ms = std.time.milliTimestamp();
         if (now_ms - last_busy_poll_ms >= BUSY_POLL_INTERVAL_MS) {
             last_busy_poll_ms = now_ms;
             try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, false);
+            try stdout_writer.flush();
         }
 
         if (reapChild(child_pid)) |exit_code| {
             try emitExit(stdout_writer, exit_code);
+            try stdout_writer.flush();
             child_done = true;
         }
     }
