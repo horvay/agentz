@@ -13,6 +13,7 @@ import { doesEventMatchShortcut } from "./shortcuts";
 const RESIZE_DEBOUNCE_MS = 40;
 const TERMINAL_FONT_SIZE = 14;
 const TERMINAL_LINE_HEIGHT = 1.22;
+const TERMINAL_SCROLLBACK = 5_000;
 const TERMINAL_FONT_FAMILY = '"JetBrainsMonoNerdFontMonoLocal", "JetBrainsMono Nerd Font Mono", monospace';
 
 const TERMINAL_THEME = {
@@ -57,7 +58,12 @@ interface Props {
 
 function hasRenderablePayload(frame: TerminalFrame | undefined): frame is TerminalFrame {
   if (!frame) return false;
-  return frame.screenMode === "full" || typeof frame.renderVt === "string" || typeof frame.renderPatchVt === "string";
+  return (
+    frame.screenMode === "full" ||
+    typeof frame.renderVt === "string" ||
+    typeof frame.renderPatchVt === "string" ||
+    frame.renderPatchBytes instanceof Uint8Array
+  );
 }
 
 function loadBestRendererAddon(terminal: Terminal): { dispose(): void } | null {
@@ -76,9 +82,15 @@ function loadBestRendererAddon(terminal: Terminal): { dispose(): void } | null {
   }
 }
 
-function framePayload(frame: TerminalFrame): string {
+function framePayload(frame: TerminalFrame): string | Uint8Array {
   if (frame.screenMode === "full") return frame.renderVt ?? "";
-  return frame.renderPatchVt ?? frame.renderVt ?? "";
+  return frame.renderPatchBytes ?? frame.renderPatchVt ?? frame.renderVt ?? "";
+}
+
+function isPasteShortcutEvent(event: KeyboardEvent): boolean {
+  if (event.altKey) return false;
+  if (!event.ctrlKey && !event.metaKey) return false;
+  return event.key.toLowerCase() === "v";
 }
 
 export function TerminalPane({
@@ -144,7 +156,18 @@ export function TerminalPane({
         done();
         return;
       }
-      terminal.write(payload, done);
+      const activeBuffer = terminal.buffer.active;
+      const scrollbackOffset = Math.max(0, activeBuffer.baseY - activeBuffer.viewportY);
+      terminal.reset();
+      terminal.write(payload, () => {
+        if (scrollbackOffset > 0) {
+          const nextTarget = Math.max(0, terminal.buffer.active.baseY - scrollbackOffset);
+          terminal.scrollToLine(nextTarget);
+        } else {
+          terminal.scrollToBottom();
+        }
+        done();
+      });
       return;
     }
 
@@ -211,7 +234,7 @@ export function TerminalPane({
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: TERMINAL_FONT_SIZE,
       lineHeight: TERMINAL_LINE_HEIGHT,
-      scrollback: 5000,
+      scrollback: TERMINAL_SCROLLBACK,
       smoothScrollDuration: 0,
       theme: TERMINAL_THEME,
     });
@@ -220,6 +243,9 @@ export function TerminalPane({
     const rendererAddon = loadBestRendererAddon(terminal);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
+      if (isPasteShortcutEvent(event)) {
+        return false;
+      }
       if (doesEventMatchShortcut(event, shortcutsRef.current.addPane)) {
         event.preventDefault();
         shortcutHandlerRef.current("new-pane");

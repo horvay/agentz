@@ -45,7 +45,9 @@ body {
   display: grid;
   grid-template-rows: auto auto 1fr;
   gap: 18px;
+  min-width: 0;
   height: 100%;
+  overflow: hidden;
   padding: 20px;
 }
 
@@ -136,7 +138,7 @@ h1 {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  overflow-x: auto;
+  overflow-x: hidden;
   scrollbar-width: none;
 }
 
@@ -423,8 +425,13 @@ h1 {
   padding: 4px;
   border-radius: 16px;
   scroll-behavior: smooth;
-  scrollbar-width: thin;
+  scrollbar-width: none;
   scrollbar-color: rgba(116, 191, 226, 0.6) rgba(4, 17, 29, 0.7);
+}
+
+.pane-grid::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .pane-slot {
@@ -739,7 +746,13 @@ body.pane-resize-active .pane-resize-handle::before {
 
 .terminal-screen-xterm .xterm-viewport {
   overflow-y: auto;
+  scrollbar-width: none;
   scrollbar-color: rgba(96, 166, 202, 0.45) transparent;
+}
+
+.terminal-screen-xterm .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .terminal-screen-xterm .xterm-screen {

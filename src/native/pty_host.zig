@@ -240,6 +240,20 @@ fn buildFullVt(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal, current_ren
     return try alloc.dupe(u8, builder.writer.buffered());
 }
 
+fn buildFullScrollbackVt(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal) ![]u8 {
+    var builder: std.Io.Writer.Allocating = .init(alloc);
+    defer builder.deinit();
+
+    try writeModePrefix(&builder.writer, term);
+    try writeScrollingRegion(&builder.writer, term);
+
+    var formatter: ghostty_vt.formatter.PageListFormatter = .init(&term.screens.active.pages, .vt);
+    try formatter.format(&builder.writer);
+
+    try writeCursorState(&builder.writer, term);
+    return try alloc.dupe(u8, builder.writer.buffered());
+}
+
 fn buildPatchVt(
     alloc: std.mem.Allocator,
     term: *ghostty_vt.Terminal,
@@ -390,6 +404,7 @@ fn emitFrame(
     term: *ghostty_vt.Terminal,
     previous_render_rows: *OwnedRows,
     previous_alt_screen: *bool,
+    pending_vt_bytes: *std.ArrayList(u8),
     has_snapshot: *bool,
     force_full: bool,
     preview_only: bool,
@@ -413,6 +428,7 @@ fn emitFrame(
 
         try writeFrame(alloc, stdout_writer, .full, "", plain, screen_rows.items, null, term, alt_screen);
         previous_alt_screen.* = alt_screen;
+        pending_vt_bytes.clearRetainingCapacity();
         has_snapshot.* = true;
         return;
     }
@@ -441,26 +457,7 @@ fn emitFrame(
             }
         }
 
-        const cursor_row: usize = @intCast(term.screens.active.cursor.y);
-        const patchable_cursor_only = dirty_rows == 0;
-        const patchable_cursor_row_only = dirty_rows == 1 and
-            first_dirty_row != null and
-            first_dirty_row.? == cursor_row and
-            last_dirty_row != null and
-            last_dirty_row.? == cursor_row;
-        const patchable_alt_small_block = alt_screen and
-            dirty_rows > 0 and
-            dirty_rows <= 4 and
-            first_dirty_row != null and
-            last_dirty_row != null and
-            (last_dirty_row.? - first_dirty_row.? + 1) == dirty_rows;
-
-        const allow_patch = if (alt_screen)
-            patchable_cursor_only or patchable_alt_small_block
-        else
-            patchable_cursor_only or patchable_cursor_row_only;
-
-        if (!allow_patch) {
+        if (pending_vt_bytes.items.len == 0 and dirty_rows > 4) {
             use_full = true;
         }
     }
@@ -514,9 +511,15 @@ fn emitFrame(
 
     const vt = if (use_full) blk: {
         mode = .full;
+        if (!alt_screen) {
+            break :blk try buildFullScrollbackVt(alloc, term);
+        }
         break :blk try buildFullVt(alloc, term, current_render_rows.items);
     } else blk: {
         mode = .patch;
+        if (pending_vt_bytes.items.len > 0) {
+            break :blk try alloc.dupe(u8, pending_vt_bytes.items);
+        }
         break :blk try buildPatchVt(alloc, term, previous_render_rows.items, current_render_rows.items);
     };
     defer alloc.free(vt);
@@ -524,6 +527,7 @@ fn emitFrame(
     try writeFrame(alloc, stdout_writer, mode, vt, plain, screen_rows.items, patch_kind, term, alt_screen);
     replaceOwnedRows(alloc, previous_render_rows, &current_render_rows);
     previous_alt_screen.* = alt_screen;
+    pending_vt_bytes.clearRetainingCapacity();
     has_snapshot.* = true;
 }
 
@@ -533,6 +537,7 @@ fn maybeEmitPendingFrame(
     term: *ghostty_vt.Terminal,
     previous_render_rows: *OwnedRows,
     previous_alt_screen: *bool,
+    pending_vt_bytes: *std.ArrayList(u8),
     has_snapshot: *bool,
     pending_frame: *bool,
     frame_interval_ms: i64,
@@ -547,7 +552,17 @@ fn maybeEmitPendingFrame(
         return false;
     }
 
-    try emitFrame(alloc, stdout_writer, term, previous_render_rows, previous_alt_screen, has_snapshot, force_full, preview_only);
+    try emitFrame(
+        alloc,
+        stdout_writer,
+        term,
+        previous_render_rows,
+        previous_alt_screen,
+        pending_vt_bytes,
+        has_snapshot,
+        force_full,
+        preview_only,
+    );
     pending_frame.* = false;
     last_frame_emit_ms.* = now_ms;
     return true;
@@ -757,6 +772,8 @@ pub fn main() !void {
         previous_render_rows.deinit(alloc);
     }
     var previous_alt_screen = false;
+    var pending_vt_bytes = std.ArrayList(u8).empty;
+    defer pending_vt_bytes.deinit(alloc);
     var has_snapshot = false;
 
     var stdout_file = std.fs.File.stdout();
@@ -796,7 +813,17 @@ pub fn main() !void {
     var stdin_open = true;
     var child_done = false;
 
-    try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true, preview_only);
+    try emitFrame(
+        alloc,
+        stdout_writer,
+        &term,
+        &previous_render_rows,
+        &previous_alt_screen,
+        &pending_vt_bytes,
+        &has_snapshot,
+        true,
+        preview_only,
+    );
     last_frame_emit_ms = std.time.milliTimestamp();
     try publishBusyState(alloc, stdout_writer, master_fd, child_pid, &last_busy_state, true);
     try publishCwd(alloc, stdout_writer, child_pid, &last_known_cwd, &last_published_cwd, true);
@@ -881,6 +908,7 @@ pub fn main() !void {
                             if (next_preview_only != preview_only) {
                                 preview_only = next_preview_only;
                                 freeOwnedRows(alloc, &previous_render_rows);
+                                pending_vt_bytes.clearRetainingCapacity();
                                 has_snapshot = false;
                             }
                             if (!flow_paused) {
@@ -890,6 +918,7 @@ pub fn main() !void {
                                     &term,
                                     &previous_render_rows,
                                     &previous_alt_screen,
+                                    &pending_vt_bytes,
                                     &has_snapshot,
                                     &pending_frame,
                                     frame_interval_ms,
@@ -906,7 +935,17 @@ pub fn main() !void {
                             const next_cols = cmd.cols orelse startup.cols;
                             const next_rows = cmd.rows orelse startup.rows;
                             applyResize(master_fd, &term, alloc, next_cols, next_rows) catch {};
-                            try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true, preview_only);
+                            try emitFrame(
+                                alloc,
+                                stdout_writer,
+                                &term,
+                                &previous_render_rows,
+                                &previous_alt_screen,
+                                &pending_vt_bytes,
+                                &has_snapshot,
+                                true,
+                                preview_only,
+                            );
                             pending_frame = false;
                             last_frame_emit_ms = std.time.milliTimestamp();
                             try stdout_writer.flush();
@@ -914,7 +953,17 @@ pub fn main() !void {
                         }
 
                         if (std.mem.eql(u8, cmd.type, "snapshot")) {
-                            try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, true, false);
+                            try emitFrame(
+                                alloc,
+                                stdout_writer,
+                                &term,
+                                &previous_render_rows,
+                                &previous_alt_screen,
+                                &pending_vt_bytes,
+                                &has_snapshot,
+                                true,
+                                false,
+                            );
                             pending_frame = false;
                             last_frame_emit_ms = std.time.milliTimestamp();
                             try stdout_writer.flush();
@@ -951,6 +1000,7 @@ pub fn main() !void {
                 if (read_len > 0) {
                     const bytes = pty_buf[0..@intCast(read_len)];
                     try stream.nextSlice(bytes);
+                    try pending_vt_bytes.appendSlice(alloc, bytes);
                     pending_frame = true;
                     if (try maybeEmitPendingFrame(
                         alloc,
@@ -958,6 +1008,7 @@ pub fn main() !void {
                         &term,
                         &previous_render_rows,
                         &previous_alt_screen,
+                        &pending_vt_bytes,
                         &has_snapshot,
                         &pending_frame,
                         frame_interval_ms,
@@ -979,6 +1030,7 @@ pub fn main() !void {
             &term,
             &previous_render_rows,
             &previous_alt_screen,
+            &pending_vt_bytes,
             &has_snapshot,
             &pending_frame,
             frame_interval_ms,

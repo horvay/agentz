@@ -1,8 +1,10 @@
 import type { TerminalFrame } from "../shared/protocol";
 
 export const MAX_FRAME_QUEUE_PER_PANE = 24;
+const textEncoder = new TextEncoder();
 
 type RenderPatchKind = NonNullable<TerminalFrame["renderPatchKind"]>;
+type RenderPayload = string | Uint8Array;
 
 function mergeScreenRows(
   current: TerminalFrame["screenRows"],
@@ -19,10 +21,24 @@ function mergeScreenRows(
 }
 
 export interface TerminalRenderWorkItem {
-  payload: string;
+  payload: RenderPayload;
   reset: boolean;
   dedupeKey?: string;
   patchKind?: RenderPatchKind;
+}
+
+function concatRenderPayload(current: RenderPayload | undefined, next: RenderPayload | undefined): RenderPayload | undefined {
+  if (current === undefined) return next;
+  if (next === undefined) return current;
+  if (typeof current === "string" && typeof next === "string") {
+    return `${current}${next}`;
+  }
+  const currentBytes = typeof current === "string" ? textEncoder.encode(current) : current;
+  const nextBytes = typeof next === "string" ? textEncoder.encode(next) : next;
+  const combined = new Uint8Array(currentBytes.byteLength + nextBytes.byteLength);
+  combined.set(currentBytes);
+  combined.set(nextBytes, currentBytes.byteLength);
+  return combined;
 }
 
 function mergeRenderFrames(current: TerminalFrame, next: TerminalFrame): TerminalFrame {
@@ -33,6 +49,7 @@ function mergeRenderFrames(current: TerminalFrame, next: TerminalFrame): Termina
     screenRows: mergeScreenRows(current.screenRows, next.screenRows),
     chunk: `${current.chunk}${next.chunk}`,
     renderPatchVt: `${current.renderPatchVt ?? ""}${next.renderPatchVt ?? ""}` || undefined,
+    renderPatchBytes: concatRenderPayload(current.renderPatchBytes, next.renderPatchBytes) as Uint8Array | undefined,
     renderPatchKind: next.renderPatchKind ?? current.renderPatchKind,
     seq: next.seq,
   };
@@ -89,7 +106,10 @@ export function coalesceTerminalRenderQueue(
     !nextItem.dedupeKey &&
     last.patchKind !== "cursor-only"
   ) {
-    return [...existing.slice(0, -1), { ...nextItem, payload: last.payload + nextItem.payload }];
+    return [
+      ...existing.slice(0, -1),
+      { ...nextItem, payload: concatRenderPayload(last.payload, nextItem.payload) ?? nextItem.payload },
+    ];
   }
 
   return [...existing, nextItem];

@@ -139,6 +139,25 @@ bun run native:build:bridge
 bun run dev
 ```
 
+### Run web mode on your local network
+
+```bash
+bun run web
+```
+
+This serves the UI on port `5173` and the terminal RPC backend on port `4599`.
+From another computer on the same network, open:
+
+```bash
+http://<your-local-ip>:5173
+```
+
+Example:
+
+```bash
+http://192.168.1.42:5173
+```
+
 ### Build release artifacts locally
 
 ```bash

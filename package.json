@@ -6,7 +6,7 @@
 	"scripts": {
 		"start": "bun run dev",
 		"dev": "bun run scripts/kill-dashboard-processes.ts && concurrently \"bun run hmr\" \"bun run electron:watch\" \"bun run electron:run\"",
-		"web": "bun run scripts/kill-dashboard-processes.ts && concurrently \"bun run hmr\" \"bun run native:build:host && GHOSTTY_DASHBOARD_ROOT=$PWD GHOSTTY_DASHBOARD_LAUNCH_CWD=$PWD bun src/main/web.ts\"",
+		"web": "bun run scripts/kill-dashboard-processes.ts && concurrently \"vite --host 0.0.0.0 --port 5173\" \"bun run native:build:host && GHOSTTY_DASHBOARD_ROOT=$PWD GHOSTTY_DASHBOARD_LAUNCH_CWD=$PWD GHOSTTY_DASHBOARD_RPC_HOST=0.0.0.0 bun src/main/web.ts\"",
 		"dev:hmr": "bun run dev",
 		"dev:launch": "bun run scripts/dev-launch.ts",
 		"hmr": "vite --host 127.0.0.1 --port 5173",

@@ -29,6 +29,8 @@ export interface TerminalFrame {
   renderVt?: string;
   // Incremental VT patch from libghostty-vt for changed rows/cursor state.
   renderPatchVt?: string;
+  // Binary VT patch for direct xterm writes when the host has raw PTY bytes.
+  renderPatchBytes?: Uint8Array;
   renderPatchKind?: "cursor-only" | "row-update" | "alt-row-update";
   // Whether Ghostty VT is currently on alternate screen buffer.
   altScreen?: boolean;
@@ -179,6 +181,32 @@ function readRequiredString(view: DataView, source: Uint8Array, offset: number):
   return [textDecoder.decode(source.subarray(offset, nextOffset)), nextOffset];
 }
 
+function writeOptionalBytes(
+  view: DataView,
+  target: Uint8Array,
+  offset: number,
+  bytes: Uint8Array | null,
+): number {
+  if (bytes === null) {
+    view.setUint32(offset, OPTIONAL_STRING_LENGTH_SENTINEL, true);
+    return offset + 4;
+  }
+  view.setUint32(offset, bytes.byteLength, true);
+  offset += 4;
+  target.set(bytes, offset);
+  return offset + bytes.byteLength;
+}
+
+function readOptionalBytes(view: DataView, source: Uint8Array, offset: number): [Uint8Array | undefined, number] {
+  const length = view.getUint32(offset, true);
+  offset += 4;
+  if (length === OPTIONAL_STRING_LENGTH_SENTINEL) {
+    return [undefined, offset];
+  }
+  const nextOffset = offset + length;
+  return [source.slice(offset, nextOffset), nextOffset];
+}
+
 function readOptionalString(view: DataView, source: Uint8Array, offset: number): [string | undefined, number] {
   const length = view.getUint32(offset, true);
   offset += 4;
@@ -203,6 +231,7 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
   }));
   const renderVt = encodeOptionalString(frame.renderVt);
   const renderPatchVt = encodeOptionalString(frame.renderPatchVt);
+  const renderPatchBytes = frame.renderPatchBytes ?? null;
   const chunk = encodeRequiredString(frame.chunk);
   const vt = encodeRequiredString(frame.vt);
   const previewLines = frame.previewLines.map(encodeRequiredString);
@@ -220,7 +249,7 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
     { presence: 0, values: 0 },
   );
 
-  const fixedBytes = 1 + 2 + 2 + 4 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 2 + 8 + 4 * 6 + 2 + 1 + 2;
+  const fixedBytes = 1 + 2 + 2 + 4 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 2 + 8 + 4 * 7 + 2 + 1 + 2;
   const previewBytes = previewLines.reduce((sum, line) => sum + 4 + line.byteLength, 0);
   const screenRowBytes = encodedScreenRows.reduce(
     (sum, row) => sum + 2 + 4 + row.textBytes.byteLength,
@@ -232,6 +261,7 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
     (cwd?.byteLength ?? 0) +
     (renderVt?.byteLength ?? 0) +
     (renderPatchVt?.byteLength ?? 0) +
+    (renderPatchBytes?.byteLength ?? 0) +
     chunk.byteLength +
     vt.byteLength +
     previewBytes +
@@ -264,6 +294,7 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
   offset = writeOptionalString(view, packet, offset, cwd);
   offset = writeOptionalString(view, packet, offset, renderVt);
   offset = writeOptionalString(view, packet, offset, renderPatchVt);
+  offset = writeOptionalBytes(view, packet, offset, renderPatchBytes);
   offset = writeRequiredString(view, packet, offset, chunk);
   offset = writeRequiredString(view, packet, offset, vt);
   view.setUint16(offset, previewLines.length, true);
@@ -320,6 +351,8 @@ export function decodeTerminalFramePacket(packet: ArrayBuffer | Uint8Array): Ter
   offset = afterRenderVt;
   const [renderPatchVt, afterRenderPatchVt] = readOptionalString(view, bytes, offset);
   offset = afterRenderPatchVt;
+  const [renderPatchBytes, afterRenderPatchBytes] = readOptionalBytes(view, bytes, offset);
+  offset = afterRenderPatchBytes;
   const [chunk, afterChunk] = readRequiredString(view, bytes, offset);
   offset = afterChunk;
   const [vt, afterVt] = readRequiredString(view, bytes, offset);
@@ -354,6 +387,7 @@ export function decodeTerminalFramePacket(packet: ArrayBuffer | Uint8Array): Ter
     screenRows: screenRows.length > 0 ? screenRows : undefined,
     renderVt,
     renderPatchVt,
+    renderPatchBytes,
     renderPatchKind,
     chunk,
     vt,
@@ -396,6 +430,13 @@ export type ClientMessage =
       id: TerminalId;
       data: string;
       encoding?: "utf8" | "binary";
+    }
+  | {
+      type: "paste-image";
+      id: TerminalId;
+      dataBase64: string;
+      mimeType: string;
+      fileName?: string;
     }
   | {
       type: "flow";

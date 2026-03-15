@@ -33,7 +33,21 @@ import { selectLivePaneIds } from "./livePaneSelection";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
 
-const rpc = new RpcClient("ws://127.0.0.1:4599");
+function resolveRpcUrl(): string {
+  if (typeof window === "undefined") {
+    return "ws://127.0.0.1:4599";
+  }
+
+  const { hostname, protocol } = window.location;
+  if (!hostname) {
+    return "ws://127.0.0.1:4599";
+  }
+
+  const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
+  return `${wsProtocol}//${hostname}:4599`;
+}
+
+const rpc = new RpcClient(resolveRpcUrl());
 const FIRST_ID = "term-1";
 const WIDTH_STORAGE_KEY = "ghostty.dashboard.paneWidths.v1";
 const MAX_AVATAR_PANES = avatarCatalog.length;
@@ -134,6 +148,37 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
   );
 }
 
+function isTerminalPasteTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && Boolean(target.closest(".xterm-helper-textarea"));
+}
+
+function firstImageClipboardFile(clipboardData: DataTransfer | null | undefined): File | null {
+  if (!clipboardData) return null;
+  const items = Array.from(clipboardData.items ?? []);
+  for (const item of items) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    const file = item.getAsFile();
+    if (file) return file;
+  }
+  return null;
+}
+
+function readFileAsBase64(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read pasted image"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Failed to decode pasted image"));
+        return;
+      }
+      const [, base64 = ""] = reader.result.split(",", 2);
+      resolve(base64);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
   return {
     id: frame.id,
@@ -225,6 +270,7 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     screenRows: frame.screenRows,
     renderVt: frame.renderVt,
     renderPatchVt: frame.renderPatchVt,
+    renderPatchBytes: frame.renderPatchBytes,
     renderPatchKind: frame.renderPatchKind,
     altScreen: frame.altScreen,
     chunk: frame.chunk,
@@ -255,7 +301,8 @@ function mergePreviewLines(existing: string[], next: string[] | undefined): stri
 function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalFrame): TerminalFrame {
   if (!existing) return next;
   const isCursorOnly = next.renderPatchKind === "cursor-only";
-  const isMetadataOnly = !next.renderVt && !next.renderPatchVt && !next.screenRows?.length && !next.chunk;
+  const isMetadataOnly =
+    !next.renderVt && !next.renderPatchVt && !next.renderPatchBytes && !next.screenRows?.length && !next.chunk;
   if (!isCursorOnly && !isMetadataOnly) return next;
   return {
     ...existing,
@@ -267,6 +314,7 @@ function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalF
     previewLines: mergePreviewLines(existing.previewLines, next.previewLines),
     renderPatchKind: next.renderPatchKind,
     renderPatchVt: next.renderPatchVt,
+    renderPatchBytes: next.renderPatchBytes,
     altScreen: next.altScreen ?? existing.altScreen,
     cursorVisible: next.cursorVisible,
     cursorStyle: next.cursorStyle,
@@ -1088,6 +1136,31 @@ function App() {
     const onPaste = (event: ClipboardEvent) => {
       if (event.defaultPrevented) return;
       if (settingsOpen) return;
+      const imageFile = firstImageClipboardFile(event.clipboardData);
+      if (imageFile) {
+        if (isEditableEventTarget(event.target) && !isTerminalPasteTarget(event.target)) return;
+        const id = activePaneRef.current;
+        if (!id) return;
+        event.preventDefault();
+        handlePaneUserInput(id);
+        void (async () => {
+          try {
+            const dataBase64 = await readFileAsBase64(imageFile);
+            rpc.send({
+              type: "paste-image",
+              id,
+              dataBase64,
+              mimeType: imageFile.type || "image/png",
+              fileName: imageFile.name,
+            });
+            setStatus("Image pasted as file path");
+          } catch (error) {
+            setStatus(`Image paste failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+          }
+        })();
+        return;
+      }
+
       if (isEditableEventTarget(event.target)) return;
       const text = event.clipboardData?.getData("text/plain");
       if (!text) return;
@@ -1098,8 +1171,8 @@ function App() {
       rpc.send({ type: "input", id, data: text, encoding: "utf8" });
     };
 
-    window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
+    window.addEventListener("paste", onPaste, true);
+    return () => window.removeEventListener("paste", onPaste, true);
   }, [handlePaneUserInput, settingsOpen]);
 
   useEffect(() => {

@@ -97,6 +97,7 @@ interface HostFrameMessage {
   type: "frame";
   mode: "full" | "patch";
   vt: string;
+  vtBytes?: Uint8Array;
   plain: string;
   screenRows: TerminalScreenRow[];
   cols: number;
@@ -185,6 +186,7 @@ function decodeHostPacket(kind: number, payload: Uint8Array<ArrayBufferLike>): H
     const plainStart = vtStart + vtLength;
     const plainEnd = plainStart + plainLength;
     if (plainEnd > payload.byteLength) return null;
+    const vtBytes = mode === "patch" ? payload.slice(vtStart, plainStart) : undefined;
     let offset = plainEnd;
     const screenRows: TerminalScreenRow[] = [];
     if (payload.byteLength - offset >= 2) {
@@ -206,6 +208,7 @@ function decodeHostPacket(kind: number, payload: Uint8Array<ArrayBufferLike>): H
       type: "frame",
       mode,
       vt: decodeUtf8(payload.subarray(vtStart, plainStart)),
+      vtBytes,
       plain: decodeUtf8(payload.subarray(plainStart, plainEnd)),
       screenRows,
       cols,
@@ -380,6 +383,7 @@ export class TerminalSession {
           previewLines,
           this.lastAltScreen,
           message.mode === "patch" ? renderedVt : undefined,
+          message.mode === "patch" ? message.vtBytes : undefined,
           message.patchKind,
           message.cursorVisible,
           message.cursorStyle,
@@ -521,6 +525,7 @@ export class TerminalSession {
     previewLines?: string[],
     altScreen?: boolean,
     renderPatchVt?: string,
+    renderPatchBytes?: Uint8Array,
     renderPatchKind?: "cursor-only" | "row-update" | "alt-row-update",
     cursorVisible?: boolean,
     cursorStyle?: "block" | "underline" | "bar",
@@ -543,6 +548,7 @@ export class TerminalSession {
       screenRows,
       renderVt,
       renderPatchVt,
+      renderPatchBytes,
       renderPatchKind,
       altScreen,
       chunk: trimActivityText(chunk || this.lastChunk),
