@@ -120,7 +120,7 @@ Treat these as recommended baseline versions. Pin exact versions in `package.jso
 ```bash
 mkdir ghostty-dashboard
 cd ghostty-dashboard
-bunx electrobun init
+bunx create-electron-app
 ```
 
 Choose React + TypeScript template if prompted.
@@ -176,7 +176,7 @@ ghostty-dashboard/
 │     └─ layout/
 ├─ deps/
 │  └─ ghostty/            # git submodule
-├─ electrobun.config.ts
+├─ Electron builder config (package.json)
 ├─ package.json
 ├─ bun.lockb
 └─ bible.md

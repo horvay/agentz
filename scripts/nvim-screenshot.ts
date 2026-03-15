@@ -37,7 +37,7 @@ async function stopProcessTree(proc: Bun.Subprocess): Promise<void> {
 	    Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"], { stdout: "ignore", stderr: "ignore" });
   } catch {}
   try {
-    Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"], { stdout: "ignore", stderr: "ignore" });
+    Bun.spawnSync(["pkill", "-f", "electronmon|\\.electron/index\\.js"], { stdout: "ignore", stderr: "ignore" });
   } catch {}
   try {
     Bun.spawnSync(["pkill", "-f", "vite --host 127.0.0.1 --port 5173"], { stdout: "ignore", stderr: "ignore" });
@@ -180,8 +180,8 @@ const launchEnv = {
 
 runChecked(["rm", "-f", join(tempRoot, fileName)]);
 	bestEffortKill("agentz-dev|ghostty-dashboard-mvp-dev");
-bestEffortKill("electrobun dev --watch");
-bestEffortKill("Resources/main.js");
+bestEffortKill("electronmon|\\.electron/index\\.js");
+bestEffortKill("\\.electron/index\\.js");
 
 const app = Bun.spawn(["bash", "-lc", "bun run dev || true"], {
   cwd: process.cwd(),

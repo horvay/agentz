@@ -51,7 +51,7 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          files=(artifacts/*linux*.tar.zst artifacts/*linux*-Setup.tar.gz artifacts/*linux*-update.json)
+          files=(dist/*.tar.gz)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No Linux artifacts found" >&2
             exit 1
@@ -98,7 +98,7 @@ jobs:
         run: cd src/native && zig build -Doptimize=ReleaseFast
 
       - name: Build macOS release
-        run: bunx vite build && bunx electrobun build --env=stable
+        run: bun run release:stable
 
       - name: Upload macOS artifacts to release
         env:
@@ -106,7 +106,7 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          files=(artifacts/*.dmg artifacts/*.app.tar.zst)
+          files=(dist/*.dmg dist/*.zip)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No macOS artifacts found" >&2
             exit 1

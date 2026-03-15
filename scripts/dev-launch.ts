@@ -4,6 +4,8 @@ interface PaneLaunchConfig {
   cwd?: string;
 }
 
+export {};
+
 interface LaunchConfig {
   panes?: PaneLaunchConfig[];
 }
@@ -68,8 +70,8 @@ console.log("Launching app with config:", launchJson);
 
 // Ensure only one app instance owns the RPC port.
 	Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"]);
-Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"]);
-Bun.spawnSync(["pkill", "-f", "Resources/main.js"]);
+Bun.spawnSync(["pkill", "-f", "electronmon|\\.electron/index\\.js"]);
+Bun.spawnSync(["pkill", "-f", "\\.electron/index\\.js"]);
 
 const proc = Bun.spawn(["bun", "run", "dev"], {
   env: {

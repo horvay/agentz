@@ -1,4 +1,5 @@
-import { accessSync, constants as fsConstants } from "node:fs";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { accessSync, constants as fsConstants, existsSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 import type { TerminalFrame, TerminalScreenRow } from "../shared/protocol";
@@ -16,12 +17,18 @@ const utf8Decoder = new TextDecoder();
 let hasWarnedMissingNativeHost = false;
 
 function resolveNativeHostPath(rootCwd: string): string {
-  const direct = `${rootCwd}/src/native/zig-out/bin/ghostty-pty-host`;
-  if (Bun.file(direct).size > 0) return direct;
+  const direct = join(rootCwd, "src", "native", "zig-out", "bin", "ghostty-pty-host");
+  if (existsSync(direct)) return direct;
+
+  const electronResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  if (electronResourcesPath) {
+    const packaged = join(electronResourcesPath, "bin", "ghostty-pty-host");
+    if (existsSync(packaged)) return packaged;
+  }
 
   const execDir = dirname(process.execPath);
   const packaged = join(execDir, "..", "Resources", "app", "bin", "ghostty-pty-host");
-  if (Bun.file(packaged).size > 0) return packaged;
+  if (existsSync(packaged)) return packaged;
 
   return direct;
 }
@@ -252,7 +259,7 @@ function previewLinesFromPlain(plain: string): string[] {
 }
 
 export class TerminalSession {
-  private readonly hostHandle: Bun.Subprocess;
+  private readonly hostHandle: ChildProcessWithoutNullStreams;
   private seq = 0;
   private cols: number;
   private rows: number;
@@ -292,7 +299,7 @@ export class TerminalSession {
     const shell = resolveTerminalCommand(command);
     const shellArgs = args ?? [];
     const hostPath = resolveNativeHostPath(rootCwd);
-    const hostBinaryPresent = Bun.file(hostPath).size > 0;
+    const hostBinaryPresent = existsSync(hostPath);
     const hostEnv = buildTerminalHostEnv(shell, command);
 
     if (!hostBinaryPresent) {
@@ -311,15 +318,13 @@ export class TerminalSession {
       rows: Math.max(2, rows),
     });
 
-    this.hostHandle = Bun.spawn([hostPath, startupPayload], {
+    this.hostHandle = spawn(hostPath, [startupPayload], {
       cwd: rootCwd,
       env: hostEnv,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
-    void this.hostHandle.exited.then((code) => {
+    this.hostHandle.on("exit", (code) => {
       this.emitExit(typeof code === "number" ? code : 0);
     });
   }
@@ -389,65 +394,47 @@ export class TerminalSession {
       );
     };
 
-    const pumpStdout = async (stream: ReadableStream<Uint8Array> | null | undefined) => {
-      if (!stream) return;
-      const reader = stream.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-          this.stdoutPacketBuffer = appendBytes(this.stdoutPacketBuffer, value);
-          let offset = 0;
-          while (this.stdoutPacketBuffer.byteLength - offset >= 5) {
-            const packetType = this.stdoutPacketBuffer[offset] ?? 0;
-            const payloadLength =
-              (this.stdoutPacketBuffer[offset + 1] ?? 0) |
-              ((this.stdoutPacketBuffer[offset + 2] ?? 0) << 8) |
-              ((this.stdoutPacketBuffer[offset + 3] ?? 0) << 16) |
-              ((this.stdoutPacketBuffer[offset + 4] ?? 0) << 24);
-            if (payloadLength < 0 || payloadLength > MAX_HOST_PACKET_BYTES) {
-              throw new Error(`Invalid native host packet length: ${payloadLength}`);
-            }
-            const packetEnd = offset + 5 + payloadLength;
-            if (packetEnd > this.stdoutPacketBuffer.byteLength) break;
-            const payload = this.stdoutPacketBuffer.subarray(offset + 5, packetEnd);
-            const decoded = decodeHostPacket(packetType, payload);
-            if (decoded) {
-              handleHostPacket(decoded);
-            }
-            offset = packetEnd;
-          }
-          this.stdoutPacketBuffer = this.stdoutPacketBuffer.subarray(offset);
+    const pumpStdout = (value: Uint8Array<ArrayBufferLike>) => {
+      if (!value.byteLength) return;
+      this.stdoutPacketBuffer = appendBytes(this.stdoutPacketBuffer, value);
+      let offset = 0;
+      while (this.stdoutPacketBuffer.byteLength - offset >= 5) {
+        const packetType = this.stdoutPacketBuffer[offset] ?? 0;
+        const payloadLength =
+          (this.stdoutPacketBuffer[offset + 1] ?? 0) |
+          ((this.stdoutPacketBuffer[offset + 2] ?? 0) << 8) |
+          ((this.stdoutPacketBuffer[offset + 3] ?? 0) << 16) |
+          ((this.stdoutPacketBuffer[offset + 4] ?? 0) << 24);
+        if (payloadLength < 0 || payloadLength > MAX_HOST_PACKET_BYTES) {
+          throw new Error(`Invalid native host packet length: ${payloadLength}`);
         }
-      } finally {
-        reader.releaseLock();
+        const packetEnd = offset + 5 + payloadLength;
+        if (packetEnd > this.stdoutPacketBuffer.byteLength) break;
+        const payload = this.stdoutPacketBuffer.subarray(offset + 5, packetEnd);
+        const decoded = decodeHostPacket(packetType, payload);
+        if (decoded) {
+          handleHostPacket(decoded);
+        }
+        offset = packetEnd;
+      }
+      this.stdoutPacketBuffer = this.stdoutPacketBuffer.subarray(offset);
+    };
+
+    const stderrDecoder = new TextDecoder();
+    const pumpStderr = (value: Uint8Array<ArrayBufferLike>) => {
+      if (!value.byteLength) return;
+      const decoded = stderrDecoder.decode(value, { stream: true });
+      if (decoded.trim()) {
+        console.error(`[terminal:${this.id}:native-host] ${decoded.trim()}`);
       }
     };
 
-    const pumpStderr = async (stream: ReadableStream<Uint8Array> | null | undefined) => {
-      if (!stream) return;
-      const reader = stream.getReader();
-      const decoder = new TextDecoder();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-          const decoded = decoder.decode(value, { stream: true });
-          if (decoded.trim()) {
-            console.error(`[terminal:${this.id}:native-host] ${decoded.trim()}`);
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
-    };
-
-    const hostOut = this.hostHandle.stdout;
-    const hostErr = this.hostHandle.stderr;
-    void pumpStdout(typeof hostOut === "number" ? null : hostOut);
-    void pumpStderr(typeof hostErr === "number" ? null : hostErr);
+    this.hostHandle.stdout.on("data", (value: Buffer) => {
+      pumpStdout(value);
+    });
+    this.hostHandle.stderr.on("data", (value: Buffer) => {
+      pumpStderr(value);
+    });
   }
 
   onExit(cb: (exitCode: number) => void): void {
@@ -576,9 +563,8 @@ export class TerminalSession {
   }
 
   private sendHost(message: object): void {
-    const stdin = this.hostHandle.stdin;
-    if (typeof stdin === "number" || !stdin) return;
-    stdin.write(`${JSON.stringify(message)}\n`);
+    if (this.hostHandle.stdin.destroyed) return;
+    this.hostHandle.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
   private flushPendingWorkerInput(): void {

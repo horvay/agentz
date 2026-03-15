@@ -5,8 +5,8 @@ const patterns = [
 	"ghostty-dashboard-mvp-dev",
 	"ghostty-dashboard-mvp-canary",
 	"ghostty-dashboard-mvp",
-	"electrobun dev --watch",
-	"Resources/main.js",
+	"electronmon",
+	"\\.electron/index\\.js",
 	"bun src/main/web.ts",
 	"src/main/web.ts",
 ];

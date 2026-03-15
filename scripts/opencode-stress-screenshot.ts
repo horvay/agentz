@@ -139,8 +139,8 @@ const waitMs =
 const windowName = "Ghostty Multi-Terminal Dashboard";
 
 	Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"]);
-Bun.spawnSync(["pkill", "-f", "electrobun dev --watch"]);
-Bun.spawnSync(["pkill", "-f", "Resources/main.js"]);
+Bun.spawnSync(["pkill", "-f", "electronmon|\\.electron/index\\.js"]);
+Bun.spawnSync(["pkill", "-f", "\\.electron/index\\.js"]);
 
 const app = Bun.spawn(["bash", "-lc", "bun run dev || true"], {
   env: { ...process.env },

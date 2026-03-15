@@ -20,6 +20,7 @@ dist/
 build/
 out/
 artifacts/
+.electron/
 
 # Native Zig artifacts
 src/native/.zig-cache/

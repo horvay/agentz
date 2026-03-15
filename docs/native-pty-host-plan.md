@@ -249,7 +249,7 @@ Update:
   - build both `ghostty-vt-bridge` and `ghostty-pty-host` during migration, or only `ghostty-pty-host` once fully switched.
 - `src/native/build.zig.zon`
   - include the new source file in package paths.
-- `electrobun.config.ts`
+- Electron builder config (`package.json` `build` field)
   - package the new host binary.
 - `package.json`
   - stop calling `prepare:node-pty`
@@ -368,7 +368,7 @@ Recommended behavior:
 - `src/native/build.zig`
 - `src/native/build.zig.zon`
 - `package.json`
-- `electrobun.config.ts`
+- Electron builder config (`package.json` `build` field)
 - `.github/workflows/release.yml`
 
 ### Removed Later
@@ -443,7 +443,7 @@ Mitigation:
 
 Mitigation:
 
-- update `electrobun.config.ts`
+- update the Electron builder config
 - verify dev path and packaged path resolution separately
 
 ## Definition Of Done

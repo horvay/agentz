@@ -45,9 +45,9 @@ async function stopProcessTree(proc: Bun.Subprocess): Promise<void> {
   if (cleanExit) return;
 
   bestEffortKill("agentz-dev|ghostty-dashboard-mvp-dev");
-  bestEffortKill("electrobun dev --watch");
+  bestEffortKill("electronmon|\\.electron/index\\.js");
   bestEffortKill("vite --host 127.0.0.1 --port 5173");
-  bestEffortKill("Resources/main.js");
+  bestEffortKill("\\.electron/index\\.js");
 }
 
 function findWindowId(windowName: string): string | null {
@@ -128,16 +128,6 @@ class RpcSession {
       }, 6000);
 
       const onMessage = (event: MessageEvent) => {
-        const binaryFrame = decodeBinaryFrame(event.data);
-        if (binaryFrame) {
-          const frame = binaryFrame;
-          if (frame.id !== id) return;
-          if (!predicate(frame)) return;
-          clearTimeout(timeout);
-          this.ws.removeEventListener("message", onMessage);
-          resolve(frame);
-          return;
-        }
         let message: RpcMessage | null = null;
         try {
           message = JSON.parse(String(event.data)) as RpcMessage;
@@ -266,8 +256,8 @@ const launchJson = JSON.stringify({
 });
 
 bestEffortKill("agentz-dev|ghostty-dashboard-mvp-dev");
-bestEffortKill("electrobun dev --watch");
-bestEffortKill("Resources/main.js");
+bestEffortKill("electronmon|\\.electron/index\\.js");
+bestEffortKill("\\.electron/index\\.js");
 
 const app = Bun.spawn(["bash", "-lc", "bun run dev || true"], {
   cwd: process.cwd(),
