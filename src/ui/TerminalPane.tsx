@@ -10,6 +10,7 @@ import type { RpcClient } from "./rpcClient";
 import { doesEventMatchShortcut } from "./shortcuts";
 
 const RESIZE_DEBOUNCE_MS = 40;
+const RESIZE_SNAPSHOT_DELAY_MS = 140;
 const TERMINAL_FONT_SIZE = 14;
 const TERMINAL_LINE_HEIGHT = 1.22;
 const TERMINAL_SCROLLBACK = 5_000;
@@ -20,8 +21,8 @@ const ALT_SCREEN_FULL_FRAME_MARKER = "\u001b[?1049h\u001b[H";
 const TERMINAL_THEME = {
   foreground: "#d9e6ff",
   background: "#0a0f1a",
-  cursor: "rgba(0, 0, 0, 0)",
-  cursorAccent: "rgba(0, 0, 0, 0)",
+  cursor: "#ffe066",
+  cursorAccent: "#02060d",
   selectionBackground: "rgba(124, 214, 255, 0.24)",
   black: "#10131b",
   red: "#f07178",
@@ -105,35 +106,17 @@ function isPasteShortcutEvent(event: KeyboardEvent): boolean {
   return event.key.toLowerCase() === "v";
 }
 
-function syncTerminalCursor(terminal: Terminal, frame: TerminalFrame | undefined) {
+function syncTerminalCursor(
+  terminal: Terminal,
+  screen: HTMLDivElement | null,
+  frame: TerminalFrame | undefined,
+) {
   const cursorStyle = frame?.cursorStyle ?? "block";
   terminal.options.cursorStyle = cursorStyle;
   terminal.options.cursorBlink = frame?.cursorBlink ?? true;
   terminal.options.cursorInactiveStyle = frame?.cursorVisible === false ? "none" : cursorStyle;
   terminal.options.cursorWidth = 1;
-}
-
-function getTerminalCellMetrics(terminal: Terminal): { cellWidth: number; cellHeight: number } | null {
-  const unsafeTerminal = terminal as Terminal & {
-    _core?: {
-      _renderService?: {
-        dimensions?: {
-          css?: {
-            cell?: {
-              width?: number;
-              height?: number;
-            };
-          };
-        };
-      };
-    };
-  };
-  const dimensions = unsafeTerminal._core?._renderService?.dimensions?.css?.cell;
-  if (!dimensions?.width || !dimensions?.height) return null;
-  return {
-    cellWidth: dimensions.width,
-    cellHeight: dimensions.height,
-  };
+  screen?.classList.toggle("terminal-screen-cursor-hidden", frame?.cursorVisible === false);
 }
 
 function refreshTerminalViewport(terminal: Terminal): void {
@@ -157,10 +140,10 @@ export function TerminalPane({
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
-  const cursorOverlayRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const resizeSyncTimeoutRef = useRef<number | null>(null);
+  const snapshotSyncTimeoutRef = useRef<number | null>(null);
   const focusTimeoutRef = useRef<number | null>(null);
   const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const pendingFramesRef = useRef<TerminalFrame[]>([]);
@@ -182,7 +165,11 @@ export function TerminalPane({
   const sendResizeSync = (
     cols: number,
     rows: number,
-    { requestSnapshot = false, forceSnapshot = false }: { requestSnapshot?: boolean; forceSnapshot?: boolean } = {},
+    {
+      requestSnapshot = false,
+      forceSnapshot = false,
+      snapshotDelayMs = 0,
+    }: { requestSnapshot?: boolean; forceSnapshot?: boolean; snapshotDelayMs?: number } = {},
   ) => {
     const previous = lastSentSizeRef.current;
     const sizeChanged = !previous || previous.cols !== cols || previous.rows !== rows;
@@ -191,7 +178,14 @@ export function TerminalPane({
       rpc.send({ type: "resize", id, cols, rows });
     }
     if (requestSnapshot && (forceSnapshot || sizeChanged)) {
-      rpc.send({ type: "snapshot", id });
+      if (snapshotSyncTimeoutRef.current != null) {
+        window.clearTimeout(snapshotSyncTimeoutRef.current);
+      }
+      // Give TUIs a beat to redraw after SIGWINCH before we ask for a fresh frame.
+      snapshotSyncTimeoutRef.current = window.setTimeout(() => {
+        snapshotSyncTimeoutRef.current = null;
+        rpc.send({ type: "snapshot", id });
+      }, Math.max(0, snapshotDelayMs));
     }
   };
 
@@ -202,19 +196,20 @@ export function TerminalPane({
       immediate = false,
       requestSnapshot = false,
       forceSnapshot = false,
-    }: { immediate?: boolean; requestSnapshot?: boolean; forceSnapshot?: boolean } = {},
+      snapshotDelayMs = 0,
+    }: { immediate?: boolean; requestSnapshot?: boolean; forceSnapshot?: boolean; snapshotDelayMs?: number } = {},
   ) => {
     if (resizeSyncTimeoutRef.current != null) {
       window.clearTimeout(resizeSyncTimeoutRef.current);
       resizeSyncTimeoutRef.current = null;
     }
     if (immediate) {
-      sendResizeSync(cols, rows, { requestSnapshot, forceSnapshot });
+      sendResizeSync(cols, rows, { requestSnapshot, forceSnapshot, snapshotDelayMs });
       return;
     }
     resizeSyncTimeoutRef.current = window.setTimeout(() => {
       resizeSyncTimeoutRef.current = null;
-      sendResizeSync(cols, rows, { requestSnapshot, forceSnapshot });
+      sendResizeSync(cols, rows, { requestSnapshot, forceSnapshot, snapshotDelayMs });
     }, RESIZE_DEBOUNCE_MS);
   };
 
@@ -233,89 +228,20 @@ export function TerminalPane({
     }, 0);
   };
 
-  const syncCursorOverlay = () => {
-    const overlay = cursorOverlayRef.current;
-    const stage = stageRef.current;
-    const screen = screenRef.current;
-    const terminal = terminalRef.current;
-    const frame = currentFrameRef.current;
-    if (!overlay || !stage || !screen || !terminal || !frame) {
-      if (overlay) overlay.hidden = true;
-      return;
-    }
-
-    if (frame.cursorVisible === false) {
-      overlay.hidden = true;
-      return;
-    }
-
-    const cursorRow = frame.cursorRow ?? 0;
-    const cursorCol = frame.cursorCol ?? 0;
-    if (frame.cols <= 0 || frame.rows <= 0 || cursorRow <= 0 || cursorCol <= 0) {
-      overlay.hidden = true;
-      return;
-    }
-
-    const screenRect = screen.getBoundingClientRect();
-    const stageRect = stage.getBoundingClientRect();
-    if (screenRect.width <= 0 || screenRect.height <= 0) {
-      overlay.hidden = true;
-      return;
-    }
-
-    const metrics = getTerminalCellMetrics(terminal);
-    if (!metrics) {
-      overlay.hidden = true;
-      return;
-    }
-
-    const viewportRelativeRow = Math.max(0, cursorRow - 1);
-    const bufferRow = terminal.buffer.active.viewportY + viewportRelativeRow;
-    const bufferLine = terminal.buffer.active.getLine(bufferRow);
-    const bufferCell = bufferLine?.getCell(cursorCol - 1);
-    const cellChars = bufferCell?.getChars() ?? "";
-    const cellWidthUnits = Math.max(1, bufferCell?.getWidth() ?? 1);
-    const { cellWidth, cellHeight } = metrics;
-    const cursorStyle = frame.cursorStyle ?? "block";
-    const width =
-      cursorStyle === "bar"
-        ? 2
-        : Math.max(1, Math.round(cellWidth * cellWidthUnits));
-    const height =
-      cursorStyle === "underline"
-        ? 2
-        : Math.max(1, Math.round(cellHeight));
-    const left = screenRect.left - stageRect.left + Math.max(0, cursorCol - 1) * cellWidth;
-    const top =
-      screenRect.top -
-      stageRect.top +
-      viewportRelativeRow * cellHeight +
-      (cursorStyle === "underline" ? Math.max(0, Math.round(cellHeight) - height) : 0);
-
-    overlay.textContent = cursorStyle === "block" ? cellChars || " " : "";
-    overlay.className = `terminal-cursor-overlay terminal-cursor-overlay-${cursorStyle}${
-      frame.cursorBlink ? " terminal-cursor-overlay-blink" : ""
-    }`;
-    overlay.style.left = `${Math.round(left)}px`;
-    overlay.style.top = `${Math.round(top)}px`;
-    overlay.style.width = `${width}px`;
-    overlay.style.height = `${height}px`;
-    overlay.style.lineHeight = `${Math.max(1, Math.round(cellHeight))}px`;
-    overlay.hidden = false;
-  };
-
   const applyFrame = (frame: TerminalFrame, done: () => void) => {
     const terminal = terminalRef.current;
+    const screen = screenRef.current;
     if (!terminal) {
       done();
       return;
     }
 
-    if (IS_WINDOWS && terminal.cols > 0 && terminal.rows > 0 && (frame.cols !== terminal.cols || frame.rows !== terminal.rows)) {
+    if (terminal.cols > 0 && terminal.rows > 0 && (frame.cols !== terminal.cols || frame.rows !== terminal.rows)) {
       queueResizeSync(terminal.cols, terminal.rows, {
         immediate: true,
         requestSnapshot: true,
         forceSnapshot: true,
+        snapshotDelayMs: RESIZE_SNAPSHOT_DELAY_MS,
       });
       done();
       return;
@@ -324,8 +250,7 @@ export function TerminalPane({
     const payload = framePayload(frame);
     if (frame.screenMode === "full") {
       if (payload.length === 0) {
-        syncTerminalCursor(terminal, frame);
-        syncCursorOverlay();
+        syncTerminalCursor(terminal, screen, frame);
         done();
         return;
       }
@@ -348,8 +273,7 @@ export function TerminalPane({
       const scrollbackOffset = Math.max(0, activeBuffer.baseY - activeBuffer.viewportY);
       terminal.reset();
       terminal.write(payload, () => {
-        syncTerminalCursor(terminal, frame);
-        syncCursorOverlay();
+        syncTerminalCursor(terminal, screen, frame);
         if (scrollbackOffset > 0) {
           const nextTarget = Math.max(0, terminal.buffer.active.baseY - scrollbackOffset);
           terminal.scrollToLine(nextTarget);
@@ -362,15 +286,13 @@ export function TerminalPane({
     }
 
     if (payload.length === 0) {
-      syncTerminalCursor(terminal, frame);
-      syncCursorOverlay();
+      syncTerminalCursor(terminal, screen, frame);
       done();
       return;
     }
 
     terminal.write(payload, () => {
-      syncTerminalCursor(terminal, frame);
-      syncCursorOverlay();
+      syncTerminalCursor(terminal, screen, frame);
       done();
     });
   };
@@ -492,7 +414,10 @@ export function TerminalPane({
       rpc.send({ type: "input", id, data, encoding: "utf8" });
     });
     const resizeSubscription = terminal.onResize(({ cols, rows }) => {
-      queueResizeSync(cols, rows, { requestSnapshot: IS_WINDOWS });
+      queueResizeSync(cols, rows, {
+        requestSnapshot: true,
+        snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
+      });
     });
 
     terminal.open(screen);
@@ -501,11 +426,11 @@ export function TerminalPane({
 
     const fitTerminal = () => {
       fitAddon.fit();
-      window.requestAnimationFrame(syncCursorOverlay);
       refreshTerminalViewport(terminal);
       queueResizeSync(terminal.cols, terminal.rows, {
         immediate: IS_WINDOWS,
-        requestSnapshot: IS_WINDOWS,
+        requestSnapshot: true,
+        snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
       });
     };
 
@@ -539,6 +464,10 @@ export function TerminalPane({
       if (resizeSyncTimeoutRef.current != null) {
         window.clearTimeout(resizeSyncTimeoutRef.current);
         resizeSyncTimeoutRef.current = null;
+      }
+      if (snapshotSyncTimeoutRef.current != null) {
+        window.clearTimeout(snapshotSyncTimeoutRef.current);
+        snapshotSyncTimeoutRef.current = null;
       }
       if (focusTimeoutRef.current != null) {
         window.clearTimeout(focusTimeoutRef.current);
@@ -584,11 +513,6 @@ export function TerminalPane({
     return () => window.removeEventListener("focus", onWindowFocus);
   }, [active]);
 
-  useEffect(() => {
-    const raf = window.requestAnimationFrame(syncCursorOverlay);
-    return () => window.cancelAnimationFrame(raf);
-  }, [active, currentFrame]);
-
   return (
     <section className={`pane-shell ${active ? "pane-active" : ""}`} style={accentStyle}>
       <div
@@ -604,7 +528,6 @@ export function TerminalPane({
         role="presentation"
       >
         <div ref={screenRef} className="terminal-screen terminal-screen-xterm" />
-        <div ref={cursorOverlayRef} className="terminal-cursor-overlay terminal-cursor-overlay-block" hidden />
       </div>
     </section>
   );
