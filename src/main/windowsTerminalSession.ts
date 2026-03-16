@@ -20,8 +20,21 @@ interface WritableLikeSocket {
   writable?: boolean;
   writableEnded?: boolean;
   readyState?: string;
+  readable?: boolean;
+  end?: () => void;
   destroy?: () => void;
   on?: (event: string, listener: (...args: unknown[]) => void) => void;
+  removeAllListeners?: (event?: string) => void;
+}
+
+interface WorkerLike {
+  on?: (event: string, listener: (...args: unknown[]) => void) => void;
+  terminate?: () => Promise<number>;
+}
+
+interface ConoutConnectionLike {
+  dispose?: () => void;
+  _worker?: WorkerLike;
 }
 
 interface WindowsPtyInternals extends IPty {
@@ -31,7 +44,26 @@ interface WindowsPtyInternals extends IPty {
   _agent?: {
     exitCode?: number;
     inSocket?: WritableLikeSocket;
+    outSocket?: WritableLikeSocket;
+    _conoutSocketWorker?: ConoutConnectionLike;
   };
+}
+
+export function isIgnorablePtySocketError(error: unknown): boolean {
+  const code = String((error as { code?: string } | null | undefined)?.code ?? "").toUpperCase();
+  const message = error instanceof Error ? error.message.toUpperCase() : String(error ?? "").toUpperCase();
+  return (
+    code.includes("ERR_SOCKET_CLOSED") ||
+    code.includes("ERR_STREAM_WRITE_AFTER_END") ||
+    code.includes("EPIPE") ||
+    code.includes("EIO") ||
+    message.includes("ERR_SOCKET_CLOSED") ||
+    message.includes("WRITE AFTER FIN") ||
+    message.includes("WRITE AFTER END") ||
+    message.includes("SOCKET HAS BEEN ENDED BY THE OTHER PARTY") ||
+    message.includes("EPIPE") ||
+    message.includes("EIO")
+  );
 }
 
 interface TerminalSessionBackend {
@@ -170,13 +202,13 @@ interface InternalSerializeAddon extends SerializeAddon {
 
 function attachSocketErrorSink(socket: WritableLikeSocket | undefined, logError: (error: Error) => void): void {
   socket?.on?.("error", (error) => {
-    if (String((error as { code?: string }).code ?? "") !== "ERR_SOCKET_CLOSED") {
+    if (!isIgnorablePtySocketError(error)) {
       logError(error as Error);
     }
   });
 }
 
-function canWriteToPty(pty: WindowsPtyInternals): boolean {
+export function canWriteToPty(pty: WindowsPtyInternals): boolean {
   if (pty._writable === false) return false;
   if (pty._agent?.exitCode !== undefined) return false;
 
@@ -199,8 +231,31 @@ function canWriteToPty(pty: WindowsPtyInternals): boolean {
 }
 
 function destroyPtySockets(pty: WindowsPtyInternals): void {
+  pty._agent?.outSocket?.destroy?.();
   pty._agent?.inSocket?.destroy?.();
   pty._socket?.destroy?.();
+}
+
+function attachConoutWorkerErrorSink(
+  pty: WindowsPtyInternals,
+  shouldIgnore: () => boolean,
+  logError: (error: Error) => void,
+): void {
+  pty._agent?._conoutSocketWorker?._worker?.on?.("error", (error) => {
+    if (shouldIgnore() && isIgnorablePtySocketError(error)) {
+      return;
+    }
+    if (!isIgnorablePtySocketError(error)) {
+      logError(error as Error);
+    }
+  });
+}
+
+function terminateConoutBridge(pty: WindowsPtyInternals): void {
+  const worker = pty._agent?._conoutSocketWorker?._worker;
+  worker?.terminate?.().catch(() => {
+    // ignore teardown errors from force-terminating the worker
+  });
 }
 
 export class WindowsTerminalSessionBackend implements TerminalSessionBackend {
@@ -274,7 +329,7 @@ export class WindowsTerminalSessionBackend implements TerminalSessionBackend {
     });
     const windowsPty = this.pty as WindowsPtyInternals;
     const logSocketError = (error: Error) => {
-      if (!this.hasExited && !String((error as { code?: string }).code ?? "").includes("ERR_SOCKET_CLOSED")) {
+      if (!this.hasExited && !this.killRequested && !isIgnorablePtySocketError(error)) {
         console.error(`[terminal:${this.id}:windows-pty] ${error.message}`);
       }
     };
@@ -282,6 +337,12 @@ export class WindowsTerminalSessionBackend implements TerminalSessionBackend {
     (this.pty as IPty & { on(event: "error", listener: (error: Error) => void): void }).on("error", logSocketError);
     attachSocketErrorSink(windowsPty._socket, logSocketError);
     attachSocketErrorSink(windowsPty._agent?.inSocket, logSocketError);
+    attachSocketErrorSink(windowsPty._agent?.outSocket, logSocketError);
+    attachConoutWorkerErrorSink(
+      windowsPty,
+      () => this.hasExited || this.killRequested,
+      logSocketError,
+    );
 
     if (explicitCommand && !this.busyTracksChildren) {
       this.setShellBusy(true);
@@ -326,11 +387,16 @@ export class WindowsTerminalSessionBackend implements TerminalSessionBackend {
 
   setFlowPaused(paused: boolean): void {
     if (paused === this.flowPaused) return;
-    this.flowPaused = paused;
-    if (paused) {
-      this.pty.pause();
-    } else {
-      this.pty.resume();
+    if (this.hasExited || this.killRequested) return;
+    const changed = this.tryPtyControl(paused ? "pause" : "resume", () => {
+      if (paused) {
+        this.pty.pause();
+      } else {
+        this.pty.resume();
+      }
+    });
+    if (changed) {
+      this.flowPaused = paused;
     }
   }
 
@@ -353,10 +419,15 @@ export class WindowsTerminalSessionBackend implements TerminalSessionBackend {
   }
 
   resize(cols: number, rows: number): void {
+    if (this.hasExited || this.killRequested) return;
     this.cols = Math.max(2, Math.trunc(cols));
     this.rows = Math.max(2, Math.trunc(rows));
+    const windowsPty = this.pty as WindowsPtyInternals;
+    if (!canWriteToPty(windowsPty)) return;
     const wasAltScreen = this.terminal.buffer.active.type === "alternate";
-    this.pty.resize(this.cols, this.rows);
+    if (!this.tryPtyControl("resize", () => this.pty.resize(this.cols, this.rows))) {
+      return;
+    }
     this.terminal.resize(this.cols, this.rows);
     if (wasAltScreen) {
       this.pendingRenderData = "";
@@ -379,12 +450,20 @@ export class WindowsTerminalSessionBackend implements TerminalSessionBackend {
   kill(): void {
     if (this.hasExited) return;
     this.killRequested = true;
+    this.clearEmitTimer();
+    this.clearAltScreenResizeTimer();
+    if (this.busyPollTimer) {
+      clearInterval(this.busyPollTimer);
+      this.busyPollTimer = null;
+    }
+    terminateConoutBridge(this.pty as WindowsPtyInternals);
     const pid = this.pty.pid;
     if (Number.isFinite(pid) && pid > 0) {
       const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
         stdio: "ignore",
       });
       killer.on("exit", (code) => {
+        if (this.hasExited) return;
         if (code === 0) {
           setTimeout(() => {
             if (!this.hasExited) {
@@ -393,18 +472,16 @@ export class WindowsTerminalSessionBackend implements TerminalSessionBackend {
           }, 200);
           return;
         }
-        if (!this.hasExited) {
-          this.pty.kill();
-        }
+        this.tryKillPty();
       });
       killer.on("error", () => {
         if (!this.hasExited) {
-          this.pty.kill();
+          this.tryKillPty();
         }
       });
       return;
     }
-    this.pty.kill();
+    this.tryKillPty();
   }
 
   private handlePtyData(data: string): void {
@@ -658,12 +735,34 @@ export class WindowsTerminalSessionBackend implements TerminalSessionBackend {
     this.altScreenResizeTimer = null;
   }
 
+  private tryPtyControl(action: string, control: () => void): boolean {
+    try {
+      control();
+      return true;
+    } catch (error) {
+      if (!this.hasExited && !this.killRequested && !isIgnorablePtySocketError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[terminal:${this.id}:windows-pty] ${action} failed: ${message}`);
+      }
+      return false;
+    }
+  }
+
+  private tryKillPty(): void {
+    terminateConoutBridge(this.pty as WindowsPtyInternals);
+    const killed = this.tryPtyControl("kill", () => this.pty.kill());
+    if (!killed && !this.hasExited) {
+      destroyPtySockets(this.pty as WindowsPtyInternals);
+    }
+  }
+
   private emitExit(exitCode: number): void {
     if (this.hasExited) return;
     this.hasExited = true;
     this.killRequested = true;
     this.clearEmitTimer();
     this.clearAltScreenResizeTimer();
+    terminateConoutBridge(this.pty as WindowsPtyInternals);
     destroyPtySockets(this.pty as WindowsPtyInternals);
     (this.terminal as Terminal & { dispose?: () => void }).dispose?.();
     if (this.busyPollTimer) {

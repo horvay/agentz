@@ -17,6 +17,19 @@ const HOST_PACKET_BUSY = 4;
 const utf8Decoder = new TextDecoder();
 let hasWarnedMissingNativeHost = false;
 
+function isIgnorableHostWriteError(error: unknown): boolean {
+  const code = String((error as { code?: string } | null | undefined)?.code ?? "").toUpperCase();
+  const message = error instanceof Error ? error.message.toUpperCase() : String(error ?? "").toUpperCase();
+  return (
+    code.includes("EPIPE") ||
+    code.includes("ERR_STREAM_DESTROYED") ||
+    code.includes("ERR_SOCKET_CLOSED") ||
+    message.includes("EPIPE") ||
+    message.includes("ERR_STREAM_DESTROYED") ||
+    message.includes("ERR_SOCKET_CLOSED")
+  );
+}
+
 function getNativeHostBasename(platform: NodeJS.Platform = process.platform): string {
   return platform === "win32" ? "ghostty-pty-host.exe" : "ghostty-pty-host";
 }
@@ -360,6 +373,13 @@ class PosixTerminalSessionBackend implements TerminalSessionBackend {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
+    this.hostHandle.stdin.on("error", (error) => {
+      if (!this.hasExited && !isIgnorableHostWriteError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[terminal:${this.id}:native-host-stdin] ${message}`);
+      }
+    });
+
     this.hostHandle.on("exit", (code) => {
       this.emitExit(typeof code === "number" ? code : 0);
     });
@@ -602,8 +622,16 @@ class PosixTerminalSessionBackend implements TerminalSessionBackend {
   }
 
   private sendHost(message: object): void {
-    if (this.hostHandle.stdin.destroyed) return;
-    this.hostHandle.stdin.write(`${JSON.stringify(message)}\n`);
+    const stdin = this.hostHandle.stdin;
+    if (this.hasExited || stdin.destroyed || stdin.writableEnded) return;
+    try {
+      stdin.write(`${JSON.stringify(message)}\n`);
+    } catch (error) {
+      if (!isIgnorableHostWriteError(error)) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`[terminal:${this.id}:native-host-stdin] ${detail}`);
+      }
+    }
   }
 
   private flushPendingWorkerInput(): void {

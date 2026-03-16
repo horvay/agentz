@@ -17,6 +17,19 @@ const HOST = process.env.GHOSTTY_DASHBOARD_RPC_HOST ?? "127.0.0.1";
 const PORT = 4599;
 const PASTED_IMAGE_DIR = path.join(os.tmpdir(), "agentz-paste");
 
+function isIgnorableSocketWriteError(error: unknown): boolean {
+  const code = String((error as { code?: string } | null | undefined)?.code ?? "").toUpperCase();
+  const message = error instanceof Error ? error.message.toUpperCase() : String(error ?? "").toUpperCase();
+  return (
+    code.includes("EPIPE") ||
+    code.includes("ECONNRESET") ||
+    code.includes("ERR_SOCKET_CLOSED") ||
+    message.includes("EPIPE") ||
+    message.includes("ECONNRESET") ||
+    message.includes("ERR_SOCKET_CLOSED")
+  );
+}
+
 function extensionForMimeType(mimeType: string, fileName?: string): string {
   const normalized = mimeType.trim().toLowerCase();
   if (normalized === "image/png") return "png";
@@ -66,24 +79,43 @@ export function startTerminalRpcServer(
   });
   const websocketServer = new WebSocketServer({ server: httpServer });
 
-  function send(ws: WebSocket, message: JsonServerMessage): void {
+  function dropClient(ws: WebSocket): void {
+    clients.delete(ws);
+    try {
+      ws.close();
+    } catch {
+      // ignore shutdown errors
+    }
+  }
+
+  function safeSend(ws: WebSocket, payload: string | Uint8Array): void {
     if (ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify(message));
+    try {
+      ws.send(payload);
+    } catch (error) {
+      if (!isIgnorableSocketWriteError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[rpc] websocket send failed: ${message}`);
+      }
+      dropClient(ws);
+    }
+  }
+
+  function send(ws: WebSocket, message: JsonServerMessage): void {
+    safeSend(ws, JSON.stringify(message));
   }
 
   function broadcast(message: JsonServerMessage): void {
     const payload = JSON.stringify(message);
     for (const ws of clients) {
-      if (ws.readyState !== WebSocket.OPEN) continue;
-      ws.send(payload);
+      safeSend(ws, payload);
     }
   }
 
   function broadcastFrame(frame: TerminalFrame): void {
     const payload = encodeTerminalFramePacket(frame);
     for (const ws of clients) {
-      if (ws.readyState !== WebSocket.OPEN) continue;
-      ws.send(payload);
+      safeSend(ws, payload);
     }
   }
 
@@ -93,6 +125,9 @@ export function startTerminalRpcServer(
     send(ws, { type: "config", config: configManager.getConfig() });
 
     ws.on("close", () => {
+      clients.delete(ws);
+    });
+    ws.on("error", () => {
       clients.delete(ws);
     });
 
