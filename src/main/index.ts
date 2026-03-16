@@ -47,7 +47,11 @@ async function getMainViewTarget(): Promise<RendererTarget> {
 function requestWindowFocus(window: BrowserWindow): void {
   window.show();
   window.focus();
-  window.webContents.focus();
+  // Linux/X11 needed an extra renderer-focus nudge; on Windows it can steal
+  // focus back from xterm's helper textarea and break non-text keys.
+  if (process.platform === "linux") {
+    window.webContents.focus();
+  }
 }
 
 function runFocusBurst(window: BrowserWindow, delaysMs: number[]): void {
