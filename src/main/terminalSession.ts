@@ -1,9 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 import type { TerminalFrame, TerminalScreenRow } from "../shared/protocol";
-import { WindowsTerminalSessionBackend } from "./windowsTerminalSession";
 
 const MAX_ACTIVITY_TEXT_CHARS = 4_000;
 const MAX_PREVIEW_LINES = 200;
@@ -38,10 +37,85 @@ function quotePowerShellArg(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+function stripWrappingQuotes(value: string): string {
+  return value.replace(/^"+|"+$/g, "").trim();
+}
+
+function getEnvValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const direct = env[name];
+  if (typeof direct === "string") return direct;
+  const match = Object.keys(env).find((key) => key.toLowerCase() === name.toLowerCase());
+  if (!match) return undefined;
+  const value = env[match];
+  return typeof value === "string" ? value : undefined;
+}
+
+function isWindowsAbsoluteExecutable(path: string): boolean {
+  if (!path) return false;
+  try {
+    accessSync(path, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveWindowsCommandOnPath(command: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const trimmed = stripWrappingQuotes(command);
+  if (!trimmed) return null;
+
+  if (isAbsolute(trimmed)) {
+    return isWindowsAbsoluteExecutable(trimmed) ? trimmed : null;
+  }
+
+  const pathValue = getEnvValue(env, "PATH");
+  if (!pathValue) return null;
+
+  const pathextValue = getEnvValue(env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD";
+  const pathext = pathextValue
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const hasExtension = /\.[^\\/]+$/.test(trimmed);
+  const candidates = hasExtension ? [trimmed] : [trimmed, ...pathext.map((ext) => `${trimmed}${ext.toLowerCase()}`)];
+
+  for (const rawDir of pathValue.split(delimiter)) {
+    const dir = stripWrappingQuotes(rawDir);
+    if (!dir) continue;
+    for (const candidate of candidates) {
+      const fullPath = join(dir, candidate);
+      if (isWindowsAbsoluteExecutable(fullPath)) return fullPath;
+    }
+  }
+
+  return null;
+}
+
+function resolveWindowsPowerShellCommand(env: NodeJS.ProcessEnv = process.env): string {
+  const pathResolvedPwsh = resolveWindowsCommandOnPath("pwsh.exe", env);
+  if (pathResolvedPwsh) return pathResolvedPwsh;
+
+  const programFiles = getEnvValue(env, "ProgramFiles");
+  if (programFiles) {
+    const powerShell7 = join(programFiles, "PowerShell", "7", "pwsh.exe");
+    if (isWindowsAbsoluteExecutable(powerShell7)) return powerShell7;
+  }
+
+  const pathResolvedWindowsPowerShell = resolveWindowsCommandOnPath("powershell.exe", env);
+  if (pathResolvedWindowsPowerShell) return pathResolvedWindowsPowerShell;
+
+  const windowsDir = getEnvValue(env, "WINDIR") ?? "C:\\Windows";
+  const builtInWindowsPowerShell = join(windowsDir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  if (isWindowsAbsoluteExecutable(builtInWindowsPowerShell)) return builtInWindowsPowerShell;
+
+  return "powershell.exe";
+}
+
 function resolveWindowsLaunchCommand(
   resolvedCommand: string,
   args: string[],
   explicitCommand: boolean,
+  env: NodeJS.ProcessEnv = process.env,
 ): { command: string; args: string[] } {
   if (!explicitCommand) {
     return { command: resolvedCommand, args };
@@ -49,7 +123,7 @@ function resolveWindowsLaunchCommand(
 
   const commandLine = ["&", quotePowerShellArg(resolvedCommand), ...args.map(quotePowerShellArg)].join(" ");
   return {
-    command: "pwsh.exe",
+    command: resolveWindowsPowerShellCommand(env),
     args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", commandLine],
   };
 }
@@ -90,9 +164,7 @@ export function resolveTerminalCommand(
   if (command) return command;
 
   if (platform === "win32") {
-    const comSpec = env.ComSpec?.trim();
-    if (comSpec) return comSpec;
-    return "pwsh.exe";
+    return resolveWindowsPowerShellCommand(env);
   }
 
   const shell = env.SHELL?.trim();
@@ -114,6 +186,13 @@ export function buildTerminalHostEnv(
   platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   const nextEnv = { ...env };
+
+  if (!nextEnv.TERM || nextEnv.TERM.trim().length === 0) {
+    nextEnv.TERM = "xterm-256color";
+  }
+  if (!nextEnv.COLORTERM || nextEnv.COLORTERM.trim().length === 0) {
+    nextEnv.COLORTERM = "truecolor";
+  }
 
   if (platform !== "win32" && (!nextEnv.PATH || nextEnv.PATH.trim().length === 0)) {
     nextEnv.PATH = DEFAULT_UNIX_PATH;
@@ -312,7 +391,7 @@ interface TerminalSessionBackend {
   kill(): void;
 }
 
-class PosixTerminalSessionBackend implements TerminalSessionBackend {
+class NativeTerminalSessionBackend implements TerminalSessionBackend {
   private readonly hostHandle: ChildProcessWithoutNullStreams;
   private seq = 0;
   private cols: number;
@@ -351,7 +430,7 @@ class PosixTerminalSessionBackend implements TerminalSessionBackend {
     const hostPath = resolveNativeHostPath(rootCwd);
     const hostBinaryPresent = existsSync(hostPath);
 
-    if (!hostBinaryPresent) {
+      if (!hostBinaryPresent) {
       if (!hasWarnedMissingNativeHost) {
         hasWarnedMissingNativeHost = true;
         console.warn(`[terminal:${this.id}] native PTY host missing at ${hostPath}; build it with bun run native:build:host.`);
@@ -678,21 +757,18 @@ export class TerminalSession implements TerminalSessionBackend {
     const shell = resolveTerminalCommand(command);
     const shellArgs = args ?? [];
     const hostEnv = buildTerminalHostEnv(shell, command);
-    const windowsLaunch = resolveWindowsLaunchCommand(shell, shellArgs, Boolean(command));
+    const windowsLaunch = resolveWindowsLaunchCommand(shell, shellArgs, Boolean(command), hostEnv);
 
-    this.backend =
-      process.platform === "win32"
-        ? new WindowsTerminalSessionBackend(
-            id,
-            cols,
-            rows,
-            windowsLaunch.command,
-            windowsLaunch.args,
-            launchCwd,
-            hostEnv,
-            Boolean(command),
-          )
-        : new PosixTerminalSessionBackend(id, cols, rows, rootCwd, launchCwd, shell, shellArgs, hostEnv);
+    this.backend = new NativeTerminalSessionBackend(
+      id,
+      cols,
+      rows,
+      rootCwd,
+      launchCwd,
+      windowsLaunch.command,
+      windowsLaunch.args,
+      hostEnv,
+    );
   }
 
   onData(cb: (frame: TerminalFrame) => void): void {

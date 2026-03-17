@@ -91,10 +91,7 @@ export async function runManaged(children: Array<ReturnType<typeof spawnInherite
 }
 
 export function getNativeHostBuildError(): string {
-  return [
-    "The native PTY host is POSIX-only today.",
-    "Run this app from Linux or macOS, or from a Linux environment with WSL/WSLg.",
-  ].join(" ");
+  return "The native PTY host build failed.";
 }
 
 export function resolveBundledZig(rootDir = process.cwd()): string {

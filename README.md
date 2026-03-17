@@ -45,22 +45,7 @@ The exact filenames may vary a little by channel (`stable` vs `canary`) and arch
 
 - macOS: download the `*.dmg` unless you specifically want the raw app bundle.
 - Linux: download the `*-Setup.tar.gz` if you want a simple user install; download the `*.tar.zst` if you want a portable unpack-and-run build.
-- Windows: there is not a native Windows build yet. Use the Linux release through WSL.
-
-### Windows via WSL
-
-Agentz can be run on Windows through WSL using the Linux release artifacts.
-
-- Install WSL2
-- Use a distro like Ubuntu
-- Make sure you have GUI app support available (`WSLg` on Windows 11 is the easiest path)
-- Download the Linux release asset inside WSL
-- Extract it and run it there
-
-Recommended approach:
-
-- use the Linux `*-Setup.tar.gz` release if you want a simple user install inside WSL
-- use the Linux `*.tar.zst` release if you want a portable folder you can keep anywhere
+- Windows: native Windows support is in progress; if you build from source, it now uses the native `ghostty-pty-host.exe` path.
 
 ## Quick Start
 
@@ -130,7 +115,6 @@ Legacy flags still work:
 ```bash
 bun install
 bun run native:build
-bun run native:build:bridge
 ```
 
 ### Run in development

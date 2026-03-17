@@ -10,19 +10,38 @@ describe("resolveTerminalCommand", () => {
     expect(resolved.length).toBeGreaterThan(0);
   });
 
-  test("keeps a valid absolute SHELL path", () => {
-    if (process.platform === "win32") {
-      const resolved = resolveTerminalCommand(
-        undefined,
-        { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
-        "win32",
-      );
-      expect(resolved).toBe("C:\\Windows\\System32\\cmd.exe");
-      return;
-    }
+  test("uses an installed PowerShell by default on Windows", () => {
+    const resolved = resolveTerminalCommand(
+      undefined,
+      {
+        PATH: "C:\\Tools;C:\\Windows\\System32\\WindowsPowerShell\\v1.0",
+        PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      },
+      "win32",
+    );
 
-    const resolved = resolveTerminalCommand(undefined, { SHELL: "/bin/sh" }, "linux");
-    expect(resolved).toBe("/bin/sh");
+    expect(resolved).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  });
+
+  test("falls back to built-in Windows PowerShell when pwsh is unavailable on PATH", () => {
+    if (process.platform !== "win32") return;
+
+    const resolved = resolveTerminalCommand(
+      undefined,
+      {
+        PATH: "C:\\Tools",
+        PATHEXT: ".COM;.EXE;.BAT;.CMD",
+        WINDIR: "C:\\Windows",
+      },
+      "win32",
+    );
+
+    expect(resolved).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  });
+
+  test("keeps unix shell resolution unchanged", () => {
+    const resolved = resolveTerminalCommand(undefined, { SHELL: "sh" }, "linux");
+    expect(resolved).toBe("sh");
   });
 });
 

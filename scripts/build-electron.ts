@@ -9,7 +9,7 @@ const result = await Bun.build({
   outdir: outputDir,
   target: "node",
   format: "cjs",
-  external: ["electron", "ws", "node-pty"],
+  external: ["electron", "ws"],
   sourcemap: "external",
   minify: false,
 });

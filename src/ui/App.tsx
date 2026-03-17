@@ -27,6 +27,7 @@ import {
   folderAccentKey,
   resolveFolderAccentAssignments,
 } from "./folderAccent";
+import { folderLabel, resolveNewPaneCwd, resolvePaneCwdFromFrame } from "./paneCwd";
 import { coalesceQueuedRenderFrames } from "./renderQueues";
 import { doesEventMatchShortcut } from "./shortcuts";
 import { selectLivePaneIds } from "./livePaneSelection";
@@ -131,13 +132,6 @@ function avatarSrcForState(avatar: AvatarDefinition, state: AvatarVisualState): 
   if (state === "question") return avatar.questionSrc;
   if (state === "calling") return avatar.callingSrc;
   return avatar.idleSrc;
-}
-
-function folderLabel(cwd?: string): string {
-  if (!cwd) return "Starting...";
-  const normalized = cwd.replace(/\/+$/, "") || "/";
-  const segments = normalized.split("/").filter(Boolean);
-  return segments[segments.length - 1] ?? "/";
 }
 
 function accentVars(accent: (typeof FOLDER_ACCENT_PALETTE)[number]): CSSProperties {
@@ -971,8 +965,9 @@ function App() {
     avatarStatesRef.current = { ...avatarStatesRef.current, [id]: "idle" };
     paneRuntimeStore.patchPane(id, { status: "booting", avatarState: "idle", queuedFrames: [] });
     setActivePaneCentered(id);
-    createTerminal(id);
-  }, [createTerminal, defaultPaneWidth, setActivePaneCentered]);
+    const cwd = resolveNewPaneCwd(activeSessionIdRef.current, paneCwds, framesRef.current);
+    createTerminal(id, cwd ? { cwd } : undefined);
+  }, [createTerminal, defaultPaneWidth, paneCwds, setActivePaneCentered]);
 
   const ensureBackgroundTerminalForPane = useCallback(
     (paneId: string) => {
@@ -1168,7 +1163,10 @@ function App() {
     const cwdUpdates: Record<string, string | undefined> = {};
 
     for (const [id, update] of entries) {
-      const activityFrame = update.activityFrame;
+      const rawActivityFrame = update.activityFrame;
+      const previousCwd = paneCwds[id] ?? framesRef.current[id]?.cwd;
+      const effectiveCwd = resolvePaneCwdFromFrame(rawActivityFrame, previousCwd);
+      const activityFrame = effectiveCwd === rawActivityFrame.cwd ? rawActivityFrame : { ...rawActivityFrame, cwd: effectiveCwd };
       const resolved = nextAvatarActivity(activityFrame, avatarActivityRef.current[id], nowMs);
       avatarActivityRef.current[id] = resolved.activity;
       nextFrames[id] = activityFrame;

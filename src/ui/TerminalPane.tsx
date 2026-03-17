@@ -8,6 +8,12 @@ import type { TerminalFrame } from "../shared/protocol";
 import type { DashboardShortcuts } from "../shared/config";
 import type { RpcClient } from "./rpcClient";
 import { doesEventMatchShortcut } from "./shortcuts";
+import {
+  isExplicitCopyShortcutEvent,
+  isExplicitPasteShortcutEvent,
+  isPasteShortcutEvent,
+} from "./terminalClipboardShortcuts";
+import { prependTerminalModePrefix, terminalModeStateKey } from "./terminalModes";
 
 const RESIZE_DEBOUNCE_MS = 40;
 const RESIZE_SNAPSHOT_DELAY_MS = 140;
@@ -100,10 +106,32 @@ function extractAltScreenFullFramePayload(payload: string): string {
   return payload.slice(markerIndex + ALT_SCREEN_FULL_FRAME_MARKER.length);
 }
 
-function isPasteShortcutEvent(event: KeyboardEvent): boolean {
-  if (event.altKey) return false;
-  if (!event.ctrlKey && !event.metaKey) return false;
-  return event.key.toLowerCase() === "v";
+async function writeTextToClipboard(text: string): Promise<void> {
+  if (!text) return;
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+async function readTextFromClipboard(): Promise<string> {
+  if (navigator.clipboard?.readText) {
+    return navigator.clipboard.readText();
+  }
+
+  return "";
 }
 
 function syncTerminalCursor(
@@ -150,6 +178,7 @@ export function TerminalPane({
   const pendingFrameStartRef = useRef(0);
   const processingFramesRef = useRef(false);
   const lastAppliedSeqRef = useRef(0);
+  const lastModeStateKeyRef = useRef<string | null>(null);
   const shortcutsRef = useRef(shortcuts);
   const shortcutHandlerRef = useRef(onShortcut);
   const framesQueuedHandlerRef = useRef(onFramesQueued);
@@ -248,23 +277,29 @@ export function TerminalPane({
     }
 
     const payload = framePayload(frame);
+    const nextModeStateKey = terminalModeStateKey(frame);
+    const shouldSyncModes = frame.screenMode === "full" || lastModeStateKeyRef.current !== nextModeStateKey;
+    const payloadWithModes = shouldSyncModes ? prependTerminalModePrefix(payload, frame) : payload;
     if (frame.screenMode === "full") {
-      if (payload.length === 0) {
+      if (payloadWithModes.length === 0) {
         syncTerminalCursor(terminal, screen, frame);
+        lastModeStateKeyRef.current = nextModeStateKey;
         done();
         return;
       }
-      if (frame.altScreen && typeof payload === "string") {
+      if (frame.altScreen && typeof payloadWithModes === "string") {
         if (IS_WINDOWS) {
           terminal.reset();
-          terminal.write(payload, () => {
+          terminal.write(payloadWithModes, () => {
+            lastModeStateKeyRef.current = nextModeStateKey;
             done();
           });
           return;
         }
-        const altPayload = extractAltScreenFullFramePayload(payload);
+        const altPayload = extractAltScreenFullFramePayload(payloadWithModes);
         // Repaint full-screen TUIs in place. A hard terminal reset causes visible flashes.
         terminal.write(`\u001b[?1049h\u001b[H\u001b[2J${altPayload}`, () => {
+          lastModeStateKeyRef.current = nextModeStateKey;
           done();
         });
         return;
@@ -272,8 +307,9 @@ export function TerminalPane({
       const activeBuffer = terminal.buffer.active;
       const scrollbackOffset = Math.max(0, activeBuffer.baseY - activeBuffer.viewportY);
       terminal.reset();
-      terminal.write(payload, () => {
+      terminal.write(payloadWithModes, () => {
         syncTerminalCursor(terminal, screen, frame);
+        lastModeStateKeyRef.current = nextModeStateKey;
         if (scrollbackOffset > 0) {
           const nextTarget = Math.max(0, terminal.buffer.active.baseY - scrollbackOffset);
           terminal.scrollToLine(nextTarget);
@@ -285,14 +321,16 @@ export function TerminalPane({
       return;
     }
 
-    if (payload.length === 0) {
+    if (payloadWithModes.length === 0) {
       syncTerminalCursor(terminal, screen, frame);
+      lastModeStateKeyRef.current = nextModeStateKey;
       done();
       return;
     }
 
-    terminal.write(payload, () => {
+    terminal.write(payloadWithModes, () => {
       syncTerminalCursor(terminal, screen, frame);
+      lastModeStateKeyRef.current = nextModeStateKey;
       done();
     });
   };
@@ -363,6 +401,23 @@ export function TerminalPane({
     const rendererAddon = loadBestRendererAddon(terminal);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
+      if (isExplicitCopyShortcutEvent(event)) {
+        event.preventDefault();
+        const selection = terminal.getSelection();
+        if (selection) {
+          void writeTextToClipboard(selection);
+        }
+        return false;
+      }
+      if (isExplicitPasteShortcutEvent(event)) {
+        event.preventDefault();
+        void readTextFromClipboard().then((text) => {
+          if (!text) return;
+          userInputHandlerRef.current(id);
+          terminal.paste(text);
+        });
+        return false;
+      }
       if (isPasteShortcutEvent(event)) {
         return false;
       }
@@ -413,6 +468,10 @@ export function TerminalPane({
       userInputHandlerRef.current(id);
       rpc.send({ type: "input", id, data, encoding: "utf8" });
     });
+    const binarySubscription = terminal.onBinary((data) => {
+      userInputHandlerRef.current(id);
+      rpc.send({ type: "input", id, data, encoding: "binary" });
+    });
     const resizeSubscription = terminal.onResize(({ cols, rows }) => {
       queueResizeSync(cols, rows, {
         requestSnapshot: true,
@@ -451,6 +510,7 @@ export function TerminalPane({
     return () => {
       resizeObserver.disconnect();
       dataSubscription.dispose();
+      binarySubscription.dispose();
       resizeSubscription.dispose();
       rendererAddon?.dispose();
       terminal.dispose();
@@ -460,6 +520,7 @@ export function TerminalPane({
       pendingFrameStartRef.current = 0;
       processingFramesRef.current = false;
       lastAppliedSeqRef.current = 0;
+      lastModeStateKeyRef.current = null;
       lastSentSizeRef.current = null;
       if (resizeSyncTimeoutRef.current != null) {
         window.clearTimeout(resizeSyncTimeoutRef.current);
