@@ -9,6 +9,11 @@ on:
         description: Release tag to build and upload assets for
         required: true
         type: string
+      source_ref:
+        description: Git ref to build from when manually dispatching
+        required: false
+        default: master
+        type: string
 
 permissions:
   contents: write
@@ -29,7 +34,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
+          ref: ${{ github.event.release.tag_name || inputs.source_ref || inputs.release_tag || github.ref_name }}
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
