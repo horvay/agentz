@@ -13,6 +13,12 @@ import {
   isExplicitPasteShortcutEvent,
   isPasteShortcutEvent,
 } from "./terminalClipboardShortcuts";
+import {
+  hasKittyKeyboardProtocolQuery,
+  modifiedEnterSequence,
+  updateKittyKeyboardProtocolState,
+} from "./terminalKeyboardProtocol";
+import { createTerminalUrlLinkProvider, isModifierLinkActivation } from "./terminalLinks";
 import { prependTerminalModePrefix, terminalModeStateKey } from "./terminalModes";
 
 const RESIZE_DEBOUNCE_MS = 40;
@@ -134,6 +140,10 @@ async function readTextFromClipboard(): Promise<string> {
   return "";
 }
 
+function openExternalUrl(url: string): void {
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 function syncTerminalCursor(
   terminal: Terminal,
   screen: HTMLDivElement | null,
@@ -179,6 +189,9 @@ export function TerminalPane({
   const processingFramesRef = useRef(false);
   const lastAppliedSeqRef = useRef(0);
   const lastModeStateKeyRef = useRef<string | null>(null);
+  const enhancedEnterEnabledRef = useRef(false);
+  const skipNextActiveFocusRef = useRef(false);
+  const pointerInteractionRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const shortcutsRef = useRef(shortcuts);
   const shortcutHandlerRef = useRef(onShortcut);
   const framesQueuedHandlerRef = useRef(onFramesQueued);
@@ -277,6 +290,13 @@ export function TerminalPane({
     }
 
     const payload = framePayload(frame);
+    if (hasKittyKeyboardProtocolQuery(payload)) {
+      enhancedEnterEnabledRef.current = true;
+    }
+    enhancedEnterEnabledRef.current = updateKittyKeyboardProtocolState(
+      enhancedEnterEnabledRef.current,
+      payload,
+    );
     const nextModeStateKey = terminalModeStateKey(frame);
     const shouldSyncModes = frame.screenMode === "full" || lastModeStateKeyRef.current !== nextModeStateKey;
     const payloadWithModes = shouldSyncModes ? prependTerminalModePrefix(payload, frame) : payload;
@@ -399,8 +419,16 @@ export function TerminalPane({
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     const rendererAddon = loadBestRendererAddon(terminal);
+    const linkProvider = createTerminalUrlLinkProvider(terminal, openExternalUrl);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
+      const enterSequence = enhancedEnterEnabledRef.current ? modifiedEnterSequence(event) : null;
+      if (enterSequence) {
+        event.preventDefault();
+        userInputHandlerRef.current(id);
+        rpc.send({ type: "input", id, data: enterSequence, encoding: "utf8" });
+        return false;
+      }
       if (isExplicitCopyShortcutEvent(event)) {
         event.preventDefault();
         const selection = terminal.getSelection();
@@ -463,6 +491,13 @@ export function TerminalPane({
       }
       return true;
     });
+    terminal.options.linkHandler = {
+      activate(event, text) {
+        if (!isModifierLinkActivation(event)) return;
+        openExternalUrl(text);
+      },
+      allowNonHttpProtocols: false,
+    };
 
     const dataSubscription = terminal.onData((data) => {
       userInputHandlerRef.current(id);
@@ -480,6 +515,7 @@ export function TerminalPane({
     });
 
     terminal.open(screen);
+    const linkProviderDisposable = terminal.registerLinkProvider(linkProvider);
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
@@ -512,6 +548,7 @@ export function TerminalPane({
       dataSubscription.dispose();
       binarySubscription.dispose();
       resizeSubscription.dispose();
+      linkProviderDisposable.dispose();
       rendererAddon?.dispose();
       terminal.dispose();
       terminalRef.current = null;
@@ -521,6 +558,7 @@ export function TerminalPane({
       processingFramesRef.current = false;
       lastAppliedSeqRef.current = 0;
       lastModeStateKeyRef.current = null;
+      enhancedEnterEnabledRef.current = false;
       lastSentSizeRef.current = null;
       if (resizeSyncTimeoutRef.current != null) {
         window.clearTimeout(resizeSyncTimeoutRef.current);
@@ -551,6 +589,10 @@ export function TerminalPane({
 
   useEffect(() => {
     if (active) {
+      if (skipNextActiveFocusRef.current) {
+        skipNextActiveFocusRef.current = false;
+        return;
+      }
       scheduleTerminalFocus();
       return () => {
         if (focusTimeoutRef.current != null) {
@@ -579,11 +621,33 @@ export function TerminalPane({
       <div
         ref={stageRef}
         className="terminal-stage terminal-stage-selectable"
-        onMouseDownCapture={() => {
+        onMouseDownCapture={(event) => {
+          pointerInteractionRef.current = {
+            x: event.clientX,
+            y: event.clientY,
+            moved: false,
+          };
           if (!active) onActivate(id);
+          if (!active && event.button === 0) {
+            skipNextActiveFocusRef.current = true;
+          }
         }}
-        onClick={() => {
+        onMouseMoveCapture={(event) => {
+          const interaction = pointerInteractionRef.current;
+          if (!interaction) return;
+          const distanceX = Math.abs(event.clientX - interaction.x);
+          const distanceY = Math.abs(event.clientY - interaction.y);
+          if (distanceX >= 3 || distanceY >= 3) {
+            interaction.moved = true;
+          }
+        }}
+        onClick={(event) => {
           if (!active) onActivate(id);
+          const interaction = pointerInteractionRef.current;
+          pointerInteractionRef.current = null;
+          if (terminalRef.current?.hasSelection()) return;
+          if (interaction?.moved) return;
+          if (isModifierLinkActivation(event.nativeEvent)) return;
           scheduleTerminalFocus();
         }}
         role="presentation"

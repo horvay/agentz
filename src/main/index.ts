@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { startTerminalRpcServer } from "./server";
@@ -62,6 +62,16 @@ function runFocusBurst(window: BrowserWindow, delaysMs: number[]): void {
   }
 }
 
+function resolveExternalBrowserUrl(rawUrl: string): string | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 async function createMainWindow(): Promise<BrowserWindow> {
   const target = await getMainViewTarget();
   const mainWindow = new BrowserWindow({
@@ -91,6 +101,13 @@ async function createMainWindow(): Promise<BrowserWindow> {
   mainWindow.webContents.on("page-title-updated", (event) => {
     event.preventDefault();
     mainWindow.setTitle(WINDOW_TITLE);
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    const externalUrl = resolveExternalBrowserUrl(url);
+    if (externalUrl) {
+      void shell.openExternal(externalUrl);
+    }
+    return { action: "deny" };
   });
 
   if (target.kind === "url") {
