@@ -14,12 +14,15 @@ import {
   isPasteShortcutEvent,
 } from "./terminalClipboardShortcuts";
 import {
-  hasKittyKeyboardProtocolQuery,
+  type EnhancedEnterMode,
+  modifiedEnterNewlineFallback,
   modifiedEnterSequence,
-  updateKittyKeyboardProtocolState,
+  updateEnhancedEnterMode,
 } from "./terminalKeyboardProtocol";
 import { createTerminalUrlLinkProvider, isModifierLinkActivation } from "./terminalLinks";
+import { shouldBypassPaneFocusForMouseSelection } from "./terminalMouseFocus";
 import { prependTerminalModePrefix, terminalModeStateKey } from "./terminalModes";
+import { inspectAvatarState } from "./avatarState";
 
 const RESIZE_DEBOUNCE_MS = 40;
 const RESIZE_SNAPSHOT_DELAY_MS = 140;
@@ -189,9 +192,9 @@ export function TerminalPane({
   const processingFramesRef = useRef(false);
   const lastAppliedSeqRef = useRef(0);
   const lastModeStateKeyRef = useRef<string | null>(null);
-  const enhancedEnterEnabledRef = useRef(false);
+  const enhancedEnterModeRef = useRef<EnhancedEnterMode>("none");
   const skipNextActiveFocusRef = useRef(false);
-  const pointerInteractionRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  const pointerInteractionRef = useRef<{ x: number; y: number; moved: boolean; bypassFocus: boolean } | null>(null);
   const shortcutsRef = useRef(shortcuts);
   const shortcutHandlerRef = useRef(onShortcut);
   const framesQueuedHandlerRef = useRef(onFramesQueued);
@@ -290,13 +293,7 @@ export function TerminalPane({
     }
 
     const payload = framePayload(frame);
-    if (hasKittyKeyboardProtocolQuery(payload)) {
-      enhancedEnterEnabledRef.current = true;
-    }
-    enhancedEnterEnabledRef.current = updateKittyKeyboardProtocolState(
-      enhancedEnterEnabledRef.current,
-      payload,
-    );
+    enhancedEnterModeRef.current = updateEnhancedEnterMode(enhancedEnterModeRef.current, payload);
     const nextModeStateKey = terminalModeStateKey(frame);
     const shouldSyncModes = frame.screenMode === "full" || lastModeStateKeyRef.current !== nextModeStateKey;
     const payloadWithModes = shouldSyncModes ? prependTerminalModePrefix(payload, frame) : payload;
@@ -422,7 +419,10 @@ export function TerminalPane({
     const linkProvider = createTerminalUrlLinkProvider(terminal, openExternalUrl);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
-      const enterSequence = enhancedEnterEnabledRef.current ? modifiedEnterSequence(event) : null;
+      const agent = inspectAvatarState(currentFrameRef.current).agent;
+      const enterSequence =
+        modifiedEnterSequence(event, enhancedEnterModeRef.current) ??
+        ((agent === "opencode" || agent === "codex") ? modifiedEnterNewlineFallback(event) : null);
       if (enterSequence) {
         event.preventDefault();
         userInputHandlerRef.current(id);
@@ -558,7 +558,7 @@ export function TerminalPane({
       processingFramesRef.current = false;
       lastAppliedSeqRef.current = 0;
       lastModeStateKeyRef.current = null;
-      enhancedEnterEnabledRef.current = false;
+      enhancedEnterModeRef.current = "none";
       lastSentSizeRef.current = null;
       if (resizeSyncTimeoutRef.current != null) {
         window.clearTimeout(resizeSyncTimeoutRef.current);
@@ -622,11 +622,17 @@ export function TerminalPane({
         ref={stageRef}
         className="terminal-stage terminal-stage-selectable"
         onMouseDownCapture={(event) => {
+          const bypassFocus = shouldBypassPaneFocusForMouseSelection(
+            terminalRef.current?.modes.mouseTrackingMode,
+            event,
+          );
           pointerInteractionRef.current = {
             x: event.clientX,
             y: event.clientY,
             moved: false,
+            bypassFocus,
           };
+          if (bypassFocus) return;
           if (!active) onActivate(id);
           if (!active && event.button === 0) {
             skipNextActiveFocusRef.current = true;
@@ -642,9 +648,10 @@ export function TerminalPane({
           }
         }}
         onClick={(event) => {
-          if (!active) onActivate(id);
           const interaction = pointerInteractionRef.current;
           pointerInteractionRef.current = null;
+          if (!interaction?.bypassFocus && !active) onActivate(id);
+          if (interaction?.bypassFocus) return;
           if (terminalRef.current?.hasSelection()) return;
           if (interaction?.moved) return;
           if (isModifierLinkActivation(event.nativeEvent)) return;

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  hasKittyKeyboardProtocolQuery,
   modifiedEnterSequence,
-  updateKittyKeyboardProtocolState,
+  modifiedEnterNewlineFallback,
+  updateEnhancedEnterMode,
 } from "./terminalKeyboardProtocol";
 
 function keyboardEvent(
@@ -20,49 +20,66 @@ function keyboardEvent(
   };
 }
 
-describe("updateKittyKeyboardProtocolState", () => {
+describe("updateEnhancedEnterMode", () => {
   test("enables kitty keyboard protocol when requested by the app", () => {
-    expect(updateKittyKeyboardProtocolState(false, "\u001b[>1u")).toBe(true);
+    expect(updateEnhancedEnterMode("none", "\u001b[>1u")).toBe("kitty");
   });
 
   test("disables kitty keyboard protocol when the app resets it", () => {
-    expect(updateKittyKeyboardProtocolState(true, "\u001b[<u")).toBe(false);
+    expect(updateEnhancedEnterMode("kitty", "\u001b[<u")).toBe("none");
+  });
+
+  test("enables modifyOtherKeys when requested by the app", () => {
+    expect(updateEnhancedEnterMode("none", "\u001b[>4;1m")).toBe("modify-other-keys");
+  });
+
+  test("disables modifyOtherKeys when the app resets it", () => {
+    expect(updateEnhancedEnterMode("modify-other-keys", "\u001b[>4;0m")).toBe("none");
   });
 
   test("keeps the latest protocol change when a payload contains both", () => {
-    expect(updateKittyKeyboardProtocolState(false, "\u001b[>1uhello\u001b[<u")).toBe(false);
-  });
-});
-
-describe("hasKittyKeyboardProtocolQuery", () => {
-  test("detects the kitty keyboard capability query", () => {
-    expect(hasKittyKeyboardProtocolQuery("\u001b[?u\u001b[c")).toBe(true);
-  });
-
-  test("does not confuse enable and disable sequences for a query", () => {
-    expect(hasKittyKeyboardProtocolQuery("\u001b[>1u")).toBe(false);
-    expect(hasKittyKeyboardProtocolQuery("\u001b[<u")).toBe(false);
+    expect(updateEnhancedEnterMode("none", "\u001b[>1uhello\u001b[>4;1m")).toBe("modify-other-keys");
   });
 });
 
 describe("modifiedEnterSequence", () => {
   test("encodes shift+enter with modifyOtherKeys", () => {
-    expect(modifiedEnterSequence(keyboardEvent({ shiftKey: true }))).toBe("\u001b[27;2;13~");
+    expect(modifiedEnterSequence(keyboardEvent({ shiftKey: true }), "modify-other-keys")).toBe("\u001b[27;2;13~");
   });
 
   test("encodes ctrl+enter with modifyOtherKeys", () => {
-    expect(modifiedEnterSequence(keyboardEvent({ ctrlKey: true }))).toBe("\u001b[27;5;13~");
+    expect(modifiedEnterSequence(keyboardEvent({ ctrlKey: true }), "modify-other-keys")).toBe("\u001b[27;5;13~");
   });
 
   test("treats numpad enter like enter for modifyOtherKeys", () => {
-    expect(modifiedEnterSequence(keyboardEvent({ shiftKey: true, code: "NumpadEnter" }))).toBe("\u001b[27;2;13~");
+    expect(modifiedEnterSequence(keyboardEvent({ shiftKey: true, code: "NumpadEnter" }), "modify-other-keys")).toBe(
+      "\u001b[27;2;13~",
+    );
+  });
+
+  test("encodes shift+enter with kitty keyboard protocol", () => {
+    expect(modifiedEnterSequence(keyboardEvent({ shiftKey: true }), "kitty")).toBe("\u001b[13;2u");
   });
 
   test("leaves plain enter alone", () => {
-    expect(modifiedEnterSequence(keyboardEvent())).toBeNull();
+    expect(modifiedEnterSequence(keyboardEvent(), "none")).toBeNull();
   });
 
   test("leaves alt+enter on the native xterm path", () => {
-    expect(modifiedEnterSequence(keyboardEvent({ altKey: true }))).toBeNull();
+    expect(modifiedEnterSequence(keyboardEvent({ altKey: true }), "modify-other-keys")).toBeNull();
+  });
+});
+
+describe("modifiedEnterNewlineFallback", () => {
+  test("maps shift+enter to a literal newline", () => {
+    expect(modifiedEnterNewlineFallback(keyboardEvent({ shiftKey: true }))).toBe("\n");
+  });
+
+  test("maps ctrl+enter to a literal newline", () => {
+    expect(modifiedEnterNewlineFallback(keyboardEvent({ ctrlKey: true }))).toBe("\n");
+  });
+
+  test("does not remap plain enter", () => {
+    expect(modifiedEnterNewlineFallback(keyboardEvent())).toBeNull();
   });
 });
