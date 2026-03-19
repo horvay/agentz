@@ -1,6 +1,6 @@
 {
 	"name": "agentz",
-	"version": "0.0.6",
+	"version": "0.0.7",
 	"description": "agentz multi-terminal workspace",
 	"main": ".electron/index.js",
 	"scripts": {
