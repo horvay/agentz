@@ -30,7 +30,7 @@ function isIgnorableHostWriteError(error: unknown): boolean {
 }
 
 function getNativeHostBasename(platform: NodeJS.Platform = process.platform): string {
-  return platform === "win32" ? "ghostty-pty-host.exe" : "ghostty-pty-host";
+  return platform === "win32" ? "agentz-pty-host.exe" : "agentz-pty-host";
 }
 
 function quotePowerShellArg(value: string): string {
@@ -435,7 +435,7 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
         hasWarnedMissingNativeHost = true;
         console.warn(`[terminal:${this.id}] native PTY host missing at ${hostPath}; build it with bun run native:build:host.`);
       }
-      throw new Error(`ghostty-pty-host missing at ${hostPath}`);
+      throw new Error(`agentz-pty-host missing at ${hostPath}`);
     }
 
     const startupPayload = JSON.stringify({
@@ -751,8 +751,8 @@ export class TerminalSession implements TerminalSessionBackend {
     args?: string[],
     cwd?: string,
   ) {
-    const launchBaseCwd = process.env.GHOSTTY_DASHBOARD_LAUNCH_CWD || process.cwd();
-    const rootCwd = process.env.GHOSTTY_DASHBOARD_ROOT ?? process.cwd();
+    const launchBaseCwd = process.env.AGENTZ_LAUNCH_CWD || process.cwd();
+    const rootCwd = process.env.AGENTZ_ROOT ?? process.cwd();
     const launchCwd = cwd ?? launchBaseCwd;
     const shell = resolveTerminalCommand(command);
     const shellArgs = args ?? [];

@@ -1,6 +1,6 @@
 # AGENTS
 
-Ghostty Multi-Terminal Dashboard is a desktop app that runs multiple real PTY-backed terminal sessions in a tiled interface with full VT state rendering and an optional reactive avatar UI.
+agentz is a desktop app that runs multiple real PTY-backed terminal sessions in a tiled interface with full VT state rendering and an optional reactive avatar UI.
 
 ## UI Implementation Rule
 

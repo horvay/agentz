@@ -14,12 +14,28 @@ on:
         required: false
         default: master
         type: string
+      build_macos:
+        description: Build macOS artifacts
+        required: false
+        default: true
+        type: boolean
+      build_linux:
+        description: Build Linux artifacts
+        required: false
+        default: false
+        type: boolean
+      build_windows:
+        description: Build Windows artifacts
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
   build-macos:
+    if: github.event_name == 'release' || inputs.build_macos == true
     strategy:
       fail-fast: false
       matrix:
@@ -70,6 +86,107 @@ jobs:
           files=(dist/*.dmg dist/*.zip)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No macOS artifacts found" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+  build-linux:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_linux == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.source_ref || inputs.release_tag || github.ref_name }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Fetch Ghostty dependency
+        run: |
+          git clone --depth 1 https://github.com/ghostty-org/ghostty.git deps/ghostty
+          git -C deps/ghostty fetch --depth 1 origin 913c12097bad2feb8977853cf1a60c137a968b50
+          git -C deps/ghostty checkout 913c12097bad2feb8977853cf1a60c137a968b50
+
+      - name: Build native host
+        run: cd src/native && zig build -Doptimize=ReleaseFast
+
+      - name: Build Linux release
+        run: bun run release:stable
+
+      - name: Upload Linux artifacts to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
+        run: |
+          shopt -s nullglob
+          files=(dist/*.AppImage)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No Linux artifacts found" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+  build-windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_windows == true
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.source_ref || inputs.release_tag || github.ref_name }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install dependencies
+        shell: bash
+        run: bun install --frozen-lockfile
+
+      - name: Fetch Ghostty dependency
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/ghostty-org/ghostty.git deps/ghostty
+          git -C deps/ghostty fetch --depth 1 origin 913c12097bad2feb8977853cf1a60c137a968b50
+          git -C deps/ghostty checkout 913c12097bad2feb8977853cf1a60c137a968b50
+
+      - name: Build native host
+        shell: bash
+        run: cd src/native && zig build -Doptimize=ReleaseFast
+
+      - name: Build Windows release
+        shell: bash
+        run: bun run release:stable
+
+      - name: Upload Windows artifacts to release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
+        run: |
+          shopt -s nullglob
+          files=(dist/*.exe)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No Windows artifacts found" >&2
             exit 1
           fi
           gh release upload "$TAG" "${files[@]}" --clobber

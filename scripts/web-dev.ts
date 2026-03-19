@@ -10,11 +10,14 @@ if (buildCode !== 0) {
 }
 
 await runManaged([
-  spawnInherited([bun, "x", "vite", "--host", "0.0.0.0", "--port", "5173"]),
+  // Remote web serving is intentionally disabled until the transport is secured.
+  // spawnInherited([bun, "x", "vite", "--host", "0.0.0.0", "--port", "5173"]),
+  spawnInherited([bun, "x", "vite", "--host", "127.0.0.1", "--port", "5173"]),
   spawnInherited([bun, "src/main/web.ts"], {
-    env: {
-      ...getDesktopLaunchEnv(),
-      GHOSTTY_DASHBOARD_RPC_HOST: "0.0.0.0",
-    },
+    env: getDesktopLaunchEnv(),
+    // env: {
+    //   ...getDesktopLaunchEnv(),
+    //   AGENTZ_RPC_HOST: "0.0.0.0",
+    // },
   }),
 ]);

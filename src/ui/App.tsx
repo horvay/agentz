@@ -35,23 +35,25 @@ import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
 
 function resolveRpcUrl(): string {
-  if (typeof window === "undefined") {
-    return "ws://127.0.0.1:4599";
-  }
-
-  const { hostname, protocol } = window.location;
-  if (!hostname) {
-    return "ws://127.0.0.1:4599";
-  }
-
-  const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
-  return `${wsProtocol}//${hostname}:4599`;
+  return "ws://127.0.0.1:4599";
+  // Remote RPC connections are intentionally disabled until the transport is secured.
+  // if (typeof window === "undefined") {
+  //   return "ws://127.0.0.1:4599";
+  // }
+  //
+  // const { hostname, protocol } = window.location;
+  // if (!hostname) {
+  //   return "ws://127.0.0.1:4599";
+  // }
+  //
+  // const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
+  // return `${wsProtocol}//${hostname}:4599`;
 }
 
 const rpc = new RpcClient(resolveRpcUrl());
 const FIRST_ID = "term-1";
 const BACKGROUND_TERMINAL_SUFFIX = "-bg";
-const WIDTH_STORAGE_KEY = "ghostty.dashboard.paneWidths.v1";
+const WIDTH_STORAGE_KEY = "agentz.paneWidths.v1";
 const MAX_AVATAR_PANES = avatarCatalog.length;
 const MAX_ACTIVITY_CHUNK_CHARS = 4_000;
 const MAX_ACTIVITY_VT_CHARS = 4_000;

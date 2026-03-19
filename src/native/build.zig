@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const host = b.addExecutable(.{
-        .name = "ghostty-pty-host",
+        .name = "agentz-pty-host",
         .root_module = b.createModule(.{
             .root_source_file = b.path("pty_host.zig"),
             .target = target,

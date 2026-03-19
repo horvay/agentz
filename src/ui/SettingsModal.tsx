@@ -120,7 +120,7 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
       >
         <header className="settings-header">
           <div>
-            <p className="settings-eyebrow">Dashboard Config</p>
+            <p className="settings-eyebrow">agentz settings</p>
             <h2 id="settings-title">Terminal Preferences</h2>
             <p className="settings-subtitle">Defaults apply to newly created panes only.</p>
           </div>

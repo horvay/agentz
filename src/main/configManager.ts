@@ -16,7 +16,7 @@ export interface DashboardConfigManager {
 
 function resolveConfigPath(): string {
   const xdgRoot = process.env.XDG_CONFIG_HOME?.trim();
-  const configDir = xdgRoot ? join(xdgRoot, "ghostty-dashboard") : join(homedir(), ".config", "ghostty-dashboard");
+  const configDir = xdgRoot ? join(xdgRoot, "agentz") : join(homedir(), ".config", "agentz");
   return join(configDir, "config.json");
 }
 

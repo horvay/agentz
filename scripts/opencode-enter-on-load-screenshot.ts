@@ -120,9 +120,9 @@ const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(500, Number(flags["wait-ms"]))
     : 20_000;
-const windowName = "Ghostty Multi-Terminal Dashboard";
+const windowName = "agentz";
 
-	Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"]);
+Bun.spawnSync(["pkill", "-f", "agentz-dev|agentz-canary|agentz"]);
 Bun.spawnSync(["pkill", "-f", "electronmon|\\.electron/index\\.js"]);
 Bun.spawnSync(["pkill", "-f", "\\.electron/index\\.js"]);
 

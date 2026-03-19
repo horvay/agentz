@@ -34,7 +34,7 @@ async function stopProcessTree(proc: Bun.Subprocess): Promise<void> {
   if (cleanExit) return;
 
   try {
-	    Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"], { stdout: "ignore", stderr: "ignore" });
+    Bun.spawnSync(["pkill", "-f", "agentz-dev|agentz-canary|agentz"], { stdout: "ignore", stderr: "ignore" });
   } catch {}
   try {
     Bun.spawnSync(["pkill", "-f", "electronmon|\\.electron/index\\.js"], { stdout: "ignore", stderr: "ignore" });
@@ -171,15 +171,15 @@ const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(1000, Number(flags["wait-ms"]))
     : 25_000;
-const windowName = "Ghostty Multi-Terminal Dashboard";
+const windowName = "agentz";
 
 const tempRoot = runChecked(["mktemp", "-d", "/tmp/agentz-nvim-XXXXXX"]).trim();
 const launchEnv = {
-  GHOSTTY_DASHBOARD_LAUNCH_CWD: tempRoot,
+  AGENTZ_LAUNCH_CWD: tempRoot,
 };
 
 runChecked(["rm", "-f", join(tempRoot, fileName)]);
-	bestEffortKill("agentz-dev|ghostty-dashboard-mvp-dev");
+  bestEffortKill("agentz-dev|agentz-canary|agentz");
 bestEffortKill("electronmon|\\.electron/index\\.js");
 bestEffortKill("\\.electron/index\\.js");
 

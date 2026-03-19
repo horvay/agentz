@@ -1,4 +1,4 @@
-# Agentz
+# agentz
 
 ## Basic Description
 
@@ -24,7 +24,7 @@ Add your demo link here when it is ready:
 - Resizable panes with keyboard shortcuts for pane management
 - Per-pane working directory tracking
 - Optional reactive avatar strip UI
-- Linux portable and installer-style release builds, plus macOS release assets
+- Single-file Windows and Linux release artifacts, plus macOS release assets
 
 ## How to Download
 
@@ -37,39 +37,33 @@ Open the latest release here:
 The exact filenames may vary a little by channel (`stable` vs `canary`) and architecture, but the release assets follow the same pattern.
 
 - `*.dmg` - Standard macOS installer disk image. This is the easiest option for most macOS users.
-- `*.app.tar.zst` - Compressed macOS app bundle. Use this if you want the raw `.app` instead of a DMG.
-- `*-linux-*-*.tar.zst` - Portable Linux app bundle. Extract it anywhere and run the launcher inside it.
-- `*-linux-*-*-Setup.tar.gz` - Linux setup bundle with an `installer` script. This installs the app into your user directory and creates a user-level `agentz` launcher in `~/.local/bin`.
+- `*.exe` - Windows installer. Download one file, run it, and Agentz installs normally.
+- `*.AppImage` - Linux single-file app. Download one file, mark it executable, and run it.
 
 ### Which file should you pick?
 
-- macOS: download the `*.dmg` unless you specifically want the raw app bundle.
-- Linux: download the `*-Setup.tar.gz` if you want a simple user install; download the `*.tar.zst` if you want a portable unpack-and-run build.
-- Windows: native Windows support is in progress; if you build from source, it now uses the native `ghostty-pty-host.exe` path.
+- macOS: download the `*.dmg`.
+- Windows: download the `*.exe`.
+- Linux: download the `*.AppImage`.
 
 ## Quick Start
 
-### Linux portable build
+### Windows
 
-1. Download the Linux `*.tar.zst` asset from the latest release.
-2. Extract it.
-3. Run the launcher from the extracted app folder.
+1. Download the latest `*.exe`.
+2. Run the installer.
+3. Launch Agentz from the Start menu or desktop shortcut if created.
 
-### Linux setup bundle
+### Linux
 
-1. Download the Linux `*-Setup.tar.gz` asset.
-2. Extract it.
-3. Run:
+1. Download the Linux `*.AppImage` asset from the latest release.
+2. Mark it executable.
+3. Run it:
 
 ```bash
-./installer
+chmod +x ./agentz-*.AppImage
+./agentz-*.AppImage
 ```
-
-The installer will:
-
-- install the app under your user directory
-- create `~/.local/bin/agentz`
-- print the final launch path
 
 ### macOS
 
@@ -123,24 +117,14 @@ bun run native:build
 bun run dev
 ```
 
-### Run web mode on your local network
+### Run web mode locally
 
 ```bash
 bun run web
 ```
 
-This serves the UI on port `5173` and the terminal RPC backend on port `4599`.
-From another computer on the same network, open:
-
-```bash
-http://<your-local-ip>:5173
-```
-
-Example:
-
-```bash
-http://192.168.1.42:5173
-```
+This serves the UI on `127.0.0.1:5173` and keeps the terminal RPC backend bound to `127.0.0.1:4599`.
+Remote/network access is intentionally disabled until that path is secured.
 
 ### Build release artifacts locally
 
@@ -172,7 +156,7 @@ On some Linux/X11 setups, Electrobun may not forward keyboard input until the fi
 To disable it:
 
 ```bash
-GHOSTTY_DASHBOARD_DISABLE_X11_INPUT_NUDGE=1 bun run dev
+AGENTZ_DISABLE_X11_INPUT_NUDGE=1 bun run dev
 ```
 
 ## Project Layout

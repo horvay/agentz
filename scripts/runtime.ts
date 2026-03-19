@@ -12,8 +12,8 @@ export function resolveBunExecutable(): string {
 export function getDesktopLaunchEnv(cwd = process.cwd()): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    GHOSTTY_DASHBOARD_ROOT: cwd,
-    GHOSTTY_DASHBOARD_LAUNCH_CWD: cwd,
+    AGENTZ_ROOT: cwd,
+    AGENTZ_LAUNCH_CWD: cwd,
   };
 
   if (process.platform !== "win32") {

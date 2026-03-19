@@ -281,7 +281,7 @@ const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(500, Number(flags["wait-ms"]))
     : 20_000;
-const windowName = "Ghostty Multi-Terminal Dashboard";
+const windowName = "agentz";
 const launchJson = JSON.stringify({ panes: [{ command: "opencode" }] });
 
 killDashboardProcesses();
@@ -289,7 +289,7 @@ killDashboardProcesses();
 const app = Bun.spawn([resolveBunExecutable(), "run", "dev"], {
   env: {
     ...getDesktopLaunchEnv(),
-    GHOSTTY_DASHBOARD_LAUNCH: launchJson,
+    AGENTZ_LAUNCH: launchJson,
   },
   stdio: ["ignore", "inherit", "inherit"],
 });

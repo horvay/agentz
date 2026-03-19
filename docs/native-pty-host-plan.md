@@ -60,7 +60,7 @@ Replace the split PTY-worker + VT-bridge pipeline with one native binary.
 
 ### New Native Binary
 
-Create a native executable named `ghostty-pty-host` in `src/native/pty_host.zig`.
+Create a native executable named `agentz-pty-host` in `src/native/pty_host.zig`.
 
 This binary must own all terminal-critical work for a single pane:
 
@@ -230,7 +230,7 @@ Changes required:
 - Remove `PTY_WORKER_SOURCE`.
 - Remove `resolvePackagedPtyRoot()`.
 - Replace `resolveBridgePath()` with `resolveNativeHostPath()`.
-- Spawn `ghostty-pty-host` directly.
+- Spawn `agentz-pty-host` directly.
 - Read one stdout stream instead of separate worker and bridge streams.
 - Continue parsing line-delimited JSON.
 - Handle message types:
@@ -246,7 +246,7 @@ Changes required:
 Update:
 
 - `src/native/build.zig`
-  - build both `ghostty-vt-bridge` and `ghostty-pty-host` during migration, or only `ghostty-pty-host` once fully switched.
+  - build both `ghostty-vt-bridge` and `agentz-pty-host` during migration, or only `agentz-pty-host` once fully switched.
 - `src/native/build.zig.zon`
   - include the new source file in package paths.
 - Electron builder config (`package.json` `build` field)

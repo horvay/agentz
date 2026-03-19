@@ -395,7 +395,7 @@ const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(1000, Number(flags["wait-ms"]))
     : 25000;
-const windowName = "Ghostty Multi-Terminal Dashboard";
+const windowName = "agentz";
 const windowWidth =
   typeof flags["window-width"] === "string" && Number.isFinite(Number(flags["window-width"]))
     ? Math.max(640, Number(flags["window-width"]))
@@ -405,14 +405,14 @@ const windowHeight =
     ? Math.max(420, Number(flags["window-height"]))
     : 900;
 
-	Bun.spawnSync(["pkill", "-f", "agentz-dev|ghostty-dashboard-mvp-dev"]);
+Bun.spawnSync(["pkill", "-f", "agentz-dev|agentz-canary|agentz"]);
 Bun.spawnSync(["pkill", "-f", "electronmon|\\.electron/index\\.js"]);
 Bun.spawnSync(["pkill", "-f", "\\.electron/index\\.js"]);
 
 const app = Bun.spawn(["bash", "-lc", "bun run dev || true"], {
   env: shellLaunch
     ? { ...process.env }
-    : { ...process.env, GHOSTTY_DASHBOARD_LAUNCH: JSON.stringify({ panes: [{ command: appName }] }) },
+    : { ...process.env, AGENTZ_LAUNCH: JSON.stringify({ panes: [{ command: appName }] }) },
   stdio: ["ignore", "inherit", "inherit"],
 });
 

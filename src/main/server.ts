@@ -13,7 +13,9 @@ import {
   type TerminalFrame,
 } from "../shared/protocol";
 
-const HOST = process.env.GHOSTTY_DASHBOARD_RPC_HOST ?? "127.0.0.1";
+const HOST = "127.0.0.1";
+// Remote RPC binding is intentionally disabled until the transport is secured.
+// const HOST = process.env.AGENTZ_RPC_HOST ?? "127.0.0.1";
 const PORT = 4599;
 const PASTED_IMAGE_DIR = path.join(os.tmpdir(), "agentz-paste");
 
@@ -75,7 +77,7 @@ export function startTerminalRpcServer(
   const clients = new Set<WebSocket>();
   const httpServer = createServer((_req, res) => {
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    res.end("Ghostty dashboard RPC endpoint");
+    res.end("agentz RPC endpoint");
   });
   const websocketServer = new WebSocketServer({ server: httpServer });
 

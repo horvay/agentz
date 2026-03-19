@@ -77,7 +77,7 @@ killDashboardProcesses();
 const proc = Bun.spawn([resolveBunExecutable(), "run", "dev"], {
   env: {
     ...process.env,
-    GHOSTTY_DASHBOARD_LAUNCH: launchJson,
+    AGENTZ_LAUNCH: launchJson,
   },
   stdio: ["inherit", "inherit", "inherit"],
 });

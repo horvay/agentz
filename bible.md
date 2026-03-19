@@ -1,4 +1,4 @@
-# Ghostty Multi-Terminal Dashboard App
+# agentz App
 
 Project bible and implementation guide.
 
@@ -118,8 +118,8 @@ Treat these as recommended baseline versions. Pin exact versions in `package.jso
 ### Step 1: Create app skeleton
 
 ```bash
-mkdir ghostty-dashboard
-cd ghostty-dashboard
+mkdir agentz
+cd agentz
 bunx create-electron-app
 ```
 
@@ -160,7 +160,7 @@ bun run dev
 ## 7) Suggested Repository Structure
 
 ```text
-ghostty-dashboard/
+agentz/
 ├─ src/
 │  ├─ main/               # Bun main process + RPC handlers
 │  │  ├─ index.ts

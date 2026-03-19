@@ -44,7 +44,7 @@ async function stopProcessTree(proc: Bun.Subprocess): Promise<void> {
   const cleanExit = await Promise.race([exited, timedOut]);
   if (cleanExit) return;
 
-  bestEffortKill("agentz-dev|ghostty-dashboard-mvp-dev");
+  bestEffortKill("agentz-dev|agentz-canary|agentz");
   bestEffortKill("electronmon|\\.electron/index\\.js");
   bestEffortKill("vite --host 127.0.0.1 --port 5173");
   bestEffortKill("\\.electron/index\\.js");
@@ -249,19 +249,19 @@ const waitMs =
   typeof flags["wait-ms"] === "string" && Number.isFinite(Number(flags["wait-ms"]))
     ? Math.max(2000, Number(flags["wait-ms"]))
     : 30_000;
-const windowName = "Ghostty Multi-Terminal Dashboard";
+const windowName = "agentz";
 
 const launchJson = JSON.stringify({
   panes: [{ command: "opencode" }, { command: "opencode" }],
 });
 
-bestEffortKill("agentz-dev|ghostty-dashboard-mvp-dev");
+bestEffortKill("agentz-dev|agentz-canary|agentz");
 bestEffortKill("electronmon|\\.electron/index\\.js");
 bestEffortKill("\\.electron/index\\.js");
 
 const app = Bun.spawn(["bash", "-lc", "bun run dev || true"], {
   cwd: process.cwd(),
-  env: { ...process.env, GHOSTTY_DASHBOARD_LAUNCH: launchJson },
+  env: { ...process.env, AGENTZ_LAUNCH: launchJson },
   stdio: ["ignore", "inherit", "inherit"],
 });
 

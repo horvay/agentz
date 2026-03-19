@@ -1,7 +1,7 @@
 {
 	"name": "agentz",
 	"version": "0.0.6",
-	"description": "Ghostty Multi-Terminal Dashboard",
+	"description": "agentz multi-terminal workspace",
 	"main": ".electron/index.js",
 	"scripts": {
 		"start": "bun run dev",
@@ -67,8 +67,9 @@
 		"wait-on": "^8.0.3"
 	},
 	"build": {
-		"appId": "dev.ghosttydashboard.agentz",
+		"appId": "dev.agentz.desktop",
 		"productName": "agentz",
+		"executableName": "agentz",
 		"files": [
 			".electron/**/*",
 			"dist/**/*",
@@ -78,18 +79,18 @@
 			{
 				"from": "src/native/zig-out/bin",
 				"to": "bin",
-				"filter": ["ghostty-pty-host", "ghostty-pty-host.exe"]
+				"filter": ["agentz-pty-host", "agentz-pty-host.exe"]
 			}
 		],
 		"linux": {
 			"category": "Development",
-			"target": ["tar.gz"]
+			"target": ["AppImage"]
 		},
 		"mac": {
 			"target": ["dmg"]
 		},
 		"win": {
-			"target": ["zip"]
+			"target": ["nsis"]
 		},
 		"npmRebuild": false
 	}

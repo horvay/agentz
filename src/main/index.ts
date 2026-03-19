@@ -7,7 +7,7 @@ import type { LaunchConfig } from "../shared/protocol";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
-const WINDOW_TITLE = "Ghostty Multi-Terminal Dashboard";
+const WINDOW_TITLE = "agentz";
 
 interface RendererTarget {
   kind: "url" | "file";
@@ -15,13 +15,13 @@ interface RendererTarget {
 }
 
 function parseLaunchConfigFromEnv(): LaunchConfig | null {
-  const raw = process.env.GHOSTTY_DASHBOARD_LAUNCH;
+  const raw = process.env.AGENTZ_LAUNCH;
   if (!raw) return null;
   try {
     return JSON.parse(raw) as LaunchConfig;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown launch config error";
-    throw new Error(`Invalid GHOSTTY_DASHBOARD_LAUNCH: ${message}`);
+    throw new Error(`Invalid AGENTZ_LAUNCH: ${message}`);
   }
 }
 
