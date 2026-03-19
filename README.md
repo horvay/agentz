@@ -1,86 +1,105 @@
 # agentz
 
-## Basic Description
+agentz is a desktop terminal workspace built around a live avatar strip that shows what each pane is doing at a glance while still giving you real PTY-backed terminals underneath.
 
-Agentz is a desktop app for running multiple real PTY-backed terminal sessions side by side in a fast tiled workspace, with native-style alternate-screen behavior for tools like `nvim`, `less`, `tmux`, and `opencode`.
+The avatar strip is the main UI. Each pane gets an assigned avatar, and that avatar updates in real time to reflect pane activity:
 
-## Video
+- `idle` when the pane is waiting
+- `working` when the pane is actively running or streaming work
+- `question` when the pane needs input or approval
+- `calling` when the pane is delegating or using sub-agents
 
-Video coming soon.
+Under the strip, each avatar maps to a real terminal pane with native-style alternate-screen behavior for tools like `nvim`, `less`, `tmux`, and `opencode`.
+Panes can also keep a paired background terminal so you can flip between the main terminal and background work without losing context.
 
-Add your demo link here when it is ready:
+## Features
 
-```md
-[Watch the demo](PASTE_VIDEO_LINK_HERE)
-```
-
-## Run Down of Features
-
+- Live avatar strip that lets you scan pane activity without reading every terminal
+- Real-time avatar state changes for idle, working, question, and calling states
+- Stable avatar-to-pane mapping so each pane keeps a recognizable identity
 - Multiple real terminal panes in one desktop window
+- Per-pane background terminals you can toggle in and out without replacing the main session
 - PTY-backed sessions, not fake terminal emulation shortcuts
-- Better fullscreen terminal app behavior via the Ghostty VT bridge
-- Working alternate-screen mouse input for apps like `nvim`
-- Working normal-shell scrollback and prompt behavior
+- Native-style alternate-screen behavior through the Ghostty VT bridge
+- Working mouse input for terminal TUIs like `nvim`
+- Shell scrollback and prompt behavior that stays readable
 - Resizable panes with keyboard shortcuts for pane management
 - Per-pane working directory tracking
-- Optional reactive avatar strip UI
-- Single-file Windows and Linux release artifacts, plus macOS release assets
 
-## How to Download
+## Downloads
 
-Open the latest release here:
+Latest release:
 
 - `https://github.com/horvay/agentz/releases/latest`
 
-### What each release file is
+Release assets:
 
-The exact filenames may vary a little by channel (`stable` vs `canary`) and architecture, but the release assets follow the same pattern.
+- `*.dmg` for macOS
+- `*.exe` for Windows
+- `*.AppImage` for Linux
 
-- `*.dmg` - Standard macOS installer disk image. This is the easiest option for most macOS users.
-- `*.exe` - Windows installer. Download one file, run it, and Agentz installs normally.
-- `*.AppImage` - Linux single-file app. Download one file, mark it executable, and run it.
+## Install And Run
 
-### Which file should you pick?
+### macOS
 
-- macOS: download the `*.dmg`.
-- Windows: download the `*.exe`.
-- Linux: download the `*.AppImage`.
-
-## Quick Start
+1. Download the latest `*.dmg`.
+2. Install the app normally.
+3. Launch `agentz`.
 
 ### Windows
 
 1. Download the latest `*.exe`.
 2. Run the installer.
-3. Launch Agentz from the Start menu or desktop shortcut if created.
+3. Launch `agentz`.
 
 ### Linux
 
-1. Download the Linux `*.AppImage` asset from the latest release.
+1. Download the latest `*.AppImage`.
 2. Mark it executable.
-3. Run it:
+3. Run it.
 
 ```bash
 chmod +x ./agentz-*.AppImage
 ./agentz-*.AppImage
 ```
 
-### macOS
-
-1. Download the latest `*.dmg`.
-2. Install the app normally.
-3. Launch Agentz.
-
 ## Keyboard Shortcuts
 
-- `Ctrl+Shift+N` - open a new pane
-- `Ctrl+Shift+Left` - focus the previous pane
-- `Ctrl+Shift+Right` - focus the next pane
-- `Ctrl+Shift+W` - close the active pane
+- `Ctrl+Shift+N` opens a new pane
+- `Ctrl+B` toggles the background terminal for the active pane
+- `Ctrl+Shift+Left` focuses the previous pane
+- `Ctrl+Shift+Right` focuses the next pane
+- `Ctrl+Shift+W` closes the active pane
 
-## Launch With Specific Commands
+## Development
 
-Use `dev:launch` to start panes with predefined commands.
+### Setup
+
+```bash
+bun install
+bun run native:build
+```
+
+### Run The Desktop App
+
+```bash
+bun run dev
+```
+
+### Run Web Mode
+
+```bash
+bun run web
+```
+
+Web mode stays local-only:
+
+- UI: `http://127.0.0.1:5173`
+- RPC backend: `ws://127.0.0.1:4599`
+
+Remote/network access is intentionally disabled until that path is secured.
+
+### Launch Panes With Predefined Commands
 
 ```bash
 # Start one pane with opencode
@@ -90,50 +109,20 @@ bun run dev:launch -- --pane-1-opencode
 bun run dev:launch -- --pane-1-opencode --pane-2-cmd=bash --pane-2-args=-lc,ls
 ```
 
-Supported launch flags:
+Supported flags:
 
 - `--pane-<n>-cmd=<command>`
 - `--pane-<n>-args=<arg1,arg2,...>`
 - `--pane-<n>-cwd=<path>`
 - `--pane-<n>-opencode`
 
-Legacy flags still work:
+## Testing
 
-- `--pane-a-*`
-- `--pane-b-*`
+Primary interactive validation target:
 
-## For Developers
+- `opencode`
 
-### Setup
-
-```bash
-bun install
-bun run native:build
-```
-
-### Run in development
-
-```bash
-bun run dev
-```
-
-### Run web mode locally
-
-```bash
-bun run web
-```
-
-This serves the UI on `127.0.0.1:5173` and keeps the terminal RPC backend bound to `127.0.0.1:4599`.
-Remote/network access is intentionally disabled until that path is secured.
-
-### Build release artifacts locally
-
-```bash
-bun run release:portable
-bun run release:stable
-```
-
-### Validate terminal behavior
+Basic smoke check:
 
 ```bash
 bun run test:opencode
@@ -143,15 +132,30 @@ Useful screenshot checks:
 
 ```bash
 bun run test:opencode:screenshot
+bun run test:opencode:add-pane:screenshot
 bun run test:nvim:screenshot
 bun run test:shell:scroll:screenshot
 ```
 
+## Release Builds
+
+Build a local release artifact:
+
+```bash
+bun run release:stable
+```
+
+Current packaged outputs:
+
+- Linux: `AppImage`
+- macOS: `dmg`
+- Windows: `nsis` installer
+
 ## Notes
 
-### Linux/X11 input focus note
+### Linux X11 Focus
 
-On some Linux/X11 setups, Electrobun may not forward keyboard input until the first pointer interaction. Agentz applies a one-time startup nudge using `xdotool` to handle that automatically.
+On some Linux/X11 setups, Electrobun may not forward keyboard input until the first pointer interaction. agentz applies a one-time startup nudge using `xdotool` to handle that automatically.
 
 To disable it:
 
@@ -161,20 +165,8 @@ AGENTZ_DISABLE_X11_INPUT_NUDGE=1 bun run dev
 
 ## Project Layout
 
-- `src/main/` - main process, terminal manager, PTY sessions, RPC server
-- `src/ui/` - React UI, pane layout, xterm rendering, input handling
-- `src/native/` - Zig Ghostty VT bridge
-- `deps/ghostty/` - Ghostty source used for VT behavior research and bridge integration
-- `scripts/` - smoke tests, screenshot tests, packaging helpers
-
-## What Agentz is aiming for
-
-Agentz is trying to make terminal-heavy workflows feel good in a pane-based desktop app without giving up the behavior people expect from real terminals.
-
-That means the bar is not just "it renders text". The goal is:
-
-- real PTY sessions
-- correct-ish fullscreen app behavior
-- working mouse input in terminal TUIs
-- normal shell scrollback that feels native
-- smooth pane management for multi-agent or multi-tool workflows
+- `src/main/` main process, terminal manager, PTY sessions, RPC server
+- `src/ui/` React UI, pane layout, xterm rendering, input handling
+- `src/native/` Zig native PTY host and Ghostty VT integration
+- `deps/ghostty/` Ghostty source used for VT behavior research and bridge integration
+- `scripts/` smoke tests, screenshot tests, and packaging helpers
