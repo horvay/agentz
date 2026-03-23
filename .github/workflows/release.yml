@@ -74,7 +74,42 @@ jobs:
       - name: Build native host
         run: cd src/native && zig build -Doptimize=ReleaseFast
 
+      - name: Validate macOS signing secrets
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          missing=()
+          for key in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [ -z "${!key}" ]; then
+              missing+=("$key")
+            fi
+          done
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "Missing required macOS release secrets: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Prepare App Store Connect API key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+        run: |
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$key_path"
+          chmod 600 "$key_path"
+          echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
+
       - name: Build macOS release
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: bun run release:stable
 
       - name: Upload macOS artifacts to release
@@ -83,7 +118,7 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          files=(dist/*.dmg dist/*.zip)
+          files=(dist/*.dmg)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No macOS artifacts found" >&2
             exit 1

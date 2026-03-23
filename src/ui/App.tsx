@@ -13,7 +13,7 @@ import { SettingsModal } from "./SettingsModal";
 import { TerminalPane } from "./TerminalPane";
 import type { AvatarDefinition, AvatarId, AvatarVisualState } from "./avatarCatalog";
 import { avatarCatalog } from "./avatarCatalog";
-import { inspectAvatarState, resolveAvatarDisplayState, type AgentKind } from "./avatarState";
+import { resolveAvatarDisplayState, type AvatarActivityState } from "./avatarState";
 import { previewTextForPane } from "./panePreview";
 import {
   paneRuntimeStore,
@@ -217,56 +217,16 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
   };
 }
 
-function nextAvatarActivity(
-  frame: TerminalFrame,
-  previous:
-    | {
-        state: AvatarVisualState;
-        agent: AgentKind;
-        atMs: number;
-        lastFrameAtMs: number;
-        lastPreviewText: string;
-      }
-    | undefined,
+function nextAvatarActivityState(
+  frame: TerminalFrame | undefined,
+  previous: AvatarActivityState | undefined,
   nowMs: number,
-): {
-  displayState: AvatarVisualState;
-  activity: {
-    state: AvatarVisualState;
-    agent: AgentKind;
-    atMs: number;
-    lastFrameAtMs: number;
-    lastPreviewText: string;
-  };
-} {
-  const displayState = resolveAvatarDisplayState(frame, previous, nowMs);
-  const nextAgent = inspectAvatarState(frame).agent ?? previous?.agent ?? null;
-  const nextPreviewText = (frame.previewLines ?? []).join("\n");
+): AvatarActivityState {
+  const previewText = (frame?.previewLines ?? []).join("\n");
+  const previewChanged = previous !== undefined && previewText !== previous.lastPreviewText;
   return {
-    displayState,
-    activity:
-      displayState !== "idle"
-        ? {
-            state: displayState,
-            agent: nextAgent,
-            atMs: nowMs,
-            lastFrameAtMs: nowMs,
-            lastPreviewText: nextPreviewText,
-          }
-        : previous
-          ? {
-              ...previous,
-              agent: nextAgent,
-              lastFrameAtMs: nowMs,
-              lastPreviewText: nextPreviewText,
-            }
-          : {
-              state: "idle",
-              agent: nextAgent,
-              atMs: nowMs,
-              lastFrameAtMs: nowMs,
-              lastPreviewText: nextPreviewText,
-            },
+    lastPreviewText: previewText,
+    lastPreviewChangeAtMs: previewChanged ? nowMs : previous?.lastPreviewChangeAtMs,
   };
 }
 
@@ -655,18 +615,7 @@ function App() {
   const avatarStripRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
   const resizeDragRef = useRef<{ id: string; startX: number; startWidth: number } | null>(null);
-  const avatarActivityRef = useRef<
-    Record<
-      string,
-      {
-        state: AvatarVisualState;
-        agent: AgentKind;
-        atMs: number;
-        lastFrameAtMs: number;
-        lastPreviewText: string;
-      }
-    >
-  >({});
+  const avatarActivityRef = useRef<Record<string, AvatarActivityState>>({});
   const liveFolderAccentSlotsRef = useRef<Record<string, number>>({});
   const historicalFolderAccentSlotsRef = useRef<Record<string, number>>({});
   const pendingFrameUpdatesRef = useRef<Record<string, PendingPaneFrameUpdate>>({});
@@ -1155,8 +1104,8 @@ function App() {
     pendingFrameUpdatesRef.current = {};
     const entries = Object.entries(pending);
     if (entries.length === 0) return;
-
     const nowMs = Date.now();
+
     const nextFrames = { ...framesRef.current };
     const nextFrameQueues = { ...frameQueuesRef.current };
     const nextAvatarStates = { ...avatarStatesRef.current };
@@ -1169,22 +1118,22 @@ function App() {
       const previousCwd = paneCwds[id] ?? framesRef.current[id]?.cwd;
       const effectiveCwd = resolvePaneCwdFromFrame(rawActivityFrame, previousCwd);
       const activityFrame = effectiveCwd === rawActivityFrame.cwd ? rawActivityFrame : { ...rawActivityFrame, cwd: effectiveCwd };
-      const resolved = nextAvatarActivity(activityFrame, avatarActivityRef.current[id], nowMs);
-      avatarActivityRef.current[id] = resolved.activity;
+      const previousActivity = avatarActivityRef.current[id];
       nextFrames[id] = activityFrame;
       if (update.renderFrames.length > 0 && renderableSessionIdsRef.current.includes(id)) {
         nextFrameQueues[id] = update.renderFrames;
       } else {
         delete nextFrameQueues[id];
       }
-      nextAvatarStates[id] = resolved.displayState;
+      nextAvatarStates[id] = resolveAvatarDisplayState(activityFrame, previousActivity, nowMs);
+      avatarActivityRef.current[id] = nextAvatarActivityState(activityFrame, previousActivity, nowMs);
       if (nextPaneStatus[id] !== "running") {
         nextPaneStatus[id] = "running";
       }
       runtimeUpdates[id] = {
         frame: activityFrame,
         queuedFrames: nextFrameQueues[id] ?? [],
-        avatarState: resolved.displayState,
+        avatarState: nextAvatarStates[id],
         status: nextPaneStatus[id] ?? "running",
       };
       cwdUpdates[id] = activityFrame.cwd;
@@ -1511,22 +1460,20 @@ function App() {
       const nextAvatarStates = { ...avatarStatesRef.current };
       const runtimeUpdates: Record<string, PaneRuntimeState> = {};
       let changed = false;
+
       for (const [id, currentState] of Object.entries(avatarStatesRef.current)) {
-        if (currentState !== "working") continue;
-        const activity = avatarActivityRef.current[id];
         const frame = framesRef.current[id];
-        const nextState = resolveAvatarDisplayState(frame, activity, nowMs);
+        const nextState = resolveAvatarDisplayState(frame, avatarActivityRef.current[id], nowMs);
         if (nextState === currentState) continue;
         nextAvatarStates[id] = nextState;
         runtimeUpdates[id] = { avatarState: nextState };
         changed = true;
-        if (activity) {
-          avatarActivityRef.current[id] = {
-            ...activity,
-            state: nextState,
-          };
-        }
       }
+
+      for (const [id, frame] of Object.entries(framesRef.current)) {
+        avatarActivityRef.current[id] = nextAvatarActivityState(frame, avatarActivityRef.current[id], nowMs);
+      }
+
       if (!changed) return;
       avatarStatesRef.current = nextAvatarStates;
       paneRuntimeStore.patchMany(runtimeUpdates);

@@ -2,26 +2,18 @@ import type { TerminalFrame } from "../shared/protocol";
 import type { AvatarVisualState } from "./avatarCatalog";
 
 export type AgentKind = "opencode" | "codex" | "claude" | null;
-export const CODEX_WORKING_HOLD_MS = 3000;
-export const CODEX_ACTIVE_FRAME_GRACE_MS = 1500;
-export const OPENCODE_WORKING_HOLD_MS = 900;
-export const OPENCODE_BUSY_SIGNAL_HOLD_MS = 2000;
 
 export interface AvatarInspection {
   state: AvatarVisualState;
   agent: AgentKind;
 }
 
-function visibleAgentKind(frame?: TerminalFrame): AgentKind {
-  const windows = terminalTextWindows(frame);
-  const { recent } = windows;
-  if (!recent) return null;
-  const standaloneOpencodeQuestion = hasStandaloneOpencodeQuestionPrompt(recent);
-  if (isOpencodeSession(recent) || standaloneOpencodeQuestion) return "opencode";
-  if (isCodexSession(recent, recent)) return "codex";
-  if (isClaudeSession(recent, recent)) return "claude";
-  return null;
+export interface AvatarActivityState {
+  lastPreviewText: string;
+  lastPreviewChangeAtMs?: number;
 }
+
+export const TEXT_CHANGE_WORKING_WINDOW_MS = 3000;
 
 function normalizeTerminalText(raw: string): string {
   return raw
@@ -85,21 +77,12 @@ function isClaudeSession(recent: string, full: string): boolean {
   );
 }
 
-function hasCodexWorkingSignal(recent: string, full: string): boolean {
-  const codexWorkingMarkers = [
-    "working (",
-    "analyzing (",
-    "booting mcp server:",
-    "tab to queue message",
-    "background terminal running",
-    "/ps to view",
-  ];
-  if (codexWorkingMarkers.some((marker) => recent.includes(marker) || full.includes(marker))) {
-    return true;
-  }
+function hasCodexWorkingText(recent: string): boolean {
+  return recent.includes("working (");
+}
 
-  // Codex uses a live status header like "• Investigating ... (0s • esc to interrupt)" while streaming.
-  return /• [a-z0-9'"/,:+\- ]{1,160}\(\d+s(?: • esc[^)]*)?\)/.test(recent);
+function hasCodexCallingText(recent: string): boolean {
+  return recent.includes("waiting for") && !recent.includes("finished waiting");
 }
 
 function hasOpencodeFooterChrome(lines: string[]): boolean {
@@ -217,11 +200,9 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
     codexQuestionMarkers.some((marker) => recent.includes(marker)) ||
     claudeQuestionMarkers.some((marker) => recent.includes(marker));
 
-  const codexCallingMarkers = ["subagent", "subagents"];
   const hasOpencodeCalling = opencodeBusyFooter && hasOpencodeCallingTranscript(frame);
-  const hasCodexCalling = codexSession && codexCallingMarkers.some((marker) => recent.includes(marker));
-  const hasCodexCallingContext = codexSession && recent.includes("subagent") && recent.includes("esc to interrupt");
-  const isCalling = hasOpencodeCalling || hasCodexCalling || hasCodexCallingContext;
+  const hasCodexCalling = codexSession && hasCodexCallingText(recent);
+  const isCalling = hasOpencodeCalling || hasCodexCalling;
 
   const workingMarkers = [
     "esc interrupt",
@@ -245,14 +226,11 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
     "asking questions",
     " queued ",
   ];
-  const hasGenericWorkingMarker = (codexSession || claudeSession) && workingMarkers.some((marker) => recent.includes(marker));
-  const isWorking =
-    hasGenericWorkingMarker ||
-    opencodeBusyFooter ||
-    (codexSession && hasCodexWorkingSignal(recent, full));
+  const hasGenericWorkingMarker = claudeSession && workingMarkers.some((marker) => recent.includes(marker));
+  const isWorking = hasGenericWorkingMarker || opencodeBusyFooter || (codexSession && hasCodexWorkingText(recent));
 
   const spinnerChars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-  const hasSpinner = !opencodeSession && [...spinnerChars].some((ch) => recent.includes(ch));
+  const hasSpinner = !opencodeSession && !codexSession && [...spinnerChars].some((ch) => recent.includes(ch));
 
   const isSupportedAgent =
     opencodeSession || codexSession || isQuestion || isCalling || isWorking || hasSpinner;
@@ -270,54 +248,24 @@ export function detectAvatarState(frame?: TerminalFrame): AvatarVisualState {
 
 export function resolveAvatarDisplayState(
   frame: TerminalFrame | undefined,
-  previous:
-    | {
-        state: AvatarVisualState;
-        agent: AgentKind;
-        atMs: number;
-        lastFrameAtMs: number;
-        lastPreviewText: string;
-      }
-    | undefined,
-  nowMs: number,
+  previous?: AvatarActivityState,
+  nowMs = Date.now(),
 ): AvatarVisualState {
   const inspection = inspectAvatarState(frame);
-  const visibleAgent = visibleAgentKind(frame);
-  const effectiveAgent = inspection.agent ?? previous?.agent ?? null;
-  if (
-    effectiveAgent === "opencode" &&
-    typeof frame?.shellBusyAtMs === "number" &&
-    nowMs - frame.shellBusyAtMs <= OPENCODE_BUSY_SIGNAL_HOLD_MS &&
-    (inspection.state === "idle" || inspection.state === "working")
-  ) {
-    if (!frame.shellBusy) return "idle";
-    return visibleOpencodeFooterState(frame) === "idle" ? "idle" : "working";
-  }
   if (inspection.state !== "idle") return inspection.state;
   const currentPreviewText = (frame?.previewLines ?? []).join("\n");
   const hasVisibleTextChange =
     currentPreviewText.length > 0 &&
     previous?.lastPreviewText !== undefined &&
     currentPreviewText !== previous.lastPreviewText;
-  if (
-    effectiveAgent === "codex" &&
-    previous?.state === "working" &&
-    (hasVisibleTextChange ||
-      nowMs - previous.lastFrameAtMs <= CODEX_ACTIVE_FRAME_GRACE_MS ||
-      nowMs - previous.atMs <= CODEX_WORKING_HOLD_MS)
-  ) {
+  if (hasVisibleTextChange) {
     return "working";
   }
   if (
-    effectiveAgent === "opencode" &&
-    previous?.state === "working" &&
-    frame?.shellBusyAtMs == null &&
-    visibleOpencodeFooterState(frame) !== "idle" &&
-    nowMs - previous.atMs <= OPENCODE_WORKING_HOLD_MS
+    currentPreviewText.length > 0 &&
+    typeof previous?.lastPreviewChangeAtMs === "number" &&
+    nowMs - previous.lastPreviewChangeAtMs < TEXT_CHANGE_WORKING_WINDOW_MS
   ) {
-    return "working";
-  }
-  if (visibleAgent === null && frame?.altScreen !== true && frame?.shellBusy) {
     return "working";
   }
   return "idle";

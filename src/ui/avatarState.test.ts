@@ -1,14 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TerminalFrame } from "../shared/protocol";
-import {
-  CODEX_ACTIVE_FRAME_GRACE_MS,
-  CODEX_WORKING_HOLD_MS,
-  OPENCODE_BUSY_SIGNAL_HOLD_MS,
-  OPENCODE_WORKING_HOLD_MS,
-  detectAvatarState,
-  inspectAvatarState,
-  resolveAvatarDisplayState,
-} from "./avatarState";
+import { detectAvatarState, inspectAvatarState, resolveAvatarDisplayState, TEXT_CHANGE_WORKING_WINDOW_MS } from "./avatarState";
 
 function frameFromText(text: string, extra: Partial<TerminalFrame> = {}): TerminalFrame {
   return {
@@ -205,7 +197,7 @@ describe("detectAvatarState", () => {
     expect(state).toBe("idle");
   });
 
-  test("treats a non-agent shell with a live child process as working", () => {
+  test("defaults a non-agent shell to idle even when shellBusy is true", () => {
     const state = resolveAvatarDisplayState(
       {
         ...frameFromText(
@@ -221,7 +213,7 @@ describe("detectAvatarState", () => {
       Date.now(),
     );
 
-    expect(state).toBe("working");
+    expect(state).toBe("idle");
   });
 
   test("does not use generic shell-busy fallback for recognized agent sessions", () => {
@@ -243,15 +235,16 @@ describe("detectAvatarState", () => {
     expect(state).toBe("idle");
   });
 
-  test("treats a plain shell as working even if old codex text remains in VT history", () => {
+  test("keeps a plain shell idle even if old codex text remains in VT history", () => {
+    const currentPreview = [
+      "agentz master",
+      "$ sleep 50",
+      "",
+    ].join("\n");
     const state = resolveAvatarDisplayState(
       {
         ...frameFromText(
-          [
-            "agentz master",
-            "$ sleep 50",
-            "",
-          ].join("\n"),
+          currentPreview,
           {
             vt: [
               "OpenAI Codex",
@@ -264,19 +257,15 @@ describe("detectAvatarState", () => {
         ),
       },
       {
-        state: "idle",
-        agent: "codex",
-        atMs: 1_000,
-        lastFrameAtMs: 1_000,
-        lastPreviewText: "OpenAI Codex\n? for shortcuts",
+        lastPreviewText: currentPreview,
       },
       Date.now(),
     );
 
-    expect(state).toBe("working");
+    expect(state).toBe("idle");
   });
 
-  test("does not use generic shell-busy fallback while alt screen is active", () => {
+  test("keeps alt-screen panes idle without explicit working markers", () => {
     const state = resolveAvatarDisplayState(
       {
         ...frameFromText("top", {
@@ -291,7 +280,7 @@ describe("detectAvatarState", () => {
     expect(state).toBe("idle");
   });
 
-  test("uses fresh shellBusy signal for opencode when footer has not redrawn yet", () => {
+  test("treats a visible opencode busy footer as working", () => {
     const state = resolveAvatarDisplayState(
       {
         ...frameFromText(
@@ -305,20 +294,14 @@ describe("detectAvatarState", () => {
         shellBusy: true,
         shellBusyAtMs: 5_000,
       },
-        {
-          state: "idle",
-          agent: "opencode",
-          atMs: 4_000,
-          lastFrameAtMs: 4_000,
-          lastPreviewText: "opencode\nBuild GPT-5.4 OpenAI · high",
-        },
-        5_000 + OPENCODE_BUSY_SIGNAL_HOLD_MS - 1,
-      );
+      undefined,
+      5_000,
+    );
 
     expect(state).toBe("working");
   });
 
-  test("lets opencode return idle on fresh shellBusy=false even if footer still looks stale", () => {
+  test("still treats a visible opencode busy footer as working even if shellBusy is false", () => {
     const state = resolveAvatarDisplayState(
       {
         ...frameFromText(
@@ -332,17 +315,11 @@ describe("detectAvatarState", () => {
         shellBusy: false,
         shellBusyAtMs: 8_000,
       },
-      {
-        state: "working",
-        agent: "opencode",
-        atMs: 7_000,
-        lastFrameAtMs: 7_000,
-        lastPreviewText: "opencode\nBuild GPT-5.4 OpenAI · high",
-      },
-      8_000 + 100,
+      undefined,
+      8_100,
     );
 
-    expect(state).toBe("idle");
+    expect(state).toBe("working");
   });
 
 
@@ -360,7 +337,7 @@ describe("detectAvatarState", () => {
     expect(state).toBe("working");
   });
 
-  test("detects codex streaming footer as working even when the generic label is gone", () => {
+  test("does not treat codex queue-footer text by itself as working", () => {
     const inspection = inspectAvatarState(
       frameFromText(
         [
@@ -373,10 +350,68 @@ describe("detectAvatarState", () => {
     );
 
     expect(inspection.agent).toBe("codex");
-    expect(inspection.state).toBe("working");
+    expect(inspection.state).toBe("idle");
   });
 
-  test("keeps codex avatar working briefly through redraw gaps", () => {
+  test("keeps codex idle when old queue-footer text remains only in VT history", () => {
+    const inspection = inspectAvatarState(
+      frameFromText(
+        [
+          "Now the filename sits on the same single-line metadata row.",
+          "If you want, I can make it even quieter next.",
+          "gpt-5.4 high · 56% left · ~/work/acervo",
+        ].join("\n"),
+        {
+          vt: [
+            "OpenAI Codex",
+            "• Investigating rendering code (2s • esc to interrupt)",
+            "tab to queue message                                       56% context left",
+            "Now the filename sits on the same single-line metadata row.",
+            "gpt-5.4 high · 56% left · ~/work/acervo",
+          ].join("\n"),
+        },
+      ),
+    );
+
+    expect(inspection.agent).toBe("codex");
+    expect(inspection.state).toBe("idle");
+  });
+
+  test("does not let shellBusy force codex back to working once the current frame is idle", () => {
+    const state = resolveAvatarDisplayState(
+      frameFromText(
+        [
+          "Tip: Use /permissions to control when Codex asks for confirmation.",
+          "",
+          "› Write tests for @filename",
+          "gpt-5.4-mini low · 100% left · ~/work/agentz",
+        ].join("\n"),
+        {
+          vt: [
+            "OpenAI Codex",
+            "? for shortcuts                                                                100% context left",
+            "Tip: Use /permissions to control when Codex asks for confirmation.",
+            "› Write tests for @filename",
+            "gpt-5.4-mini low · 100% left · ~/work/agentz",
+          ].join("\n"),
+          shellBusy: true,
+        },
+      ),
+      {
+        lastPreviewText: [
+          "Tip: Use /permissions to control when Codex asks for confirmation.",
+          "",
+          "› Write tests for @filename",
+          "gpt-5.4-mini low · 100% left · ~/work/agentz",
+        ].join("\n"),
+      },
+      Date.now(),
+    );
+
+    expect(state).toBe("idle");
+  });
+
+  test("treats an unchanged codex idle footer as idle, but changed output as working", () => {
     const frame = frameFromText(
       [
         "OpenAI Codex",
@@ -389,32 +424,20 @@ describe("detectAvatarState", () => {
       resolveAvatarDisplayState(
         frame,
         {
-          state: "working",
-          agent: "codex",
-          atMs: 1_000,
-          lastFrameAtMs: 1_000,
-          lastPreviewText: "OpenAI Codex\n› Ask Codex to do anything\n? for shortcuts",
+          lastPreviewText: frame.previewLines.join("\n"),
         },
-        1_000 + CODEX_WORKING_HOLD_MS - 1,
+        1_100,
       ),
-    ).toBe(
-      "working",
-    );
+    ).toBe("idle");
     expect(
       resolveAvatarDisplayState(
         frame,
         {
-          state: "working",
-          agent: "codex",
-          atMs: 1_000,
-          lastFrameAtMs: 1_000,
-          lastPreviewText: frame.previewLines.join("\n"),
+          lastPreviewText: "OpenAI Codex\n› Ask Codex to do anything\n? for shortcuts",
         },
-        1_000 + Math.max(CODEX_WORKING_HOLD_MS, CODEX_ACTIVE_FRAME_GRACE_MS) + 1,
+        5_000,
       ),
-    ).toBe(
-      "idle",
-    );
+    ).toBe("working");
   });
 
   test("keeps codex avatar working while fresh frames are still arriving", () => {
@@ -431,13 +454,9 @@ describe("detectAvatarState", () => {
       resolveAvatarDisplayState(
         frame,
         {
-          state: "working",
-          agent: "codex",
-          atMs: 1_000,
-          lastFrameAtMs: 5_000,
           lastPreviewText: "OpenAI Codex\nverse eighteen\nverse nineteen",
         },
-        5_000 + CODEX_ACTIVE_FRAME_GRACE_MS - 1,
+        10_000,
       ),
     ).toBe("working");
   });
@@ -459,10 +478,6 @@ describe("detectAvatarState", () => {
       resolveAvatarDisplayState(
         frame,
         {
-          state: "working",
-          agent: "codex",
-          atMs: 1_000,
-          lastFrameAtMs: 6_000,
           lastPreviewText: "Verse 2\nEarlier line\nAnother earlier line",
         },
         6_000 + 500,
@@ -484,15 +499,52 @@ describe("detectAvatarState", () => {
       resolveAvatarDisplayState(
         frame,
         {
-          state: "working",
-          agent: "codex",
-          atMs: 1_000,
-          lastFrameAtMs: 2_000,
           lastPreviewText: "Verse 6\nCloud shadows move fast\nOver brick and glass",
         },
         10_000,
       ),
     ).toBe("working");
+  });
+
+  test("keeps unchanged codex output working briefly after a visible text change, then idles", () => {
+    const frame = frameFromText(
+      [
+        "Pulled it back out of the stacked header block.",
+        "Now the filename sits on the same single-line metadata row.",
+        "gpt-5.4 high · 56% left · ~/work/acervo",
+      ].join("\n"),
+      {
+        vt: [
+          "OpenAI Codex",
+          "• Investigating rendering code (2s • esc to interrupt)",
+          "tab to queue message                                       56% context left",
+          "Pulled it back out of the stacked header block.",
+          "gpt-5.4 high · 56% left · ~/work/acervo",
+        ].join("\n"),
+      },
+    );
+
+    expect(
+      resolveAvatarDisplayState(
+        frame,
+        {
+          lastPreviewText: frame.previewLines.join("\n"),
+          lastPreviewChangeAtMs: 14_000,
+        },
+        14_000 + TEXT_CHANGE_WORKING_WINDOW_MS - 1,
+      ),
+    ).toBe("working");
+
+    expect(
+      resolveAvatarDisplayState(
+        frame,
+        {
+          lastPreviewText: frame.previewLines.join("\n"),
+          lastPreviewChangeAtMs: 14_000,
+        },
+        14_000 + TEXT_CHANGE_WORKING_WINDOW_MS + 1,
+      ),
+    ).toBe("idle");
   });
 
   test("detects codex approval prompt as question", () => {
@@ -522,6 +574,53 @@ describe("detectAvatarState", () => {
     );
 
     expect(state).toBe("question");
+  });
+
+  test("detects codex calling only while waiting for a subagent result", () => {
+    const state = detectAvatarState(
+      frameFromText(
+        [
+          "OpenAI Codex",
+          "• Waiting for Bacon [explorer]",
+          "gpt-5.4-mini low · 100% left · ~/work/agentz",
+        ].join("\n"),
+      ),
+    );
+
+    expect(state).toBe("calling");
+  });
+
+  test("does not keep codex calling once finished waiting is visible", () => {
+    const inspection = inspectAvatarState(
+      frameFromText(
+        [
+          "OpenAI Codex",
+          "• Waiting for Bacon [explorer]",
+          "• Finished waiting",
+          "└ Bacon [explorer]: Completed - inspected settings files",
+          "gpt-5.4-mini low · 100% left · ~/work/agentz",
+        ].join("\n"),
+      ),
+    );
+
+    expect(inspection.agent).toBe("codex");
+    expect(inspection.state).not.toBe("calling");
+  });
+
+  test("does not use old codex subagent wording as calling anymore", () => {
+    const inspection = inspectAvatarState(
+      frameFromText(
+        [
+          "OpenAI Codex",
+          "subagent session",
+          "view subagents",
+          "gpt-5.4-mini low · 100% left · ~/work/agentz",
+        ].join("\n"),
+      ),
+    );
+
+    expect(inspection.agent).toBe("codex");
+    expect(inspection.state).toBe("idle");
   });
 
   test("detects claude selection prompt as question", () => {
@@ -636,7 +735,7 @@ describe("detectAvatarState", () => {
     expect(state).toBe("idle");
   });
 
-  test("clears opencode question state once the prompt is gone", () => {
+  test("treats the frame after an opencode question prompt as working when the text changed", () => {
     const frame = frameFromText(
       [
         "opencode",
@@ -651,18 +750,14 @@ describe("detectAvatarState", () => {
       resolveAvatarDisplayState(
         frame,
         {
-          state: "question",
-          agent: "opencode",
-          atMs: 1_000,
-          lastFrameAtMs: 1_000,
           lastPreviewText: "Question 1/1\nWhat should we verify next?\nenter to submit answer",
         },
         1_500,
       ),
-    ).toBe("idle");
+    ).toBe("working");
   });
 
-  test("holds opencode working briefly across missing footer frames", () => {
+  test("treats a changed opencode transcript frame as working", () => {
     const frame = frameFromText(
       [
         "opencode",
@@ -676,32 +771,35 @@ describe("detectAvatarState", () => {
       resolveAvatarDisplayState(
         frame,
         {
-          state: "working",
-          agent: "opencode",
-          atMs: 1_000,
-          lastFrameAtMs: 1_000,
           lastPreviewText: "Build GPT-5.4 OpenAI · high\n......... esc interrupt",
+          lastPreviewChangeAtMs: 1_000,
         },
-        1_000 + OPENCODE_WORKING_HOLD_MS - 1,
+        1_100,
       ),
     ).toBe("working");
-
     expect(
       resolveAvatarDisplayState(
         frame,
         {
-          state: "working",
-          agent: "opencode",
-          atMs: 1_000,
-          lastFrameAtMs: 1_000,
-          lastPreviewText: "Build GPT-5.4 OpenAI · high\n......... esc interrupt",
+          lastPreviewText: frame.previewLines.join("\n"),
+          lastPreviewChangeAtMs: 1_000,
         },
-        1_000 + OPENCODE_WORKING_HOLD_MS + 1,
+        1_000 + TEXT_CHANGE_WORKING_WINDOW_MS - 1,
+      ),
+    ).toBe("working");
+    expect(
+      resolveAvatarDisplayState(
+        frame,
+        {
+          lastPreviewText: frame.previewLines.join("\n"),
+          lastPreviewChangeAtMs: 1_000,
+        },
+        1_000 + TEXT_CHANGE_WORKING_WINDOW_MS + 1,
       ),
     ).toBe("idle");
   });
 
-  test("does not hold opencode working when the visible footer is idle", () => {
+  test("treats an opencode idle footer as working only when the visible text changed", () => {
     const frame = frameFromText(
       [
         "Transcript continues here",
@@ -714,15 +812,11 @@ describe("detectAvatarState", () => {
       resolveAvatarDisplayState(
         frame,
         {
-          state: "working",
-          agent: "opencode",
-          atMs: 1_000,
-          lastFrameAtMs: 1_000,
           lastPreviewText: "Build GPT-5.4 OpenAI · high\n......... esc interrupt",
         },
         1_000 + 100,
       ),
-    ).toBe("idle");
+    ).toBe("working");
   });
 
   test("prefers calling state when subagent activity and question footer overlap", () => {

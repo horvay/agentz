@@ -46,6 +46,8 @@ Release assets:
 2. Install the app normally.
 3. Launch `agentz`.
 
+Use the `.dmg` release asset on macOS rather than a raw app bundle or zip export.
+
 ### Windows
 
 1. Download the latest `*.exe`.
@@ -150,6 +152,24 @@ Current packaged outputs:
 - Linux: `AppImage`
 - macOS: `dmg`
 - Windows: `nsis` installer
+
+### macOS Release Signing
+
+GitHub Releases should only publish macOS installers from a signed and notarized CI build.
+
+Required repository secrets for the macOS release job:
+
+- `CSC_LINK`
+- `CSC_KEY_PASSWORD`
+- `APPLE_API_KEY_P8`
+- `APPLE_API_KEY_ID`
+- `APPLE_API_ISSUER`
+
+For local development builds on macOS, Gatekeeper quarantine can block an unsigned app bundle. If you trust your own local build and need to test it manually:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/agentz.app
+```
 
 ## Notes
 

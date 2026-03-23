@@ -87,7 +87,9 @@
 			"target": ["AppImage"]
 		},
 		"mac": {
-			"target": ["dmg"]
+			"target": ["dmg"],
+			"category": "public.app-category.developer-tools",
+			"notarize": true
 		},
 		"win": {
 			"target": ["nsis"]

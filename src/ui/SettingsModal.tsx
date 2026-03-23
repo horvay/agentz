@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  cloneDashboardConfig,
   DEFAULT_VISIBLE_LIVE_PANES,
   MAX_VISIBLE_LIVE_PANES,
   MAX_PANE_WIDTH,
@@ -50,7 +49,7 @@ function findDuplicateShortcutError(shortcuts: DashboardShortcuts): string | nul
 export function SettingsModal({ open, config, onClose, onSave }: SettingsModalProps) {
   if (!open) return null;
 
-  return <SettingsModalContent key={JSON.stringify(config)} config={config} onClose={onClose} onSave={onSave} />;
+  return <SettingsModalContent config={config} onClose={onClose} onSave={onSave} />;
 }
 
 interface SettingsModalContentProps {
@@ -60,9 +59,16 @@ interface SettingsModalContentProps {
 }
 
 function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentProps) {
-  const [draft, setDraft] = useState<DashboardConfig>(() => cloneDashboardConfig(config));
   const [recordingField, setRecordingField] = useState<keyof DashboardShortcuts | null>(null);
-  const duplicateShortcutError = useMemo(() => findDuplicateShortcutError(draft.shortcuts), [draft.shortcuts]);
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
+
+  const updateConfig = useCallback(
+    (updater: (current: DashboardConfig) => DashboardConfig) => {
+      setShortcutError(null);
+      onSave(normalizeDashboardConfig(updater(config)));
+    },
+    [config, onSave],
+  );
 
   useEffect(() => {
     if (recordingField) return;
@@ -87,19 +93,29 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
 
       const combo = keyboardEventToShortcut(event);
       if (!combo) return;
-      setDraft((prev) => ({
-        ...prev,
-        shortcuts: {
-          ...prev.shortcuts,
-          [recordingField]: combo,
-        },
-      }));
+      const nextShortcuts = {
+        ...config.shortcuts,
+        [recordingField]: combo,
+      };
+      const nextError = findDuplicateShortcutError(nextShortcuts);
+      if (nextError) {
+        setShortcutError(nextError);
+        setRecordingField(null);
+        return;
+      }
+      setShortcutError(null);
+      onSave(
+        normalizeDashboardConfig({
+          ...config,
+          shortcuts: nextShortcuts,
+        }),
+      );
       setRecordingField(null);
     };
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [recordingField]);
+  }, [config, onSave, recordingField]);
 
   return (
     <div
@@ -122,24 +138,16 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
           <div>
             <p className="settings-eyebrow">agentz settings</p>
             <h2 id="settings-title">Terminal Preferences</h2>
-            <p className="settings-subtitle">Defaults apply to newly created panes only.</p>
+            <p className="settings-subtitle">
+              Width changes apply to new panes. Live rendering and shortcuts update as soon as you change them.
+            </p>
           </div>
           <button type="button" className="settings-close-button" onClick={onClose} aria-label="Close settings">
             Close
           </button>
         </header>
 
-        <form
-          className="settings-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (recordingField) return;
-            if (duplicateShortcutError) return;
-            const normalized = normalizeDashboardConfig(draft);
-            onSave(normalized);
-            onClose();
-          }}
-        >
+        <div className="settings-form">
           <div className="settings-scroll">
             <section className="settings-section">
               <h3>Default Terminal Width</h3>
@@ -149,10 +157,10 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
                   min={MIN_PANE_WIDTH}
                   max={MAX_PANE_WIDTH}
                   step={10}
-                  value={draft.defaultPaneWidth}
+                  value={config.defaultPaneWidth}
                   onChange={(event) => {
                     const next = Number(event.currentTarget.value);
-                    setDraft((prev) => ({ ...prev, defaultPaneWidth: clampPaneWidth(next) }));
+                    updateConfig((current) => ({ ...current, defaultPaneWidth: clampPaneWidth(next) }));
                   }}
                 />
                 <label className="settings-width-input-wrap">
@@ -162,17 +170,17 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
                     min={MIN_PANE_WIDTH}
                     max={MAX_PANE_WIDTH}
                     step={10}
-                    value={draft.defaultPaneWidth}
+                    value={config.defaultPaneWidth}
                     onChange={(event) => {
                       const next = Number(event.currentTarget.value);
                       if (!Number.isFinite(next)) return;
-                      setDraft((prev) => ({ ...prev, defaultPaneWidth: clampPaneWidth(next) }));
+                      updateConfig((current) => ({ ...current, defaultPaneWidth: clampPaneWidth(next) }));
                     }}
                   />
                 </label>
               </div>
               <p className="settings-note">
-                Range: {MIN_PANE_WIDTH}px - {MAX_PANE_WIDTH}px
+                Range: {MIN_PANE_WIDTH}px - {MAX_PANE_WIDTH}px. Applies to newly created panes.
               </p>
             </section>
 
@@ -184,15 +192,18 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
                   min={MIN_VISIBLE_LIVE_PANES}
                   max={MAX_VISIBLE_LIVE_PANES}
                   step={2}
-                  value={draft.visibleLivePanes}
+                  value={config.visibleLivePanes}
                   onChange={(event) => {
                     const next = Number(event.currentTarget.value);
                     if (!Number.isFinite(next)) return;
-                    setDraft((prev) => ({ ...prev, visibleLivePanes: normalizeVisibleLivePanes(next) }));
+                    updateConfig((current) => ({
+                      ...current,
+                      visibleLivePanes: normalizeVisibleLivePanes(next),
+                    }));
                   }}
                 />
                 <div className="settings-value-chip" aria-live="polite">
-                  {formatVisiblePaneLabel(draft.visibleLivePanes)}
+                  {formatVisiblePaneLabel(config.visibleLivePanes)}
                 </div>
               </div>
               <p className="settings-note">
@@ -211,38 +222,22 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
                       <button
                         type="button"
                         className={`settings-shortcut-capture ${isRecording ? "settings-shortcut-capture-recording" : ""}`}
-                        onClick={() => setRecordingField(field)}
+                        onClick={() => {
+                          setShortcutError(null);
+                          setRecordingField(field);
+                        }}
                       >
-                        {isRecording ? "Press keys..." : draft.shortcuts[field]}
+                        {isRecording ? "Press keys..." : config.shortcuts[field]}
                       </button>
                     </div>
                   );
                 })}
               </div>
               <p className="settings-note">Use at least one modifier key. Press Escape to cancel recording.</p>
+              {shortcutError ? <p className="settings-error">{shortcutError}</p> : null}
             </section>
           </div>
-
-          <footer className="settings-footer">
-            {duplicateShortcutError ? (
-              <span className="settings-error">{duplicateShortcutError}</span>
-            ) : (
-              <span className="settings-note">Settings are saved to your config file and synced instantly.</span>
-            )}
-            <div className="settings-actions">
-              <button type="button" className="settings-button settings-button-muted" onClick={onClose}>
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="settings-button settings-button-primary"
-                disabled={Boolean(recordingField) || Boolean(duplicateShortcutError)}
-              >
-                Save Changes
-              </button>
-            </div>
-          </footer>
-        </form>
+        </div>
       </section>
     </div>
   );

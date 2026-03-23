@@ -346,6 +346,8 @@ const flags = parseFlags(process.argv.slice(2));
 const appName =
   typeof flags.app === "string" && flags.app.trim().length > 0 ? flags.app.trim() : "opencode";
 const shellLaunch = appName === "shell";
+const launchViaShellAfterBoot = appName === "codex";
+const preloadAppInLaunchConfig = !shellLaunch && !launchViaShellAfterBoot;
 const prompt =
   typeof flags.prompt === "string" && flags.prompt.trim().length > 0
     ? flags.prompt
@@ -410,7 +412,7 @@ Bun.spawnSync(["pkill", "-f", "electronmon|\\.electron/index\\.js"]);
 Bun.spawnSync(["pkill", "-f", "\\.electron/index\\.js"]);
 
 const app = Bun.spawn(["bash", "-lc", "bun run dev || true"], {
-  env: shellLaunch
+  env: !preloadAppInLaunchConfig
     ? { ...process.env }
     : { ...process.env, AGENTZ_LAUNCH: JSON.stringify({ panes: [{ command: appName }] }) },
   stdio: ["ignore", "inherit", "inherit"],
@@ -452,6 +454,13 @@ try {
   const terminalId = await rpc.listFirstTerminalId();
   await sleep(bootWaitMs);
   rpc.ensureNotExited(terminalId);
+  if (launchViaShellAfterBoot) {
+    await rpc.sendInput(terminalId, appName);
+    await sleep(250);
+    await rpc.sendInput(terminalId, "\r");
+    await sleep(bootWaitMs);
+    rpc.ensureNotExited(terminalId);
+  }
   await rpc.sendInput(terminalId, prompt);
   await rpc.waitForPromptVisible(terminalId, prompt, promptWaitMs);
   await sleep(250);
