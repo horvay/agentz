@@ -4,9 +4,9 @@ agentz is a desktop terminal workspace built around a live avatar strip that sho
 
 ## Demo
 
-<video src="./agentz-feature-demo.mp4" controls muted playsinline width="100%"></video>
+[![Watch the agentz demo](./assets/agentz-feature-demo-preview.gif)](./agentz-feature-demo.mp4)
 
-If the embedded player does not show up in your GitHub view, open [agentz-feature-demo.mp4](./agentz-feature-demo.mp4) directly.
+GitHub does not reliably render inline MP4 playback in repository READMEs, so this autoplaying preview links to the full demo video with audio: [agentz-feature-demo.mp4](./agentz-feature-demo.mp4).
 
 The avatar strip is the main UI. Each pane gets an assigned avatar, and that avatar updates in real time to reflect pane activity:
 
