@@ -4,7 +4,9 @@ agentz is a desktop terminal workspace built around a live avatar strip that sho
 
 ## Demo
 
-![Animated demo of agentz](./assets/agentz-demo.gif)
+[![Watch the agentz demo on YouTube](https://img.youtube.com/vi/K7V8-OH8DiE/hqdefault.jpg)](https://youtu.be/K7V8-OH8DiE)
+
+Watch the full demo on YouTube: https://youtu.be/K7V8-OH8DiE
 
 The avatar strip is the main UI. Each pane gets an assigned avatar, and that avatar updates in real time to reflect pane activity:
 
