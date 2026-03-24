@@ -2,12 +2,6 @@
 
 agentz is a desktop terminal workspace built around a live avatar strip that shows what each pane is doing at a glance while still giving you real PTY-backed terminals underneath.
 
-## Demo
-
-[![Watch the agentz demo](./assets/agentz-feature-demo-preview.gif)](./agentz-feature-demo.mp4)
-
-GitHub does not reliably render inline MP4 playback in repository READMEs, so this autoplaying preview links to the full demo video with audio: [agentz-feature-demo.mp4](./agentz-feature-demo.mp4).
-
 The avatar strip is the main UI. Each pane gets an assigned avatar, and that avatar updates in real time to reflect pane activity:
 
 - `idle` when the pane is waiting
