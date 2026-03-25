@@ -32,6 +32,7 @@ import { coalesceQueuedRenderFrames } from "./renderQueues";
 import { doesEventMatchShortcut } from "./shortcuts";
 import { selectLivePaneIds } from "./livePaneSelection";
 import { recoverTerminalLayout } from "./terminalRecovery";
+import { assignPaneAvatars, pickDeterministicAvatar } from "./avatarAssignments";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
 
@@ -106,28 +107,12 @@ function loadStoredPaneWidths(): Record<string, number> {
   }
 }
 
-function shuffleAvatarIds(ids: AvatarId[]): AvatarId[] {
-  const next = [...ids];
-  for (let i = next.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [next[i], next[j]] = [next[j], next[i]];
-  }
-  return next;
-}
-
 function assignUniqueAvatars(ids: string[]): Record<string, AvatarId> {
-  const shuffled = shuffleAvatarIds(AVATAR_IDS);
-  const out: Record<string, AvatarId> = {};
-  ids.slice(0, shuffled.length).forEach((id, index) => {
-    out[id] = shuffled[index];
-  });
-  return out;
+  return assignPaneAvatars(ids, AVATAR_IDS);
 }
 
-function pickAvailableAvatar(used: Set<AvatarId>): AvatarId | null {
-  const available = AVATAR_IDS.filter((id) => !used.has(id));
-  if (available.length === 0) return null;
-  return available[Math.floor(Math.random() * available.length)];
+function pickAvailableAvatar(paneId: string, used: Set<AvatarId>): AvatarId | null {
+  return pickDeterministicAvatar(paneId, AVATAR_IDS, used);
 }
 
 function avatarSrcForState(avatar: AvatarDefinition, state: AvatarVisualState): string {
@@ -910,22 +895,7 @@ function App() {
         return next;
       });
       setPaneAvatarIds((prev) => {
-        const next: Record<string, AvatarId> = {};
-        const used = new Set<AvatarId>();
-        for (const id of ids) {
-          const avatarId = prev[id];
-          if (!avatarId || used.has(avatarId)) continue;
-          next[id] = avatarId;
-          used.add(avatarId);
-        }
-        for (const id of ids) {
-          if (next[id]) continue;
-          const avatarId = pickAvailableAvatar(used);
-          if (!avatarId) continue;
-          next[id] = avatarId;
-          used.add(avatarId);
-        }
-        return next;
+        return assignPaneAvatars(ids, AVATAR_IDS, prev);
       });
       setBackgroundTerminalIds(layout.backgroundTerminalIds);
       setBackgroundTerminalVisible((prev) => {
@@ -1070,7 +1040,7 @@ function App() {
     setPaneWidths((prev) => ({ ...prev, [id]: defaultPaneWidth }));
     setPaneAvatarIds((prev) => {
       const used = new Set(Object.values(prev));
-      const avatarId = pickAvailableAvatar(used);
+      const avatarId = pickAvailableAvatar(id, used);
       if (!avatarId) return prev;
       return { ...prev, [id]: avatarId };
     });
