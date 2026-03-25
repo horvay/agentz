@@ -31,6 +31,7 @@ import { folderLabel, resolveNewPaneCwd, resolvePaneCwdFromFrame } from "./paneC
 import { coalesceQueuedRenderFrames } from "./renderQueues";
 import { doesEventMatchShortcut } from "./shortcuts";
 import { selectLivePaneIds } from "./livePaneSelection";
+import { recoverTerminalLayout } from "./terminalRecovery";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
 
@@ -606,6 +607,7 @@ function App() {
   const paneIdsRef = useRef<string[]>([FIRST_ID]);
   const backgroundTerminalIdsRef = useRef<Record<string, string>>({});
   const backgroundTerminalVisibleRef = useRef<Record<string, boolean>>({});
+  const paneCwdsRef = useRef<Record<string, string | undefined>>({});
   const nextPaneOrdinalRef = useRef(2);
   const launchConfigRef = useRef<LaunchConfig>({});
   const createdIdsRef = useRef(new Set<string>());
@@ -626,6 +628,8 @@ function App() {
   const bootstrappedRef = useRef(false);
   const hasLaunchConfigRef = useRef(false);
   const hasDashboardConfigRef = useRef(false);
+  const hasTerminalListRef = useRef(false);
+  const serverTerminalIdsRef = useRef<string[]>([]);
   const shortcuts = dashboardConfig.shortcuts;
   const defaultPaneWidth = dashboardConfig.defaultPaneWidth;
   const defaultPaneWidthRef = useRef(defaultPaneWidth);
@@ -634,6 +638,7 @@ function App() {
   paneIdsRef.current = paneIds;
   backgroundTerminalIdsRef.current = backgroundTerminalIds;
   backgroundTerminalVisibleRef.current = backgroundTerminalVisible;
+  paneCwdsRef.current = paneCwds;
   defaultPaneWidthRef.current = defaultPaneWidth;
 
   const livePaneIds = useMemo(
@@ -879,12 +884,168 @@ function App() {
     });
   }, [createTerminal, setActivePaneCentered]);
 
-  const maybeBootstrapTerminals = useCallback(() => {
-    if (bootstrappedRef.current) return;
-    if (!hasLaunchConfigRef.current || !hasDashboardConfigRef.current) return;
-    bootstrappedRef.current = true;
-    ensureBootstrapTerminals();
-  }, [ensureBootstrapTerminals]);
+  const hydrateExistingTerminals = useCallback(
+    (sessionIds: string[]) => {
+      const layout = recoverTerminalLayout(sessionIds);
+      const ids = layout.paneIds;
+      if (ids.length === 0) {
+        ensureBootstrapTerminals();
+        return;
+      }
+
+      const nextPaneOrdinal = ids.reduce((maxOrdinal, id) => {
+        const match = /^term-(\d+)$/.exec(id);
+        if (!match) return maxOrdinal;
+        return Math.max(maxOrdinal, Number(match[1]) + 1);
+      }, 1);
+      nextPaneOrdinalRef.current = Math.max(nextPaneOrdinal, ids.length + 1);
+      createdIdsRef.current = new Set(sessionIds);
+
+      setPaneIds(ids);
+      setPaneWidths((prev) => {
+        const next: Record<string, number> = {};
+        for (const id of ids) {
+          next[id] = prev[id] ?? defaultPaneWidthRef.current;
+        }
+        return next;
+      });
+      setPaneAvatarIds((prev) => {
+        const next: Record<string, AvatarId> = {};
+        const used = new Set<AvatarId>();
+        for (const id of ids) {
+          const avatarId = prev[id];
+          if (!avatarId || used.has(avatarId)) continue;
+          next[id] = avatarId;
+          used.add(avatarId);
+        }
+        for (const id of ids) {
+          if (next[id]) continue;
+          const avatarId = pickAvailableAvatar(used);
+          if (!avatarId) continue;
+          next[id] = avatarId;
+          used.add(avatarId);
+        }
+        return next;
+      });
+      setBackgroundTerminalIds(layout.backgroundTerminalIds);
+      setBackgroundTerminalVisible((prev) => {
+        const next: Record<string, boolean> = {};
+        for (const id of ids) {
+          if (!layout.backgroundTerminalIds[id]) continue;
+          next[id] = prev[id] ?? layout.backgroundTerminalVisible[id] ?? false;
+        }
+        return next;
+      });
+      setPaneCwds((prev) => {
+        const next: Record<string, string | undefined> = {};
+        for (const id of sessionIds) {
+          if (id in prev) next[id] = prev[id];
+        }
+        return next;
+      });
+
+      const sessionIdSet = new Set(sessionIds);
+      framesRef.current = Object.fromEntries(
+        Object.entries(framesRef.current).filter(([id]) => sessionIdSet.has(id)),
+      );
+      frameQueuesRef.current = Object.fromEntries(
+        Object.entries(frameQueuesRef.current).filter(([id]) => sessionIdSet.has(id)),
+      );
+      avatarActivityRef.current = Object.fromEntries(
+        Object.entries(avatarActivityRef.current).filter(([id]) => sessionIdSet.has(id)),
+      );
+      avatarStatesRef.current = Object.fromEntries(
+        sessionIds.map((id) => [id, avatarStatesRef.current[id] ?? ("idle" as const)]),
+      );
+      paneStatusRef.current = Object.fromEntries(sessionIds.map((id) => [id, "running" as const]));
+
+      paneRuntimeStore.replaceAll(
+        Object.fromEntries(
+          sessionIds.map((id) => [
+            id,
+            {
+              frame: framesRef.current[id],
+              queuedFrames: frameQueuesRef.current[id] ?? [],
+              avatarState: avatarStatesRef.current[id] ?? "idle",
+              status: "running" as const,
+            },
+          ]),
+        ),
+      );
+
+      const nextActivePane = ids.includes(activePaneRef.current) ? activePaneRef.current : ids[0] ?? FIRST_ID;
+      setActivePaneCentered(nextActivePane, "auto");
+      sessionIds.forEach((id) => {
+        rpc.send({ type: "snapshot", id });
+      });
+      setStatus("Connected");
+    },
+    [ensureBootstrapTerminals, setActivePaneCentered],
+  );
+
+  const restoreCurrentTerminals = useCallback(() => {
+    const ids = paneIdsRef.current;
+    if (ids.length === 0) {
+      ensureBootstrapTerminals();
+      return;
+    }
+
+    const sessionIds = [
+      ...ids,
+      ...ids
+        .map((paneId) => backgroundTerminalIdsRef.current[paneId])
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ];
+
+    createdIdsRef.current.clear();
+    paneStatusRef.current = Object.fromEntries(sessionIds.map((id) => [id, "booting" as const]));
+    paneRuntimeStore.patchMany(
+      Object.fromEntries(
+        sessionIds.map((id) => [
+          id,
+          {
+            status: "booting" as const,
+            avatarState: avatarStatesRef.current[id] ?? "idle",
+          },
+        ]),
+      ),
+    );
+
+    ids.forEach((id) => {
+      const cwd = paneCwdsRef.current[id] ?? framesRef.current[id]?.cwd;
+      createTerminal(id, cwd ? { cwd } : undefined);
+    });
+    ids.forEach((paneId) => {
+      const backgroundId = backgroundTerminalIdsRef.current[paneId];
+      if (!backgroundId) return;
+      const cwd =
+        paneCwdsRef.current[backgroundId] ??
+        paneCwdsRef.current[paneId] ??
+        framesRef.current[backgroundId]?.cwd ??
+        framesRef.current[paneId]?.cwd;
+      createTerminal(backgroundId, cwd ? { cwd } : undefined);
+    });
+    setStatus("Restoring terminals...");
+  }, [createTerminal, ensureBootstrapTerminals]);
+
+  const reconcileTerminals = useCallback(() => {
+    if (!hasLaunchConfigRef.current || !hasDashboardConfigRef.current || !hasTerminalListRef.current) return;
+    const serverIds = serverTerminalIdsRef.current;
+    if (!bootstrappedRef.current) {
+      bootstrappedRef.current = true;
+      if (serverIds.length > 0) {
+        hydrateExistingTerminals(serverIds);
+        return;
+      }
+      ensureBootstrapTerminals();
+      return;
+    }
+    if (serverIds.length > 0) {
+      hydrateExistingTerminals(serverIds);
+      return;
+    }
+    restoreCurrentTerminals();
+  }, [ensureBootstrapTerminals, hydrateExistingTerminals, restoreCurrentTerminals]);
 
   const addTerminalPane = useCallback(() => {
     if (paneIdsRef.current.length >= MAX_AVATAR_PANES) {
@@ -1158,21 +1319,34 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const disposeConnection = rpc.onConnectionChange((connected) => {
+      if (connected) return;
+      hasTerminalListRef.current = false;
+      serverTerminalIdsRef.current = [];
+      setStatus(bootstrappedRef.current ? "Reconnecting..." : "Connecting...");
+    });
     const disposeReady = rpc.onReady(() => {
       setStatus("Connected");
+      hasTerminalListRef.current = false;
       rpc.send({ type: "launch-config" });
       rpc.send({ type: "get-config" });
+      rpc.send({ type: "list" });
     });
     const disposeConfig = rpc.onConfig((config) => {
       defaultPaneWidthRef.current = config.defaultPaneWidth;
       hasDashboardConfigRef.current = true;
       setDashboardConfig(config);
-      maybeBootstrapTerminals();
+      reconcileTerminals();
     });
     const disposeLaunchConfig = rpc.onLaunchConfig((config) => {
       launchConfigRef.current = config;
       hasLaunchConfigRef.current = true;
-      maybeBootstrapTerminals();
+      reconcileTerminals();
+    });
+    const disposeTerminalList = rpc.onTerminalList((ids) => {
+      serverTerminalIdsRef.current = ids;
+      hasTerminalListRef.current = true;
+      reconcileTerminals();
     });
     const disposeCreated = rpc.onCreated((id) => {
       paneStatusRef.current = { ...paneStatusRef.current, [id]: "running" };
@@ -1301,6 +1475,7 @@ function App() {
 
     rpc.send({ type: "launch-config" });
     rpc.send({ type: "get-config" });
+    rpc.send({ type: "list" });
 
     return () => {
       if (pendingFrameFlushRafRef.current != null) {
@@ -1311,15 +1486,17 @@ function App() {
         window.clearTimeout(inputPriorityTimerRef.current);
         inputPriorityTimerRef.current = null;
       }
+      disposeConnection();
       disposeReady();
       disposeConfig();
       disposeLaunchConfig();
+      disposeTerminalList();
       disposeCreated();
       disposeFrame();
       disposeError();
       disposeExit();
     };
-  }, [flushPendingFrames, maybeBootstrapTerminals, setActivePaneCentered]);
+  }, [flushPendingFrames, reconcileTerminals, setActivePaneCentered]);
 
   useEffect(() => {
     const sessionIdSet = new Set(allSessionIds);
