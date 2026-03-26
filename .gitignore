@@ -35,6 +35,14 @@ src/native/zig-out/
 .env.*
 !.env.example
 
+# Local Apple signing / notarization material
+AuthKey_*.p8
+developer_id_application.p12
+developerID_application.cer
+developer_id_application.pem
+dev_id.csr
+dev_id.key
+
 # OS / editor noise
 .DS_Store
 Thumbs.db
