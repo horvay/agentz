@@ -709,6 +709,24 @@ describe("detectAvatarState", () => {
     expect(inspection.state).toBe("question");
   });
 
+  test("detects opencode permission prompt from the select footer", () => {
+    const inspection = inspectAvatarState(
+      frameFromText(
+        [
+          "# Permission request",
+          "Permission required",
+          "Allow once",
+          "Allow always",
+          "Reject",
+          "⇆ select  enter confirm",
+        ].join("\n"),
+      ),
+    );
+
+    expect(inspection.agent).toBe("opencode");
+    expect(inspection.state).toBe("question");
+  });
+
   test("keeps opencode idle when old tool transcript is visible above the prompt", () => {
     const state = detectAvatarState(
       frameFromText(

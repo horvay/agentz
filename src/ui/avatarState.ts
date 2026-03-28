@@ -135,19 +135,8 @@ function hasOpencodeCallingTranscript(frame?: TerminalFrame): boolean {
   });
 }
 
-function hasStandaloneOpencodeQuestionPrompt(recent: string): boolean {
-  const markers = [
-    "type your own answer",
-    "esc dismiss",
-    "enter submit",
-    "select all that apply",
-    "asked 1 question",
-    "what should we talk about next?",
-  ];
-  const markerHits = markers.filter((marker) => recent.includes(marker)).length;
-  const hasPrimaryOption = recent.includes("1. ");
-  const hasAnotherOption = ["2. ", "3. ", "4. ", "5. ", "6. "].some((marker) => recent.includes(marker));
-  return markerHits >= 2 && hasPrimaryOption && hasAnotherOption;
+function hasOpencodeQuestionPrompt(recent: string): boolean {
+  return recent.includes("↑↓ select") || recent.includes("⇆ select");
 }
 
 export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
@@ -156,23 +145,13 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
 
   const { recent, full } = windows;
   const opencodeQuestionScreen = recent;
-  const standaloneOpencodeQuestion = hasStandaloneOpencodeQuestionPrompt(recent);
+  const standaloneOpencodeQuestion = hasOpencodeQuestionPrompt(recent);
   const opencodeSession = isOpencodeSession(full) || standaloneOpencodeQuestion;
   const codexSession = isCodexSession(recent, full);
   const claudeSession = isClaudeSession(recent, full);
   const agent: AgentKind = opencodeSession ? "opencode" : codexSession ? "codex" : claudeSession ? "claude" : null;
   const opencodeBusyFooter = opencodeSession && hasOpencodeBusyFooter(frame);
 
-  const opencodeQuestionMarkers = [
-    "permission required",
-    "allow once",
-    "allow always",
-    "reject permission",
-    "type your own answer",
-    "tell opencode what to do differently",
-    "select all that apply",
-    "esc dismiss",
-  ];
   const codexQuestionMarkers = [
     "do you want to approve",
     "yes, just this once",
@@ -195,8 +174,7 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
     "to navigate",
   ];
   const isQuestion =
-    ((opencodeSession || standaloneOpencodeQuestion) &&
-      opencodeQuestionMarkers.some((marker) => opencodeQuestionScreen.includes(marker))) ||
+    ((opencodeSession || standaloneOpencodeQuestion) && hasOpencodeQuestionPrompt(opencodeQuestionScreen)) ||
     codexQuestionMarkers.some((marker) => recent.includes(marker)) ||
     claudeQuestionMarkers.some((marker) => recent.includes(marker));
 
