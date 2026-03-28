@@ -944,7 +944,7 @@ body.pane-resize-active .pane-resize-handle::before {
     linear-gradient(180deg, rgba(10, 15, 26, 0.98), rgba(5, 12, 22, 0.98)),
     #0a0f1a;
   color: #d9e6ff;
-  font: 400 14px/1.22 "JetBrainsMonoNerdFontMonoLocal", "JetBrainsMono Nerd Font Mono", monospace;
+  font: 400 14px/1 "JetBrainsMonoNerdFontMonoLocal", "JetBrainsMono Nerd Font Mono", monospace;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   user-select: text;

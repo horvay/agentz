@@ -28,7 +28,7 @@ const RESIZE_DEBOUNCE_MS = 40;
 const RESIZE_SNAPSHOT_DELAY_MS = 140;
 const VIEWPORT_RESTORE_DEBOUNCE_MS = 240;
 const TERMINAL_FONT_SIZE = 14;
-const TERMINAL_LINE_HEIGHT = 1.22;
+const TERMINAL_LINE_HEIGHT = 1;
 const TERMINAL_SCROLLBACK = 5_000;
 const TERMINAL_FONT_FAMILY = '"JetBrainsMonoNerdFontMonoLocal", "JetBrainsMono Nerd Font Mono", monospace';
 const IS_WINDOWS = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
