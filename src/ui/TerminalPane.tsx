@@ -22,11 +22,9 @@ import { createTerminalUrlLinkProvider, isModifierLinkActivation } from "./termi
 import { shouldBypassPaneFocusForMouseSelection } from "./terminalMouseFocus";
 import { prependTerminalModePrefix, terminalModeStateKey } from "./terminalModes";
 import { inspectAvatarState } from "./avatarState";
-import { shouldRestoreTerminalViewport } from "./terminalViewportRestore";
 
 const RESIZE_DEBOUNCE_MS = 40;
 const RESIZE_SNAPSHOT_DELAY_MS = 140;
-const VIEWPORT_RESTORE_DEBOUNCE_MS = 240;
 const TERMINAL_FONT_SIZE = 14;
 const TERMINAL_LINE_HEIGHT = 1;
 const TERMINAL_SCROLLBACK = 5_000;
@@ -180,8 +178,6 @@ export function TerminalPane({
   const framesQueuedHandlerRef = useRef(onFramesQueued);
   const userInputHandlerRef = useRef(onUserInput);
   const currentFrameRef = useRef(currentFrame);
-  const restoreViewportRef = useRef<(() => void) | null>(null);
-  const lastViewportRestoreAtRef = useRef(-VIEWPORT_RESTORE_DEBOUNCE_MS);
 
   shortcutsRef.current = shortcuts;
   shortcutHandlerRef.current = onShortcut;
@@ -503,19 +499,6 @@ export function TerminalPane({
       });
     };
 
-    const restoreTerminalViewport = () => {
-      fitAddon.fit();
-      refreshTerminalViewport(terminal);
-      queueResizeSync(terminal.cols, terminal.rows, {
-        immediate: true,
-        requestSnapshot: true,
-        forceSnapshot: true,
-        snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
-      });
-    };
-
-    restoreViewportRef.current = restoreTerminalViewport;
-
     fitTerminal();
     if (active) {
       scheduleTerminalFocus();
@@ -539,7 +522,6 @@ export function TerminalPane({
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
-      restoreViewportRef.current = null;
       pendingFramesRef.current = [];
       pendingFrameStartRef.current = 0;
       processingFramesRef.current = false;
@@ -602,41 +584,6 @@ export function TerminalPane({
     window.addEventListener("focus", onWindowFocus);
     return () => window.removeEventListener("focus", onWindowFocus);
   }, [active]);
-
-  useEffect(() => {
-    const restoreViewport = () => {
-      const now = performance.now();
-      if (
-        !shouldRestoreTerminalViewport(
-          document.visibilityState,
-          now,
-          lastViewportRestoreAtRef.current,
-          VIEWPORT_RESTORE_DEBOUNCE_MS,
-        )
-      ) {
-        return;
-      }
-      lastViewportRestoreAtRef.current = now;
-      window.requestAnimationFrame(() => {
-        restoreViewportRef.current?.();
-      });
-    };
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible") return;
-      restoreViewport();
-    };
-
-    window.addEventListener("focus", restoreViewport);
-    window.addEventListener("pageshow", restoreViewport);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      window.removeEventListener("focus", restoreViewport);
-      window.removeEventListener("pageshow", restoreViewport);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, []);
 
   return (
     <section className={`pane-shell ${active ? "pane-active" : ""}`} style={accentStyle}>
