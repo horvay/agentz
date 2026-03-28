@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
-import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "xterm";
 
@@ -33,8 +32,6 @@ const TERMINAL_LINE_HEIGHT = 1.22;
 const TERMINAL_SCROLLBACK = 5_000;
 const TERMINAL_FONT_FAMILY = '"JetBrainsMonoNerdFontMonoLocal", "JetBrainsMono Nerd Font Mono", monospace';
 const IS_WINDOWS = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
-const ALT_SCREEN_FULL_FRAME_MARKER = "\u001b[?1049h\u001b[H";
-
 const TERMINAL_THEME = {
   foreground: "#d9e6ff",
   background: "#0a0f1a",
@@ -93,28 +90,9 @@ function hasRenderablePayload(frame: TerminalFrame | undefined): frame is Termin
   );
 }
 
-function loadBestRendererAddon(terminal: Terminal): { dispose(): void } | null {
-  if (IS_WINDOWS) {
-    return null;
-  }
-  try {
-    const addon = new CanvasAddon();
-    terminal.loadAddon(addon);
-    return addon;
-  } catch {
-    return null;
-  }
-}
-
 function framePayload(frame: TerminalFrame): string | Uint8Array {
   if (frame.screenMode === "full") return frame.renderVt ?? "";
   return frame.renderPatchBytes ?? frame.renderPatchVt ?? frame.renderVt ?? "";
-}
-
-function extractAltScreenFullFramePayload(payload: string): string {
-  const markerIndex = payload.lastIndexOf(ALT_SCREEN_FULL_FRAME_MARKER);
-  if (markerIndex < 0) return payload;
-  return payload.slice(markerIndex + ALT_SCREEN_FULL_FRAME_MARKER.length);
 }
 
 async function writeTextToClipboard(text: string): Promise<void> {
@@ -309,17 +287,10 @@ export function TerminalPane({
         return;
       }
       if (frame.altScreen && typeof payloadWithModes === "string") {
-        if (IS_WINDOWS) {
-          terminal.reset();
-          terminal.write(payloadWithModes, () => {
-            lastModeStateKeyRef.current = nextModeStateKey;
-            done();
-          });
-          return;
-        }
-        const altPayload = extractAltScreenFullFramePayload(payloadWithModes);
-        // Repaint full-screen TUIs in place. A hard terminal reset causes visible flashes.
-        terminal.write(`\u001b[?1049h\u001b[H\u001b[2J${altPayload}`, () => {
+        // Full alternate-screen frames are authoritative snapshots of the active TUI.
+        // Re-enter and clear the alt buffer in place so redraws do not visibly flash.
+        terminal.write(`\u001b[?1049h\u001b[H\u001b[2J${payloadWithModes}`, () => {
+          syncTerminalCursor(terminal, screen, frame);
           lastModeStateKeyRef.current = nextModeStateKey;
           done();
         });
@@ -419,7 +390,6 @@ export function TerminalPane({
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    const rendererAddon = loadBestRendererAddon(terminal);
     const linkProvider = createTerminalUrlLinkProvider(terminal, openExternalUrl);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
@@ -566,7 +536,6 @@ export function TerminalPane({
       binarySubscription.dispose();
       resizeSubscription.dispose();
       linkProviderDisposable.dispose();
-      rendererAddon?.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;

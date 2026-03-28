@@ -291,19 +291,15 @@ fn joinRows(alloc: std.mem.Allocator, rows: []const []u8) ![]u8 {
     return try alloc.dupe(u8, builder.writer.buffered());
 }
 
-fn buildFullVt(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal, current_render_rows: []const []u8) ![]u8 {
+fn buildFullVt(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal, _: []const []u8) ![]u8 {
     var builder: std.Io.Writer.Allocating = .init(alloc);
     defer builder.deinit();
 
     try writeModePrefix(&builder.writer, term);
     try writeScrollingRegion(&builder.writer, term);
 
-    for (current_render_rows, 0..) |row_vt, row_index| {
-        try builder.writer.print("\x1b[{d};1H\x1b[2K", .{row_index + 1});
-        if (row_vt.len > 0) {
-            try builder.writer.writeAll(row_vt);
-        }
-    }
+    var formatter: ghostty_vt.formatter.PageListFormatter = .init(&term.screens.active.pages, .vt);
+    try formatter.format(&builder.writer);
 
     try writeCursorState(&builder.writer, term);
     return try alloc.dupe(u8, builder.writer.buffered());
@@ -338,7 +334,8 @@ fn buildPatchVt(
     for (current_render_rows, 0..) |row_vt, row_index| {
         if (std.mem.eql(u8, previous_render_rows[row_index], row_vt)) continue;
 
-        try builder.writer.print("\x1b[{d};1H\x1b[2K", .{row_index + 1});
+        // Each row formatter starts from default attrs, so reset before clearing/repainting.
+        try builder.writer.print("\x1b[{d};1H\x1b[0m\x1b[2K", .{row_index + 1});
         if (row_vt.len == 0) continue;
         try builder.writer.writeAll(row_vt);
     }
@@ -526,7 +523,9 @@ fn emitFrame(
             }
         }
 
-        if (pending_vt_bytes.items.len == 0 and dirty_rows > 4) {
+        if (alt_screen and dirty_rows > 0) {
+            use_full = true;
+        } else if (pending_vt_bytes.items.len == 0 and dirty_rows > 4) {
             use_full = true;
         }
     }
@@ -586,7 +585,7 @@ fn emitFrame(
         break :blk try buildFullVt(alloc, term, current_render_rows.items);
     } else blk: {
         mode = .patch;
-        if (pending_vt_bytes.items.len > 0) {
+        if (!alt_screen and pending_vt_bytes.items.len > 0) {
             break :blk try alloc.dupe(u8, pending_vt_bytes.items);
         }
         break :blk try buildPatchVt(alloc, term, previous_render_rows.items, current_render_rows.items);

@@ -189,7 +189,7 @@ fn joinRows(
 fn buildFullVt(
     alloc: std.mem.Allocator,
     term: *ghostty_vt.Terminal,
-    current_render_rows: []const []u8,
+    _: []const []u8,
 ) ![]u8 {
     var builder: std.Io.Writer.Allocating = .init(alloc);
     defer builder.deinit();
@@ -197,12 +197,8 @@ fn buildFullVt(
     try writeModePrefix(&builder.writer, term);
     try writeScrollingRegion(&builder.writer, term);
 
-    for (current_render_rows, 0..) |row_vt, row_index| {
-        try builder.writer.print("\x1b[{d};1H\x1b[2K", .{row_index + 1});
-        if (row_vt.len > 0) {
-            try builder.writer.writeAll(row_vt);
-        }
-    }
+    var formatter: ghostty_vt.formatter.PageListFormatter = .init(&term.screens.active.pages, .vt);
+    try formatter.format(&builder.writer);
 
     try writeCursorState(&builder.writer, term);
     return try alloc.dupe(u8, builder.writer.buffered());
@@ -223,7 +219,8 @@ fn buildPatchVt(
     for (current_render_rows, 0..) |row_vt, row_index| {
         if (std.mem.eql(u8, previous_render_rows[row_index], row_vt)) continue;
 
-        try builder.writer.print("\x1b[{d};1H\x1b[2K", .{row_index + 1});
+        // Each row formatter starts from default attrs, so reset before clearing/repainting.
+        try builder.writer.print("\x1b[{d};1H\x1b[0m\x1b[2K", .{row_index + 1});
         if (row_vt.len == 0) continue;
         try builder.writer.writeAll(row_vt);
     }
@@ -337,25 +334,19 @@ fn emitFrame(
         //   in-place edit to the active cursor row. Scrolls near the bottom
         //   of the terminal can otherwise look like a tiny contiguous diff even
         //   though the visible history shifted.
-        // - On the alternate screen, allow cursor-only changes and very small
-        //   contiguous row updates. Neovim cursor motion commonly repaints the
-        //   old and new cursor rows; treating that as a patch avoids queuing a
-        //   full-screen snapshot for every repeated j/k move.
+        // - On the alternate screen, only allow cursor-only changes. Row-level
+        //   patches can desynchronize wrap/attribute state under fast TUI redraws
+        //   such as mouse-tracking hovers, which shows up as severe visual
+        //   corruption in xterm.
         const patchable_cursor_only = dirty_rows == 0;
         const patchable_cursor_row_only = dirty_rows == 1 and
             first_dirty_row != null and
             first_dirty_row.? == cursor_row and
             last_dirty_row != null and
             last_dirty_row.? == cursor_row;
-        const patchable_alt_small_block = alt_screen and
-            dirty_rows > 0 and
-            dirty_rows <= 4 and
-            first_dirty_row != null and
-            last_dirty_row != null and
-            (last_dirty_row.? - first_dirty_row.? + 1) == dirty_rows;
 
         const allow_patch = if (alt_screen)
-            patchable_cursor_only or patchable_alt_small_block
+            patchable_cursor_only
         else
             patchable_cursor_only or patchable_cursor_row_only;
 
