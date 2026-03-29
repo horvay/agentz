@@ -1,9 +1,7 @@
-const BACKGROUND_TERMINAL_SUFFIX = "-bg";
-
 export interface RecoveredTerminalLayout {
   paneIds: string[];
-  backgroundTerminalIds: Record<string, string>;
-  backgroundTerminalVisible: Record<string, boolean>;
+  backgroundTerminalIds: Record<string, string[]>;
+  visibleSessionIds: Record<string, string>;
 }
 
 function paneOrdinal(id: string): number | null {
@@ -25,29 +23,49 @@ function comparePaneIds(a: string, b: string): number {
 export function recoverTerminalLayout(sessionIds: string[]): RecoveredTerminalLayout {
   const paneIds = new Set<string>();
   const frontIds = new Set<string>();
-  const backgroundTerminalIds: Record<string, string> = {};
-  const backgroundTerminalVisible: Record<string, boolean> = {};
+  const backgroundTerminalIds: Record<string, string[]> = {};
+  const visibleSessionIds: Record<string, string> = {};
+
+  const parseBackgroundId = (id: string): { paneId: string; ordinal: number } | null => {
+    const match = /^(term-\d+)-bg(?:-(\d+))?$/.exec(id);
+    if (!match) return null;
+    const paneId = match[1];
+    if (!paneId) return null;
+    const ordinal = match[2] ? Number(match[2]) : 1;
+    return Number.isFinite(ordinal) ? { paneId, ordinal } : null;
+  };
 
   sessionIds.forEach((id) => {
-    if (id.endsWith(BACKGROUND_TERMINAL_SUFFIX)) return;
+    if (parseBackgroundId(id)) return;
     frontIds.add(id);
     paneIds.add(id);
   });
 
   sessionIds.forEach((id) => {
-    if (!id.endsWith(BACKGROUND_TERMINAL_SUFFIX)) return;
-    const paneId = id.slice(0, -BACKGROUND_TERMINAL_SUFFIX.length);
-    if (!paneId) return;
+    const parsed = parseBackgroundId(id);
+    if (!parsed) return;
+    const { paneId } = parsed;
     paneIds.add(paneId);
-    backgroundTerminalIds[paneId] = id;
-    if (!frontIds.has(paneId)) {
-      backgroundTerminalVisible[paneId] = true;
-    }
+    backgroundTerminalIds[paneId] = [...(backgroundTerminalIds[paneId] ?? []), id];
   });
+
+  for (const [paneId, ids] of Object.entries(backgroundTerminalIds)) {
+    backgroundTerminalIds[paneId] = ids.sort((a, b) => {
+      const aOrdinal = parseBackgroundId(a)?.ordinal ?? 1;
+      const bOrdinal = parseBackgroundId(b)?.ordinal ?? 1;
+      return aOrdinal - bOrdinal;
+    });
+    if (!frontIds.has(paneId)) {
+      const firstBackgroundId = backgroundTerminalIds[paneId][0];
+      if (firstBackgroundId) {
+        visibleSessionIds[paneId] = firstBackgroundId;
+      }
+    }
+  }
 
   return {
     paneIds: [...paneIds].sort(comparePaneIds),
     backgroundTerminalIds,
-    backgroundTerminalVisible,
+    visibleSessionIds,
   };
 }

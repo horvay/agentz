@@ -16,7 +16,7 @@ The avatar strip is the main UI. Each pane gets an assigned avatar, and that ava
 - `calling` when the pane is delegating or using sub-agents
 
 Under the strip, each avatar maps to a real terminal pane with native-style alternate-screen behavior for tools like `nvim`, `less`, `tmux`, and `opencode`.
-Panes can also keep a paired background terminal so you can flip between the main terminal and background work without losing context.
+Panes can also keep a stack of background terminals so you can cycle between the main session and layered side work without losing context.
 
 ## Features
 
@@ -25,7 +25,7 @@ Panes can also keep a paired background terminal so you can flip between the mai
 - Stable avatar-to-pane mapping so each pane keeps a recognizable identity
 - 10 named avatars to assign to panes: Marmalade, Nyx, Byte, Glimmer, Wisp, Rufus, Selene, Bamboo, Mochi, and Pyra
 - Multiple real terminal panes in one desktop window
-- Per-pane background terminals you can toggle in and out without replacing the main session
+- Per-pane background terminal stacks you can cycle through without replacing the main session
 - PTY-backed sessions, not fake terminal emulation shortcuts
 - Native-style alternate-screen behavior through the Ghostty VT bridge
 - Working mouse input for terminal TUIs like `nvim`
@@ -85,7 +85,8 @@ All shortcuts are customizable in the Settings modal (Ctrl+Shift+P):
 | Action | Default Shortcut |
 |--------|-----------------|
 | Add pane | `Ctrl+Shift+N` |
-| Toggle background terminal | `Ctrl+B` |
+| Cycle pane terminals | `Ctrl+B` |
+| Add background terminal | `Ctrl+Shift+B` |
 | Focus previous pane | `Ctrl+Shift+ArrowLeft` |
 | Focus next pane | `Ctrl+Shift+ArrowRight` |
 | Move pane left | `Ctrl+Alt+Shift+ArrowLeft` |

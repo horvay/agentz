@@ -3,6 +3,7 @@ import { normalizeShortcutCombo, type DashboardShortcuts } from "../shared/confi
 export const SHORTCUT_FIELD_ORDER: Array<keyof DashboardShortcuts> = [
   "addPane",
   "toggleBackgroundTerminal",
+  "addBackgroundTerminal",
   "focusPrevPane",
   "focusNextPane",
   "movePaneLeft",
@@ -13,7 +14,8 @@ export const SHORTCUT_FIELD_ORDER: Array<keyof DashboardShortcuts> = [
 
 export const SHORTCUT_FIELD_LABELS: Record<keyof DashboardShortcuts, string> = {
   addPane: "Add pane",
-  toggleBackgroundTerminal: "Toggle background terminal",
+  toggleBackgroundTerminal: "Cycle pane terminals",
+  addBackgroundTerminal: "Add background terminal",
   focusPrevPane: "Focus previous pane",
   focusNextPane: "Focus next pane",
   movePaneLeft: "Move pane left",

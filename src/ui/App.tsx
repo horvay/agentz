@@ -67,23 +67,50 @@ const AVATAR_IDS = avatarCatalog.map((avatar) => avatar.id);
 const avatarById: Record<AvatarId, AvatarDefinition> = Object.fromEntries(
   avatarCatalog.map((avatar) => [avatar.id, avatar]),
 ) as Record<AvatarId, AvatarDefinition>;
+type BackgroundTerminalMap = Record<string, string[]>;
 
 function paneTitle(index: number): string {
   if (index < 26) return `Pane ${String.fromCharCode(65 + index)}`;
   return `Pane ${index + 1}`;
 }
 
-function backgroundTerminalIdForPane(id: string): string {
-  return `${id}${BACKGROUND_TERMINAL_SUFFIX}`;
+function parseBackgroundTerminalId(id: string): { paneId: string; ordinal: number } | null {
+  const match = /^(term-\d+)-bg(?:-(\d+))?$/.exec(id);
+  if (!match) return null;
+  const paneId = match[1];
+  if (!paneId) return null;
+  const ordinal = match[2] ? Number(match[2]) : 1;
+  return Number.isFinite(ordinal) ? { paneId, ordinal } : null;
 }
 
-function frontSessionIdForPane(
+function backgroundTerminalIdForPane(id: string, ordinal = 1): string {
+  return ordinal <= 1 ? `${id}${BACKGROUND_TERMINAL_SUFFIX}` : `${id}${BACKGROUND_TERMINAL_SUFFIX}-${ordinal}`;
+}
+
+function sortBackgroundTerminalIds(ids: string[]): string[] {
+  return [...ids].sort((a, b) => {
+    const aOrdinal = parseBackgroundTerminalId(a)?.ordinal ?? 1;
+    const bOrdinal = parseBackgroundTerminalId(b)?.ordinal ?? 1;
+    return aOrdinal - bOrdinal;
+  });
+}
+
+function nextBackgroundTerminalOrdinal(ids: string[]): number {
+  return ids.reduce((maxOrdinal, id) => Math.max(maxOrdinal, parseBackgroundTerminalId(id)?.ordinal ?? 1), 0) + 1;
+}
+
+function visibleSessionIdForPane(
   paneId: string,
-  backgroundId: string | undefined,
-  backgroundVisible: boolean | undefined,
+  backgroundIds: string[] | undefined,
+  visibleSessionId: string | undefined,
 ): string {
-  if (backgroundId && backgroundVisible) return backgroundId;
+  if (visibleSessionId === paneId) return paneId;
+  if (visibleSessionId && (backgroundIds ?? []).includes(visibleSessionId)) return visibleSessionId;
   return paneId;
+}
+
+function paneSessionIds(paneId: string, backgroundIds: string[] | undefined): string[] {
+  return [paneId, ...(backgroundIds ?? [])];
 }
 
 function normalizeLaunchPanes(config: LaunchConfig): PaneLaunchConfig[] {
@@ -470,6 +497,7 @@ interface ActiveTerminalPaneProps {
     shortcut:
       | "new-pane"
       | "toggle-background"
+      | "new-background"
       | "focus-left"
       | "focus-right"
       | "move-left"
@@ -515,6 +543,7 @@ interface PaneSurfaceContainerProps {
     shortcut:
       | "new-pane"
       | "toggle-background"
+      | "new-background"
       | "focus-left"
       | "focus-right"
       | "move-left"
@@ -577,9 +606,10 @@ function App() {
   const [paneAvatarIds, setPaneAvatarIds] = useState<Record<string, AvatarId>>(() =>
     assignUniqueAvatars([FIRST_ID]),
   );
-  const [backgroundTerminalIds, setBackgroundTerminalIds] = useState<Record<string, string>>({});
-  const [backgroundTerminalVisible, setBackgroundTerminalVisible] = useState<Record<string, boolean>>({});
+  const [backgroundTerminalIds, setBackgroundTerminalIds] = useState<BackgroundTerminalMap>({});
+  const [visibleSessionIds, setVisibleSessionIds] = useState<Record<string, string>>({});
   const [paneCwds, setPaneCwds] = useState<Record<string, string | undefined>>({});
+  const [paneStackFlipNonce, setPaneStackFlipNonce] = useState<Record<string, number>>({});
   const [visiblePaneIds, setVisiblePaneIds] = useState<string[]>([FIRST_ID]);
   const [stripWidth, setStripWidth] = useState(0);
   const [avatarStripWidth, setAvatarStripWidth] = useState(0);
@@ -590,8 +620,8 @@ function App() {
   const paneStatusRef = useRef<Record<string, PaneRuntimeStatus>>({ [FIRST_ID]: "booting" });
   const avatarStatesRef = useRef<Record<string, AvatarVisualState>>({ [FIRST_ID]: "idle" });
   const paneIdsRef = useRef<string[]>([FIRST_ID]);
-  const backgroundTerminalIdsRef = useRef<Record<string, string>>({});
-  const backgroundTerminalVisibleRef = useRef<Record<string, boolean>>({});
+  const backgroundTerminalIdsRef = useRef<BackgroundTerminalMap>({});
+  const visibleSessionIdsRef = useRef<Record<string, string>>({});
   const paneCwdsRef = useRef<Record<string, string | undefined>>({});
   const nextPaneOrdinalRef = useRef(2);
   const launchConfigRef = useRef<LaunchConfig>({});
@@ -622,7 +652,7 @@ function App() {
   activePaneRef.current = activePane;
   paneIdsRef.current = paneIds;
   backgroundTerminalIdsRef.current = backgroundTerminalIds;
-  backgroundTerminalVisibleRef.current = backgroundTerminalVisible;
+  visibleSessionIdsRef.current = visibleSessionIds;
   paneCwdsRef.current = paneCwds;
   defaultPaneWidthRef.current = defaultPaneWidth;
 
@@ -632,35 +662,33 @@ function App() {
   );
   const activeSessionId = useMemo(
     () =>
-      frontSessionIdForPane(
+      visibleSessionIdForPane(
         activePane,
         backgroundTerminalIds[activePane],
-        backgroundTerminalVisible[activePane],
+        visibleSessionIds[activePane],
       ),
-    [activePane, backgroundTerminalIds, backgroundTerminalVisible],
+    [activePane, backgroundTerminalIds, visibleSessionIds],
   );
   const allSessionIds = useMemo(() => {
     const sessionIds = [...paneIds];
     for (const paneId of paneIds) {
-      const backgroundId = backgroundTerminalIds[paneId];
-      if (backgroundId) {
-        sessionIds.push(backgroundId);
-      }
+      sessionIds.push(...(backgroundTerminalIds[paneId] ?? []));
     }
     return sessionIds;
   }, [backgroundTerminalIds, paneIds]);
   const renderableSessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const paneId of livePaneIds) {
-      const backgroundId = backgroundTerminalIds[paneId];
-      ids.add(frontSessionIdForPane(paneId, backgroundId, backgroundTerminalVisible[paneId]));
-      if (paneId === activePane && backgroundId) {
-        ids.add(paneId);
-        ids.add(backgroundId);
+      const paneBackgroundIds = backgroundTerminalIds[paneId];
+      ids.add(visibleSessionIdForPane(paneId, paneBackgroundIds, visibleSessionIds[paneId]));
+      if (paneId === activePane) {
+        for (const id of paneSessionIds(paneId, paneBackgroundIds)) {
+          ids.add(id);
+        }
       }
     }
     return [...ids];
-  }, [activePane, backgroundTerminalIds, backgroundTerminalVisible, livePaneIds]);
+  }, [activePane, backgroundTerminalIds, livePaneIds, visibleSessionIds]);
   const livePaneIdSet = useMemo(() => new Set(livePaneIds), [livePaneIds]);
   const renderableSessionIdSet = useMemo(() => new Set(renderableSessionIds), [renderableSessionIds]);
   renderableSessionIdsRef.current = renderableSessionIds;
@@ -851,7 +879,7 @@ function App() {
     });
     setPaneAvatarIds(assignUniqueAvatars(ids));
     setBackgroundTerminalIds({});
-    setBackgroundTerminalVisible({});
+    setVisibleSessionIds({});
     setPaneCwds({});
     framesRef.current = {};
     frameQueuesRef.current = {};
@@ -898,11 +926,20 @@ function App() {
         return assignPaneAvatars(ids, AVATAR_IDS, prev);
       });
       setBackgroundTerminalIds(layout.backgroundTerminalIds);
-      setBackgroundTerminalVisible((prev) => {
-        const next: Record<string, boolean> = {};
+      setVisibleSessionIds((prev) => {
+        const next: Record<string, string> = {};
         for (const id of ids) {
-          if (!layout.backgroundTerminalIds[id]) continue;
-          next[id] = prev[id] ?? layout.backgroundTerminalVisible[id] ?? false;
+          const validSessionIds = new Set(paneSessionIds(id, layout.backgroundTerminalIds[id]));
+          const previousVisibleSessionId = prev[id];
+          const recoveredVisibleSessionId = layout.visibleSessionIds[id];
+          const visibleSessionId = previousVisibleSessionId && validSessionIds.has(previousVisibleSessionId)
+            ? previousVisibleSessionId
+            : recoveredVisibleSessionId && validSessionIds.has(recoveredVisibleSessionId)
+              ? recoveredVisibleSessionId
+              : undefined;
+          if (visibleSessionId && visibleSessionId !== id) {
+            next[id] = visibleSessionId;
+          }
         }
         return next;
       });
@@ -962,9 +999,7 @@ function App() {
 
     const sessionIds = [
       ...ids,
-      ...ids
-        .map((paneId) => backgroundTerminalIdsRef.current[paneId])
-        .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ...ids.flatMap((paneId) => backgroundTerminalIdsRef.current[paneId] ?? []),
     ];
 
     createdIdsRef.current.clear();
@@ -986,14 +1021,14 @@ function App() {
       createTerminal(id, cwd ? { cwd } : undefined);
     });
     ids.forEach((paneId) => {
-      const backgroundId = backgroundTerminalIdsRef.current[paneId];
-      if (!backgroundId) return;
-      const cwd =
-        paneCwdsRef.current[backgroundId] ??
-        paneCwdsRef.current[paneId] ??
-        framesRef.current[backgroundId]?.cwd ??
-        framesRef.current[paneId]?.cwd;
-      createTerminal(backgroundId, cwd ? { cwd } : undefined);
+      for (const backgroundId of backgroundTerminalIdsRef.current[paneId] ?? []) {
+        const cwd =
+          paneCwdsRef.current[backgroundId] ??
+          paneCwdsRef.current[paneId] ??
+          framesRef.current[backgroundId]?.cwd ??
+          framesRef.current[paneId]?.cwd;
+        createTerminal(backgroundId, cwd ? { cwd } : undefined);
+      }
     });
     setStatus("Restoring terminals...");
   }, [createTerminal, ensureBootstrapTerminals]);
@@ -1051,19 +1086,39 @@ function App() {
     createTerminal(id, cwd ? { cwd } : undefined);
   }, [createTerminal, defaultPaneWidth, paneCwds, setActivePaneCentered]);
 
-  const ensureBackgroundTerminalForPane = useCallback(
-    (paneId: string) => {
-      const existingBackgroundId = backgroundTerminalIdsRef.current[paneId];
-      if (existingBackgroundId) return existingBackgroundId;
+  const triggerPaneStackFlip = useCallback((paneId: string) => {
+    setPaneStackFlipNonce((prev) => ({
+      ...prev,
+      [paneId]: (prev[paneId] ?? 0) + 1,
+    }));
+  }, []);
 
-      const backgroundId = backgroundTerminalIdForPane(paneId);
+  const createBackgroundTerminalForPane = useCallback(
+    (paneId: string, { show = true }: { show?: boolean } = {}) => {
+      const existingBackgroundIds = backgroundTerminalIdsRef.current[paneId] ?? [];
+      const backgroundId = backgroundTerminalIdForPane(paneId, nextBackgroundTerminalOrdinal(existingBackgroundIds));
       paneStatusRef.current = { ...paneStatusRef.current, [backgroundId]: "booting" };
       avatarStatesRef.current = { ...avatarStatesRef.current, [backgroundId]: "idle" };
       paneRuntimeStore.patchPane(backgroundId, { status: "booting", avatarState: "idle", queuedFrames: [] });
-      setBackgroundTerminalIds((prev) => ({ ...prev, [paneId]: backgroundId }));
+      setBackgroundTerminalIds((prev) => ({
+        ...prev,
+        [paneId]: sortBackgroundTerminalIds([...(prev[paneId] ?? []), backgroundId]),
+      }));
+      if (show) {
+        setVisibleSessionIds((prev) => ({ ...prev, [paneId]: backgroundId }));
+      }
 
       const launch: PaneLaunchConfig = {};
-      const cwd = paneCwds[paneId] ?? framesRef.current[paneId]?.cwd;
+      const sourceSessionId = visibleSessionIdForPane(
+        paneId,
+        existingBackgroundIds,
+        visibleSessionIdsRef.current[paneId],
+      );
+      const cwd =
+        paneCwds[sourceSessionId] ??
+        framesRef.current[sourceSessionId]?.cwd ??
+        paneCwds[paneId] ??
+        framesRef.current[paneId]?.cwd;
       if (cwd) {
         launch.cwd = cwd;
       }
@@ -1073,46 +1128,73 @@ function App() {
     [createTerminal, paneCwds],
   );
 
-  const toggleBackgroundTerminalForPane = useCallback(
+  const cyclePaneTerminalForPane = useCallback(
     (paneId: string) => {
       if (!paneId) return;
       const paneIndex = paneIdsRef.current.indexOf(paneId);
       const paneLabel = paneTitle(paneIndex >= 0 ? paneIndex : 0);
 
-      const existingBackgroundId = backgroundTerminalIdsRef.current[paneId];
-      if (!existingBackgroundId) {
-        ensureBackgroundTerminalForPane(paneId);
-        setBackgroundTerminalVisible((prev) => ({ ...prev, [paneId]: true }));
+      const backgroundIds = backgroundTerminalIdsRef.current[paneId] ?? [];
+      if (backgroundIds.length === 0) {
+        createBackgroundTerminalForPane(paneId);
+        triggerPaneStackFlip(paneId);
         setActivePaneCentered(paneId);
         setStatus(`${paneLabel} background terminal ready`);
         return;
       }
 
-      const nextVisible = !backgroundTerminalVisibleRef.current[paneId];
-      setBackgroundTerminalVisible((prev) => ({ ...prev, [paneId]: nextVisible }));
+      const sessionIds = paneSessionIds(paneId, backgroundIds);
+      const currentSessionId = visibleSessionIdForPane(paneId, backgroundIds, visibleSessionIdsRef.current[paneId]);
+      const currentIndex = Math.max(0, sessionIds.indexOf(currentSessionId));
+      const nextSessionId = sessionIds[(currentIndex + 1) % sessionIds.length] ?? paneId;
+      setVisibleSessionIds((prev) => {
+        if (nextSessionId === paneId) {
+          const next = { ...prev };
+          delete next[paneId];
+          return next;
+        }
+        return { ...prev, [paneId]: nextSessionId };
+      });
+      triggerPaneStackFlip(paneId);
       setActivePaneCentered(paneId);
-      setStatus(`${paneLabel} ${nextVisible ? "background terminal opened" : "main terminal restored"}`);
+      setStatus(
+        `${paneLabel} ${nextSessionId === paneId ? "main terminal restored" : "background terminal opened"}`,
+      );
     },
-    [ensureBackgroundTerminalForPane, setActivePaneCentered],
+    [createBackgroundTerminalForPane, setActivePaneCentered, triggerPaneStackFlip],
+  );
+
+  const addBackgroundTerminalForPane = useCallback(
+    (paneId: string) => {
+      if (!paneId) return;
+      const paneIndex = paneIdsRef.current.indexOf(paneId);
+      const paneLabel = paneTitle(paneIndex >= 0 ? paneIndex : 0);
+      const backgroundId = createBackgroundTerminalForPane(paneId);
+      const backgroundCount = (backgroundTerminalIdsRef.current[paneId]?.length ?? 0) + 1;
+      triggerPaneStackFlip(paneId);
+      setActivePaneCentered(paneId);
+      setStatus(`${paneLabel} background terminal ${backgroundCount} opened (${backgroundId})`);
+    },
+    [createBackgroundTerminalForPane, setActivePaneCentered, triggerPaneStackFlip],
   );
 
   const toggleBackgroundTerminal = useCallback(() => {
     const paneId = activePaneRef.current;
     if (!paneId) return;
-    toggleBackgroundTerminalForPane(paneId);
-  }, [toggleBackgroundTerminalForPane]);
+    cyclePaneTerminalForPane(paneId);
+  }, [cyclePaneTerminalForPane]);
+
+  const addBackgroundTerminal = useCallback(() => {
+    const paneId = activePaneRef.current;
+    if (!paneId) return;
+    addBackgroundTerminalForPane(paneId);
+  }, [addBackgroundTerminalForPane]);
 
   const bringRearTerminalToFront = useCallback(
     (paneId: string) => {
-      if (!backgroundTerminalIdsRef.current[paneId]) return;
-      const paneIndex = paneIdsRef.current.indexOf(paneId);
-      const paneLabel = paneTitle(paneIndex >= 0 ? paneIndex : 0);
-      const nextVisible = !backgroundTerminalVisibleRef.current[paneId];
-      setBackgroundTerminalVisible((prev) => ({ ...prev, [paneId]: nextVisible }));
-      setActivePaneCentered(paneId);
-      setStatus(`${paneLabel} ${nextVisible ? "background terminal opened" : "main terminal restored"}`);
+      cyclePaneTerminalForPane(paneId);
     },
-    [setActivePaneCentered],
+    [cyclePaneTerminalForPane],
   );
 
   const moveActivePane = useCallback(
@@ -1162,8 +1244,7 @@ function App() {
   const closeActivePane = useCallback(() => {
     const paneId = activePaneRef.current;
     if (!paneId) return;
-    const backgroundId = backgroundTerminalIdsRef.current[paneId];
-    if (backgroundId) {
+    for (const backgroundId of backgroundTerminalIdsRef.current[paneId] ?? []) {
       rpc.send({ type: "kill", id: backgroundId });
     }
     rpc.send({ type: "kill", id: paneId });
@@ -1181,6 +1262,7 @@ function App() {
       shortcut:
         | "new-pane"
         | "toggle-background"
+        | "new-background"
         | "focus-left"
         | "focus-right"
         | "move-left"
@@ -1194,6 +1276,10 @@ function App() {
       }
       if (shortcut === "toggle-background") {
         toggleBackgroundTerminal();
+        return;
+      }
+      if (shortcut === "new-background") {
+        addBackgroundTerminal();
         return;
       }
       if (shortcut === "move-left" || shortcut === "move-right") {
@@ -1210,7 +1296,15 @@ function App() {
       }
       moveActivePane(shortcut === "focus-right" ? "right" : "left");
     },
-    [addTerminalPane, closeActivePane, moveActivePane, openSettings, reorderActivePane, toggleBackgroundTerminal],
+    [
+      addBackgroundTerminal,
+      addTerminalPane,
+      closeActivePane,
+      moveActivePane,
+      openSettings,
+      reorderActivePane,
+      toggleBackgroundTerminal,
+    ],
   );
 
   const handlePaneUserInput = useCallback((id: string) => {
@@ -1351,9 +1445,9 @@ function App() {
       const owningPaneId =
         paneIdsRef.current.includes(id)
           ? id
-          : Object.entries(backgroundTerminalIdsRef.current).find(([, backgroundId]) => backgroundId === id)?.[0];
+          : Object.entries(backgroundTerminalIdsRef.current).find(([, backgroundIds]) => backgroundIds.includes(id))?.[0];
 
-      if (owningPaneId && backgroundTerminalIdsRef.current[owningPaneId] === id) {
+      if (owningPaneId && backgroundTerminalIdsRef.current[owningPaneId]?.includes(id)) {
         setStatus(`${id} exited (${code})`);
         delete pendingFrameUpdatesRef.current[id];
         delete avatarActivityRef.current[id];
@@ -1362,13 +1456,29 @@ function App() {
         delete avatarStatesRef.current[id];
         delete paneStatusRef.current[id];
         setBackgroundTerminalIds((prev) => {
+          const nextBackgroundIds = (prev[owningPaneId] ?? []).filter((backgroundId) => backgroundId !== id);
           const next = { ...prev };
-          delete next[owningPaneId];
+          if (nextBackgroundIds.length > 0) {
+            next[owningPaneId] = nextBackgroundIds;
+          } else {
+            delete next[owningPaneId];
+          }
           return next;
         });
-        setBackgroundTerminalVisible((prev) => {
+        setVisibleSessionIds((prev) => {
           const next = { ...prev };
-          delete next[owningPaneId];
+          if (next[owningPaneId] === id) {
+            const remainingBackgroundIds = (backgroundTerminalIdsRef.current[owningPaneId] ?? []).filter(
+              (backgroundId) => backgroundId !== id,
+            );
+            if (createdIdsRef.current.has(owningPaneId)) {
+              delete next[owningPaneId];
+            } else if (remainingBackgroundIds[0]) {
+              next[owningPaneId] = remainingBackgroundIds[0];
+            } else {
+              delete next[owningPaneId];
+            }
+          }
           return next;
         });
         setPaneCwds((prev) => {
@@ -1387,15 +1497,17 @@ function App() {
       delete frameQueuesRef.current[id];
       delete avatarStatesRef.current[id];
       delete paneStatusRef.current[id];
-      const backgroundId = backgroundTerminalIdsRef.current[id];
-      if (backgroundId) {
-        delete pendingFrameUpdatesRef.current[backgroundId];
-        delete avatarActivityRef.current[backgroundId];
-        delete framesRef.current[backgroundId];
-        delete frameQueuesRef.current[backgroundId];
-        delete avatarStatesRef.current[backgroundId];
-        delete paneStatusRef.current[backgroundId];
-        rpc.send({ type: "kill", id: backgroundId });
+      const backgroundIds = backgroundTerminalIdsRef.current[id] ?? [];
+      if (backgroundIds.length > 0) {
+        for (const backgroundId of backgroundIds) {
+          delete pendingFrameUpdatesRef.current[backgroundId];
+          delete avatarActivityRef.current[backgroundId];
+          delete framesRef.current[backgroundId];
+          delete frameQueuesRef.current[backgroundId];
+          delete avatarStatesRef.current[backgroundId];
+          delete paneStatusRef.current[backgroundId];
+          rpc.send({ type: "kill", id: backgroundId });
+        }
       }
       setPaneIds((prev) => {
         const closedIndex = prev.indexOf(id);
@@ -1423,7 +1535,7 @@ function App() {
         delete next[id];
         return next;
       });
-      setBackgroundTerminalVisible((prev) => {
+      setVisibleSessionIds((prev) => {
         if (!(id in prev)) return prev;
         const next = { ...prev };
         delete next[id];
@@ -1432,13 +1544,13 @@ function App() {
       setPaneCwds((prev) => {
         const next = { ...prev };
         delete next[id];
-        if (backgroundId) {
+        for (const backgroundId of backgroundIds) {
           delete next[backgroundId];
         }
         return next;
       });
       paneRuntimeStore.removePane(id);
-      if (backgroundId) {
+      for (const backgroundId of backgroundIds) {
         paneRuntimeStore.removePane(backgroundId);
       }
     });
@@ -1520,6 +1632,11 @@ function App() {
         toggleBackgroundTerminal();
         return;
       }
+      if (doesEventMatchShortcut(event, shortcuts.addBackgroundTerminal)) {
+        event.preventDefault();
+        addBackgroundTerminal();
+        return;
+      }
       if (doesEventMatchShortcut(event, shortcuts.focusPrevPane)) {
         event.preventDefault();
         moveActivePane("left");
@@ -1548,6 +1665,7 @@ function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
+    addBackgroundTerminal,
     addTerminalPane,
     closeActivePane,
     moveActivePane,
@@ -1811,8 +1929,12 @@ function App() {
               <kbd>{shortcuts.addPane}</kbd>
             </span>
             <span className="shortcut-pill">
-              <span className="shortcut-label">Background</span>
+              <span className="shortcut-label">Cycle</span>
               <kbd>{shortcuts.toggleBackgroundTerminal}</kbd>
+            </span>
+            <span className="shortcut-pill">
+              <span className="shortcut-label">New Background</span>
+              <kbd>{shortcuts.addBackgroundTerminal}</kbd>
             </span>
             <span className="shortcut-pill">
               <span className="shortcut-label">Focus</span>
@@ -1885,8 +2007,16 @@ function App() {
         {paneIds.map((id, index) => (
           <div
             key={id}
-            className={`pane-slot ${backgroundTerminalIds[id] ? "pane-slot-has-background" : ""} ${
-              backgroundTerminalVisible[id] ? "pane-slot-background-visible" : ""
+            className={`pane-slot ${(backgroundTerminalIds[id]?.length ?? 0) > 0 ? "pane-slot-has-background" : ""} ${
+              visibleSessionIdForPane(id, backgroundTerminalIds[id], visibleSessionIds[id]) !== id
+                ? "pane-slot-background-visible"
+                : ""
+            } ${
+              paneStackFlipNonce[id]
+                ? paneStackFlipNonce[id] % 2 === 0
+                  ? "pane-slot-stack-flip-b"
+                  : "pane-slot-stack-flip-a"
+                : ""
             }`}
             ref={(node) => {
               paneSlotsRef.current[id] = node;
@@ -1894,15 +2024,20 @@ function App() {
             style={{ width: `${paneWidthForId(id)}px` }}
           >
             {(() => {
-              const backgroundId = backgroundTerminalIds[id];
-              const backgroundVisible = Boolean(backgroundId && backgroundTerminalVisible[id]);
-              if (!backgroundId) {
+              const backgroundIds = backgroundTerminalIds[id] ?? [];
+              const backgroundCount = backgroundIds.length;
+              const visibleSessionId = visibleSessionIdForPane(id, backgroundIds, visibleSessionIds[id]);
+              const backgroundVisible = visibleSessionId !== id;
+              const backgroundLayerSessionId = backgroundVisible ? visibleSessionId : (backgroundIds[0] ?? id);
+              const visibleBackgroundIndex = backgroundVisible ? Math.max(0, backgroundIds.indexOf(visibleSessionId)) + 1 : 0;
+
+              if (backgroundCount === 0) {
                 return (
                   <>
                     <button
                       type="button"
                       className="pane-stack-badge pane-stack-badge-create"
-                      onClick={() => toggleBackgroundTerminalForPane(id)}
+                      onClick={() => cyclePaneTerminalForPane(id)}
                       aria-label={`Create background terminal for ${paneTitle(index)}`}
                       title={`Create background terminal (${shortcuts.toggleBackgroundTerminal})`}
                     >
@@ -1928,16 +2063,18 @@ function App() {
 
               return (
                 <div className="pane-stack-shell">
-                  <button
-                    type="button"
-                    className="pane-stack-badge"
-                    onClick={() => bringRearTerminalToFront(id)}
-                    aria-label={`${backgroundVisible ? "Background terminal is in front" : "Main terminal is in front"} for ${paneTitle(index)}. Press to switch.`}
-                    title={`${backgroundVisible ? "Background terminal" : "Main terminal"} (${shortcuts.toggleBackgroundTerminal} to switch)`}
-                  >
-                    <span>{backgroundVisible ? "Background" : "Main"}</span>
-                    <kbd>{shortcuts.toggleBackgroundTerminal}</kbd>
-                  </button>
+                  <div className="pane-stack-controls">
+                    <button
+                      type="button"
+                      className="pane-stack-badge"
+                      onClick={() => bringRearTerminalToFront(id)}
+                      aria-label={`${backgroundVisible ? "Background terminal is in front" : "Main terminal is in front"} for ${paneTitle(index)}. Press to cycle.`}
+                      title={`${backgroundVisible ? "Background terminal" : "Main terminal"} (${shortcuts.toggleBackgroundTerminal} to cycle)`}
+                    >
+                      <span>{backgroundVisible ? `Background ${visibleBackgroundIndex}` : "Main"}</span>
+                      <kbd>{shortcuts.toggleBackgroundTerminal}</kbd>
+                    </button>
+                  </div>
                   <div className="pane-stack">
                     <div className="pane-stack-shadow pane-stack-shadow-rear" aria-hidden />
                     <div className="pane-stack-shadow pane-stack-shadow-front" aria-hidden />
@@ -1959,10 +2096,10 @@ function App() {
                     <div className="pane-stack-layer pane-stack-layer-background" aria-hidden={!backgroundVisible}>
                       <PaneSurfaceContainer
                         paneId={id}
-                        sessionId={backgroundId}
+                        sessionId={backgroundLayerSessionId}
                         index={index}
-                        live={renderableSessionIdSet.has(backgroundId)}
-                        active={activeSessionId === backgroundId}
+                        live={renderableSessionIdSet.has(backgroundLayerSessionId)}
+                        active={activeSessionId === backgroundLayerSessionId}
                         accentStyle={paneAccentStyles[id]}
                         shortcuts={shortcuts}
                         onActivate={setActivePaneCentered}

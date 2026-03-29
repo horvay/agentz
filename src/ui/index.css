@@ -462,11 +462,19 @@ h1 {
   isolation: isolate;
 }
 
-.pane-stack-badge {
+.pane-stack-controls {
   position: absolute;
   top: 0;
   right: 22px;
   z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateY(-48%);
+}
+
+.pane-stack-badge {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -482,7 +490,6 @@ h1 {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
-  transform: translateY(-48%);
   transition:
     transform 180ms ease,
     border-color 180ms ease,
@@ -497,7 +504,7 @@ h1 {
     0 12px 28px rgba(0, 0, 0, 0.34),
     0 0 0 1px rgba(107, 207, 248, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.07);
-  transform: translateY(-52%);
+  transform: translateY(-2px);
 }
 
 .pane-stack-badge:focus-visible {
@@ -515,6 +522,10 @@ h1 {
 }
 
 .pane-stack-badge-create {
+  position: absolute;
+  top: 0;
+  right: 22px;
+  z-index: 6;
   opacity: 0;
   pointer-events: none;
   transform: translateY(-38%);
@@ -620,27 +631,47 @@ h1 {
     0 0 0 1px rgba(115, 193, 227, 0.12);
 }
 
-.pane-slot-has-background .pane-stack-layer-background .pane-shell,
-.pane-slot-has-background .pane-stack-layer-background .pane-preview-shell {
-  animation: pane-background-stow 340ms cubic-bezier(0.24, 1, 0.32, 1);
+.pane-slot-background-visible.pane-slot-stack-flip-a .pane-stack-layer-background .pane-shell,
+.pane-slot-background-visible.pane-slot-stack-flip-a .pane-stack-layer-background .pane-preview-shell {
+  animation: pane-background-reveal-a 340ms cubic-bezier(0.24, 1, 0.32, 1);
 }
 
-.pane-slot-background-visible .pane-stack-layer-background .pane-shell,
-.pane-slot-background-visible .pane-stack-layer-background .pane-preview-shell {
-  animation: pane-background-reveal 340ms cubic-bezier(0.24, 1, 0.32, 1);
+.pane-slot-background-visible.pane-slot-stack-flip-a .pane-stack-layer-main .pane-shell,
+.pane-slot-background-visible.pane-slot-stack-flip-a .pane-stack-layer-main .pane-preview-shell {
+  animation: pane-main-stow-a 340ms cubic-bezier(0.24, 1, 0.32, 1);
 }
 
-.pane-slot-background-visible .pane-stack-layer-main .pane-shell,
-.pane-slot-background-visible .pane-stack-layer-main .pane-preview-shell {
-  animation: pane-main-stow 340ms cubic-bezier(0.24, 1, 0.32, 1);
+.pane-slot-background-visible.pane-slot-stack-flip-b .pane-stack-layer-background .pane-shell,
+.pane-slot-background-visible.pane-slot-stack-flip-b .pane-stack-layer-background .pane-preview-shell {
+  animation: pane-background-reveal-b 340ms cubic-bezier(0.24, 1, 0.32, 1);
 }
 
-.pane-slot-has-background:not(.pane-slot-background-visible) .pane-stack-layer-main .pane-shell,
-.pane-slot-has-background:not(.pane-slot-background-visible) .pane-stack-layer-main .pane-preview-shell {
-  animation: pane-main-return 340ms cubic-bezier(0.24, 1, 0.32, 1);
+.pane-slot-background-visible.pane-slot-stack-flip-b .pane-stack-layer-main .pane-shell,
+.pane-slot-background-visible.pane-slot-stack-flip-b .pane-stack-layer-main .pane-preview-shell {
+  animation: pane-main-stow-b 340ms cubic-bezier(0.24, 1, 0.32, 1);
 }
 
-@keyframes pane-background-reveal {
+.pane-slot-has-background:not(.pane-slot-background-visible).pane-slot-stack-flip-a .pane-stack-layer-background .pane-shell,
+.pane-slot-has-background:not(.pane-slot-background-visible).pane-slot-stack-flip-a .pane-stack-layer-background .pane-preview-shell {
+  animation: pane-background-stow-a 340ms cubic-bezier(0.24, 1, 0.32, 1);
+}
+
+.pane-slot-has-background:not(.pane-slot-background-visible).pane-slot-stack-flip-a .pane-stack-layer-main .pane-shell,
+.pane-slot-has-background:not(.pane-slot-background-visible).pane-slot-stack-flip-a .pane-stack-layer-main .pane-preview-shell {
+  animation: pane-main-return-a 340ms cubic-bezier(0.24, 1, 0.32, 1);
+}
+
+.pane-slot-has-background:not(.pane-slot-background-visible).pane-slot-stack-flip-b .pane-stack-layer-background .pane-shell,
+.pane-slot-has-background:not(.pane-slot-background-visible).pane-slot-stack-flip-b .pane-stack-layer-background .pane-preview-shell {
+  animation: pane-background-stow-b 340ms cubic-bezier(0.24, 1, 0.32, 1);
+}
+
+.pane-slot-has-background:not(.pane-slot-background-visible).pane-slot-stack-flip-b .pane-stack-layer-main .pane-shell,
+.pane-slot-has-background:not(.pane-slot-background-visible).pane-slot-stack-flip-b .pane-stack-layer-main .pane-preview-shell {
+  animation: pane-main-return-b 340ms cubic-bezier(0.24, 1, 0.32, 1);
+}
+
+@keyframes pane-background-reveal-a {
   0% {
     opacity: 0.78;
     transform: translate3d(22px, 18px, 0) rotate(-1.5deg) scale(0.985);
@@ -651,7 +682,18 @@ h1 {
   }
 }
 
-@keyframes pane-background-stow {
+@keyframes pane-background-reveal-b {
+  0% {
+    opacity: 0.78;
+    transform: translate3d(22px, 18px, 0) rotate(-1.5deg) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+}
+
+@keyframes pane-background-stow-a {
   0% {
     opacity: 1;
     transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
@@ -662,7 +704,18 @@ h1 {
   }
 }
 
-@keyframes pane-main-stow {
+@keyframes pane-background-stow-b {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+  100% {
+    opacity: 0.78;
+    transform: translate3d(22px, 18px, 0) rotate(-1.5deg) scale(0.985);
+  }
+}
+
+@keyframes pane-main-stow-a {
   0% {
     opacity: 1;
     transform: translate3d(0, 0, 0) scale(1);
@@ -673,7 +726,29 @@ h1 {
   }
 }
 
-@keyframes pane-main-return {
+@keyframes pane-main-stow-b {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    opacity: 0.72;
+    transform: translate3d(22px, 18px, 0) rotate(-1.5deg) scale(0.985);
+  }
+}
+
+@keyframes pane-main-return-a {
+  0% {
+    opacity: 0.72;
+    transform: translate3d(22px, 18px, 0) rotate(-1.5deg) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes pane-main-return-b {
   0% {
     opacity: 0.72;
     transform: translate3d(22px, 18px, 0) rotate(-1.5deg) scale(0.985);

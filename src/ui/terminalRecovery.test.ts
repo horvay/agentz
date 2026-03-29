@@ -6,10 +6,10 @@ describe("recoverTerminalLayout", () => {
     expect(recoverTerminalLayout(["term-2-bg", "term-10", "term-2", "term-1", "term-10-bg"])).toEqual({
       paneIds: ["term-1", "term-2", "term-10"],
       backgroundTerminalIds: {
-        "term-2": "term-2-bg",
-        "term-10": "term-10-bg",
+        "term-2": ["term-2-bg"],
+        "term-10": ["term-10-bg"],
       },
-      backgroundTerminalVisible: {},
+      visibleSessionIds: {},
     });
   });
 
@@ -17,11 +17,21 @@ describe("recoverTerminalLayout", () => {
     expect(recoverTerminalLayout(["term-3-bg"])).toEqual({
       paneIds: ["term-3"],
       backgroundTerminalIds: {
+        "term-3": ["term-3-bg"],
+      },
+      visibleSessionIds: {
         "term-3": "term-3-bg",
       },
-      backgroundTerminalVisible: {
-        "term-3": true,
+    });
+  });
+
+  test("sorts multiple recovered background terminals in stack order", () => {
+    expect(recoverTerminalLayout(["term-2-bg-3", "term-2-bg", "term-2-bg-2", "term-2"])).toEqual({
+      paneIds: ["term-2"],
+      backgroundTerminalIds: {
+        "term-2": ["term-2-bg", "term-2-bg-2", "term-2-bg-3"],
       },
+      visibleSessionIds: {},
     });
   });
 });

@@ -8,6 +8,7 @@ export const DEFAULT_VISIBLE_LIVE_PANES = 3;
 export interface DashboardShortcuts {
   addPane: string;
   toggleBackgroundTerminal: string;
+  addBackgroundTerminal: string;
   focusPrevPane: string;
   focusNextPane: string;
   movePaneLeft: string;
@@ -28,6 +29,7 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   shortcuts: {
     addPane: "Ctrl+Shift+N",
     toggleBackgroundTerminal: "Ctrl+B",
+    addBackgroundTerminal: "Ctrl+Shift+B",
     focusPrevPane: "Ctrl+Shift+ArrowLeft",
     focusNextPane: "Ctrl+Shift+ArrowRight",
     movePaneLeft: "Ctrl+Alt+Shift+ArrowLeft",
@@ -113,6 +115,7 @@ export function cloneDashboardConfig(config: DashboardConfig): DashboardConfig {
     shortcuts: {
       addPane: config.shortcuts.addPane,
       toggleBackgroundTerminal: config.shortcuts.toggleBackgroundTerminal,
+      addBackgroundTerminal: config.shortcuts.addBackgroundTerminal,
       focusPrevPane: config.shortcuts.focusPrevPane,
       focusNextPane: config.shortcuts.focusNextPane,
       movePaneLeft: config.shortcuts.movePaneLeft,
@@ -156,6 +159,10 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
         typeof candidate.shortcuts.toggleBackgroundTerminal === "string"
           ? normalizeShortcutCombo(candidate.shortcuts.toggleBackgroundTerminal)
           : null;
+      const normalizedAddBackgroundTerminal =
+        typeof candidate.shortcuts.addBackgroundTerminal === "string"
+          ? normalizeShortcutCombo(candidate.shortcuts.addBackgroundTerminal)
+          : null;
       const normalizedFocusPrev =
         typeof candidate.shortcuts.focusPrevPane === "string"
           ? normalizeShortcutCombo(candidate.shortcuts.focusPrevPane)
@@ -185,6 +192,8 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
         addPane: normalizedAddPane ?? defaults.shortcuts.addPane,
         toggleBackgroundTerminal:
           normalizedToggleBackgroundTerminal ?? defaults.shortcuts.toggleBackgroundTerminal,
+        addBackgroundTerminal:
+          normalizedAddBackgroundTerminal ?? defaults.shortcuts.addBackgroundTerminal,
         focusPrevPane: normalizedFocusPrev ?? defaults.shortcuts.focusPrevPane,
         focusNextPane: normalizedFocusNext ?? defaults.shortcuts.focusNextPane,
         movePaneLeft: normalizedMovePrev ?? defaults.shortcuts.movePaneLeft,

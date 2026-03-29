@@ -67,6 +67,7 @@ interface Props {
     shortcut:
       | "new-pane"
       | "toggle-background"
+      | "new-background"
       | "focus-left"
       | "focus-right"
       | "move-left"
@@ -427,6 +428,11 @@ export function TerminalPane({
       if (doesEventMatchShortcut(event, shortcutsRef.current.toggleBackgroundTerminal)) {
         event.preventDefault();
         shortcutHandlerRef.current("toggle-background");
+        return false;
+      }
+      if (doesEventMatchShortcut(event, shortcutsRef.current.addBackgroundTerminal)) {
+        event.preventDefault();
+        shortcutHandlerRef.current("new-background");
         return false;
       }
       if (doesEventMatchShortcut(event, shortcutsRef.current.focusPrevPane)) {
