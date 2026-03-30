@@ -274,7 +274,8 @@ export function TerminalPane({
     const payload = framePayload(frame);
     enhancedEnterModeRef.current = updateEnhancedEnterMode(enhancedEnterModeRef.current, payload);
     const nextModeStateKey = terminalModeStateKey(frame);
-    const shouldSyncModes = frame.screenMode === "full" || lastModeStateKeyRef.current !== nextModeStateKey;
+    const shouldSyncModes =
+      lastModeStateKeyRef.current !== nextModeStateKey || (frame.screenMode === "full" && frame.altScreen !== true);
     const payloadWithModes = shouldSyncModes ? prependTerminalModePrefix(payload, frame) : payload;
     if (frame.screenMode === "full") {
       if (payloadWithModes.length === 0) {
