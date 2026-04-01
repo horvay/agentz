@@ -31,6 +31,7 @@ describe("terminal frame binary packet", () => {
       mouseFormat: "sgr",
       focusEvent: true,
       mouseAlternateScroll: false,
+      bracketedPasteMode: true,
       shellBusy: true,
       shellBusyAtMs: 123456,
     };

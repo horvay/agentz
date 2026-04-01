@@ -31,6 +31,7 @@ const FrameMessage = struct {
     mouse_format: []const u8,
     focus_event: bool,
     mouse_alternate_scroll: bool,
+    bracketed_paste_mode: bool,
 };
 
 const OwnedRows = std.ArrayList([]u8);
@@ -285,6 +286,7 @@ fn writeFrame(
             },
             .focus_event = term.modes.get(.focus_event),
             .mouse_alternate_scroll = term.modes.get(.mouse_alternate_scroll),
+            .bracketed_paste_mode = term.modes.get(.bracketed_paste),
         },
         .{},
         stdout_writer,

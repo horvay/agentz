@@ -30,6 +30,7 @@ export function terminalModeStateKey(frame: TerminalFrame): string {
     frame.mouseFormat ?? "x10",
     frame.focusEvent ? "1" : "0",
     frame.mouseAlternateScroll ? "1" : "0",
+    frame.bracketedPasteMode ? "1" : "0",
   ].join(":");
 }
 
@@ -39,6 +40,7 @@ export function buildTerminalModePrefix(frame: TerminalFrame): string {
     mouseFormatSequence(frame.mouseFormat ?? "x10"),
     privateMode(1004, frame.focusEvent === true),
     privateMode(1007, frame.mouseAlternateScroll === true),
+    privateMode(2004, frame.bracketedPasteMode === true),
   ].join("");
 }
 

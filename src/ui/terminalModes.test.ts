@@ -22,6 +22,7 @@ function frame(overrides: Partial<TerminalFrame> = {}): TerminalFrame {
     mouseFormat: "x10",
     focusEvent: false,
     mouseAlternateScroll: false,
+    bracketedPasteMode: false,
     ...overrides,
   };
 }
@@ -29,21 +30,30 @@ function frame(overrides: Partial<TerminalFrame> = {}): TerminalFrame {
 describe("terminalModeStateKey", () => {
   test("captures mouse and focus state", () => {
     expect(
-      terminalModeStateKey(frame({ mouseTrackingMode: "button", mouseFormat: "sgr", focusEvent: true })),
-    ).toBe("button:sgr:1:0");
+      terminalModeStateKey(
+        frame({ mouseTrackingMode: "button", mouseFormat: "sgr", focusEvent: true, bracketedPasteMode: true }),
+      ),
+    ).toBe("button:sgr:1:0:1");
   });
 });
 
 describe("buildTerminalModePrefix", () => {
-  test("enables sgr mouse tracking and alternate scroll", () => {
+  test("enables sgr mouse tracking, alternate scroll, and bracketed paste", () => {
     const prefix = buildTerminalModePrefix(
-      frame({ mouseTrackingMode: "button", mouseFormat: "sgr", focusEvent: true, mouseAlternateScroll: true }),
+      frame({
+        mouseTrackingMode: "button",
+        mouseFormat: "sgr",
+        focusEvent: true,
+        mouseAlternateScroll: true,
+        bracketedPasteMode: true,
+      }),
     );
 
     expect(prefix).toContain("\u001b[?1002h");
     expect(prefix).toContain("\u001b[?1006h");
     expect(prefix).toContain("\u001b[?1004h");
     expect(prefix).toContain("\u001b[?1007h");
+    expect(prefix).toContain("\u001b[?2004h");
   });
 });
 

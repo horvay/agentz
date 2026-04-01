@@ -33,6 +33,7 @@ import { doesEventMatchShortcut } from "./shortcuts";
 import { selectLivePaneIds } from "./livePaneSelection";
 import { recoverTerminalLayout } from "./terminalRecovery";
 import { assignPaneAvatars, pickDeterministicAvatar } from "./avatarAssignments";
+import { dispatchTerminalTextPaste } from "./terminalTextPaste";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
 
@@ -227,6 +228,7 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     mouseFormat: frame.mouseFormat,
     focusEvent: frame.focusEvent,
     mouseAlternateScroll: frame.mouseAlternateScroll,
+    bracketedPasteMode: frame.bracketedPasteMode,
   };
 }
 
@@ -269,6 +271,7 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     mouseFormat: frame.mouseFormat,
     focusEvent: frame.focusEvent,
     mouseAlternateScroll: frame.mouseAlternateScroll,
+    bracketedPasteMode: frame.bracketedPasteMode,
     shellBusy: frame.shellBusy,
   };
 }
@@ -300,15 +303,16 @@ function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalF
     renderPatchVt: next.renderPatchVt,
     renderPatchBytes: next.renderPatchBytes,
     altScreen: next.altScreen ?? existing.altScreen,
-    cursorVisible: next.cursorVisible,
-    cursorStyle: next.cursorStyle,
-    cursorBlink: next.cursorBlink,
-    cursorRow: next.cursorRow,
-    cursorCol: next.cursorCol,
-    mouseTrackingMode: next.mouseTrackingMode,
-    mouseFormat: next.mouseFormat,
-    focusEvent: next.focusEvent,
-    mouseAlternateScroll: next.mouseAlternateScroll,
+    cursorVisible: next.cursorVisible ?? existing.cursorVisible,
+    cursorStyle: next.cursorStyle ?? existing.cursorStyle,
+    cursorBlink: next.cursorBlink ?? existing.cursorBlink,
+    cursorRow: next.cursorRow ?? existing.cursorRow,
+    cursorCol: next.cursorCol ?? existing.cursorCol,
+    mouseTrackingMode: next.mouseTrackingMode ?? existing.mouseTrackingMode,
+    mouseFormat: next.mouseFormat ?? existing.mouseFormat,
+    focusEvent: next.focusEvent ?? existing.focusEvent,
+    mouseAlternateScroll: next.mouseAlternateScroll ?? existing.mouseAlternateScroll,
+    bracketedPasteMode: next.bracketedPasteMode ?? existing.bracketedPasteMode,
     shellBusy: next.shellBusy ?? existing.shellBusy,
     shellBusyAtMs: next.shellBusyAtMs ?? existing.shellBusyAtMs,
   };
@@ -507,6 +511,7 @@ interface ActiveTerminalPaneProps {
   ) => void;
   onFramesQueued: (id: string, lastSeq: number) => void;
   onUserInput: (id: string) => void;
+  onTextPasteRegister: (id: string, handler: ((text: string) => void) | null) => void;
 }
 
 const ActiveTerminalPane = memo(function ActiveTerminalPane(props: ActiveTerminalPaneProps) {
@@ -524,6 +529,7 @@ const ActiveTerminalPane = memo(function ActiveTerminalPane(props: ActiveTermina
       onShortcut={props.onShortcut}
       onFramesQueued={props.onFramesQueued}
       onUserInput={props.onUserInput}
+      onTextPasteRegister={props.onTextPasteRegister}
     />
   );
 });
@@ -553,6 +559,7 @@ interface PaneSurfaceContainerProps {
   ) => void;
   onFramesQueued: (id: string, lastSeq: number) => void;
   onUserInput: (id: string) => void;
+  onTextPasteRegister: (id: string, handler: ((text: string) => void) | null) => void;
 }
 
 const PaneSurfaceContainer = memo(function PaneSurfaceContainer(props: PaneSurfaceContainerProps) {
@@ -569,6 +576,7 @@ const PaneSurfaceContainer = memo(function PaneSurfaceContainer(props: PaneSurfa
         onFramesQueued={props.onFramesQueued}
         onShortcut={props.onShortcut}
         onUserInput={props.onUserInput}
+        onTextPasteRegister={props.onTextPasteRegister}
       />
     );
   }
@@ -640,6 +648,7 @@ function App() {
   const inputPriorityTimerRef = useRef<number | null>(null);
   const inputPriorityActiveRef = useRef(false);
   const paneFlowPausedRef = useRef<Record<string, boolean>>({});
+  const paneTextPasteHandlersRef = useRef<Record<string, (text: string) => void>>({});
   const bootstrappedRef = useRef(false);
   const hasLaunchConfigRef = useRef(false);
   const hasDashboardConfigRef = useRef(false);
@@ -1323,6 +1332,14 @@ function App() {
     }, ACTIVE_INPUT_FLOW_HOLD_MS);
   }, []);
 
+  const handlePaneTextPasteRegister = useCallback((id: string, handler: ((text: string) => void) | null) => {
+    if (handler) {
+      paneTextPasteHandlersRef.current[id] = handler;
+      return;
+    }
+    delete paneTextPasteHandlersRef.current[id];
+  }, []);
+
   const flushPendingFrames = useCallback(() => {
     pendingFrameFlushRafRef.current = null;
     const pending = pendingFrameUpdatesRef.current;
@@ -1711,8 +1728,14 @@ function App() {
       const id = activeSessionIdRef.current;
       if (!id) return;
       event.preventDefault();
-      handlePaneUserInput(id);
-      rpc.send({ type: "input", id, data: text, encoding: "utf8" });
+      dispatchTerminalTextPaste(
+        text,
+        paneTextPasteHandlersRef.current[id],
+        (rawText) => {
+          handlePaneUserInput(id);
+          rpc.send({ type: "input", id, data: rawText, encoding: "utf8" });
+        },
+      );
     };
 
     window.addEventListener("paste", onPaste, true);
@@ -2056,6 +2079,7 @@ function App() {
                       onFramesQueued={handleFramesQueued}
                       onShortcut={handlePaneShortcut}
                       onUserInput={handlePaneUserInput}
+                      onTextPasteRegister={handlePaneTextPasteRegister}
                     />
                   </>
                 );
@@ -2091,6 +2115,7 @@ function App() {
                         onFramesQueued={handleFramesQueued}
                         onShortcut={handlePaneShortcut}
                         onUserInput={handlePaneUserInput}
+                        onTextPasteRegister={handlePaneTextPasteRegister}
                       />
                     </div>
                     <div className="pane-stack-layer pane-stack-layer-background" aria-hidden={!backgroundVisible}>
@@ -2106,6 +2131,7 @@ function App() {
                         onFramesQueued={handleFramesQueued}
                         onShortcut={handlePaneShortcut}
                         onUserInput={handlePaneUserInput}
+                        onTextPasteRegister={handlePaneTextPasteRegister}
                       />
                     </div>
                   </div>

@@ -231,6 +231,7 @@ interface HostFrameMessage {
   mouseFormat: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
   focusEvent: boolean;
   mouseAlternateScroll: boolean;
+  bracketedPasteMode: boolean;
 }
 
 type HostPacket =
@@ -336,6 +337,7 @@ function decodeHostPacket(kind: number, payload: Uint8Array<ArrayBufferLike>): H
       cursorBlink: (flags & 4) !== 0,
       focusEvent: (flags & 8) !== 0,
       mouseAlternateScroll: (flags & 16) !== 0,
+      bracketedPasteMode: (flags & 32) !== 0,
       cursorStyle,
       cursorRow,
       cursorCol,
@@ -526,6 +528,7 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
           message.mouseFormat,
           message.focusEvent,
           message.mouseAlternateScroll,
+          message.bracketedPasteMode,
         ),
       );
     };
@@ -668,6 +671,7 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
     mouseFormat?: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels",
     focusEvent?: boolean,
     mouseAlternateScroll?: boolean,
+    bracketedPasteMode?: boolean,
   ): TerminalFrame {
     this.seq += 1;
     return {
@@ -695,6 +699,7 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
       mouseFormat,
       focusEvent,
       mouseAlternateScroll,
+      bracketedPasteMode,
       shellBusy: this.shellBusy,
       shellBusyAtMs: this.shellBusyAtMs,
     };

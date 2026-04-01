@@ -47,6 +47,7 @@ export interface TerminalFrame {
   mouseFormat?: "x10" | "utf8" | "sgr" | "urxvt" | "sgr-pixels";
   focusEvent?: boolean;
   mouseAlternateScroll?: boolean;
+  bracketedPasteMode?: boolean;
   // True when the interactive shell in this PTY currently has a live child process.
   shellBusy?: boolean;
   // Timestamp from the native host when shellBusy last changed.
@@ -63,6 +64,7 @@ const OPTIONAL_BOOLEAN_FIELDS = [
   "cursorBlink",
   "focusEvent",
   "mouseAlternateScroll",
+  "bracketedPasteMode",
   "shellBusy",
 ] as const satisfies ReadonlyArray<keyof TerminalFrame>;
 

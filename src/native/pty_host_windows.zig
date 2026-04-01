@@ -412,6 +412,7 @@ fn writeFrame(
     if (term.modes.get(.cursor_blinking)) flags |= 1 << 2;
     if (term.modes.get(.focus_event)) flags |= 1 << 3;
     if (term.modes.get(.mouse_alternate_scroll)) flags |= 1 << 4;
+    if (term.modes.get(.bracketed_paste)) flags |= 1 << 5;
 
     const cursor_style: u8 = switch (term.screens.active.cursor.cursor_style) {
         .block, .block_hollow => 0,

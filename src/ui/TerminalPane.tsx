@@ -77,6 +77,7 @@ interface Props {
   ) => void;
   onFramesQueued: (id: string, lastSeq: number) => void;
   onUserInput: (id: string) => void;
+  onTextPasteRegister?: (id: string, handler: ((text: string) => void) | null) => void;
 }
 
 function hasRenderablePayload(frame: TerminalFrame | undefined): frame is TerminalFrame {
@@ -157,6 +158,7 @@ export function TerminalPane({
   onShortcut,
   onFramesQueued,
   onUserInput,
+  onTextPasteRegister,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
@@ -365,6 +367,18 @@ export function TerminalPane({
     pendingFramesRef.current.push(...nextFrames);
     drainFrameQueue();
   };
+
+  useEffect(() => {
+    if (!onTextPasteRegister) return;
+    onTextPasteRegister(id, (text) => {
+      if (!text) return;
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      userInputHandlerRef.current(id);
+      terminal.paste(text);
+    });
+    return () => onTextPasteRegister(id, null);
+  }, [id, onTextPasteRegister]);
 
   useEffect(() => {
     const screen = screenRef.current;
