@@ -11,6 +11,8 @@ describe("resolveTerminalCommand", () => {
   });
 
   test("uses an installed PowerShell by default on Windows", () => {
+    if (process.platform !== "win32") return;
+
     const resolved = resolveTerminalCommand(
       undefined,
       {

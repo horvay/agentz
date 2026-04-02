@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { startTerminalRpcServer } from "./server";
 import { createDashboardConfigManager } from "./configManager";
+import { applyMacShellEnvironment } from "./shellEnvironment";
 import type { LaunchConfig } from "../shared/protocol";
 
 const DEV_SERVER_PORT = 5173;
@@ -119,30 +120,40 @@ async function createMainWindow(): Promise<BrowserWindow> {
   return mainWindow;
 }
 
-const launchConfig = parseLaunchConfigFromEnv();
-const configManager = createDashboardConfigManager();
-const rpcServer = startTerminalRpcServer(launchConfig ?? {}, configManager);
+async function bootstrap(): Promise<void> {
+  applyMacShellEnvironment();
 
-app.on("before-quit", () => {
-  rpcServer.close();
-});
+  const launchConfig = parseLaunchConfigFromEnv();
+  const configManager = createDashboardConfigManager();
+  const rpcServer = startTerminalRpcServer(launchConfig ?? {}, configManager);
 
-app.whenReady().then(async () => {
-  await createMainWindow();
-  console.log(`RPC listening on ws://${rpcServer.host}:${rpcServer.port}`);
-});
+  app.on("before-quit", () => {
+    rpcServer.close();
+  });
 
-app.on("activate", async () => {
-  const existing = BrowserWindow.getAllWindows()[0];
-  if (existing) {
-    requestWindowFocus(existing);
-    return;
-  }
-  await createMainWindow();
-});
+  app.whenReady().then(async () => {
+    await createMainWindow();
+    console.log(`RPC listening on ws://${rpcServer.host}:${rpcServer.port}`);
+  });
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  app.on("activate", async () => {
+    const existing = BrowserWindow.getAllWindows()[0];
+    if (existing) {
+      requestWindowFocus(existing);
+      return;
+    }
+    await createMainWindow();
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+      app.quit();
+    }
+  });
+}
+
+void bootstrap().catch((error) => {
+  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error(message);
+  app.exit(1);
 });
