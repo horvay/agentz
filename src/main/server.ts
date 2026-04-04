@@ -5,6 +5,7 @@ import path from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { TerminalManager } from "./terminalManager";
 import type { DashboardConfigManager } from "./configManager";
+import { getCurrentAutoUpdateStatus, requestManualUpdateCheck, subscribeAutoUpdateStatus } from "./appUpdater";
 import {
   encodeTerminalFramePacket,
   type ClientMessage,
@@ -125,6 +126,7 @@ export function startTerminalRpcServer(
     clients.add(ws);
     send(ws, { type: "ready", serverVersion: "mvp-0.1.0" });
     send(ws, { type: "config", config: configManager.getConfig() });
+    send(ws, { type: "update-status", status: getCurrentAutoUpdateStatus() });
 
     ws.on("close", () => {
       clients.delete(ws);
@@ -220,6 +222,10 @@ export function startTerminalRpcServer(
             broadcast({ type: "config", config: nextConfig });
             break;
           }
+          case "check-updates": {
+            await requestManualUpdateCheck();
+            break;
+          }
           case "kill": {
             terminals.kill(parsed.id);
             break;
@@ -239,8 +245,12 @@ export function startTerminalRpcServer(
   });
 
   httpServer.listen(PORT, HOST);
+  const disposeUpdateStatus = subscribeAutoUpdateStatus((status) => {
+    broadcast({ type: "update-status", status });
+  });
 
   const close = () => {
+    disposeUpdateStatus();
     for (const ws of clients) {
       try {
         ws.close();

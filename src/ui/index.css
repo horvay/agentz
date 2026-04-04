@@ -1268,6 +1268,47 @@ body.pane-resize-active .pane-resize-handle::before {
   transform: translateX(26px);
 }
 
+.settings-update-actions {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 14px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.settings-secondary-button {
+  border: 1px solid rgba(161, 224, 246, 0.28);
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: rgba(8, 26, 41, 0.84);
+  color: #d4f2ff;
+  font: 700 11px/1 "Sora", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    transform 180ms ease,
+    opacity 180ms ease;
+}
+
+.settings-secondary-button:hover:not(:disabled) {
+  border-color: rgba(167, 235, 255, 0.56);
+  transform: translateY(-1px);
+}
+
+.settings-secondary-button:disabled {
+  opacity: 0.46;
+  cursor: default;
+}
+
+.settings-update-status {
+  min-height: 2.8em;
+  color: #9dc9da;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .settings-shortcut-grid {
   display: grid;
   gap: 10px;

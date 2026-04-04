@@ -1,5 +1,6 @@
 import {
   decodeTerminalFramePacket,
+  type AppUpdateStatus,
   type ClientMessage,
   type JsonServerMessage,
   type LaunchConfig,
@@ -19,6 +20,7 @@ type LaunchConfigHandler = (config: LaunchConfig) => void;
 type ConfigHandler = (config: DashboardConfig) => void;
 type TerminalListHandler = (ids: TerminalId[]) => void;
 type ConnectionHandler = (connected: boolean) => void;
+type UpdateStatusHandler = (status: AppUpdateStatus) => void;
 
 function shouldQueueDisconnectedMessage(message: ClientMessage): boolean {
   return (
@@ -44,6 +46,7 @@ export class RpcClient {
   private configHandlers = new Set<ConfigHandler>();
   private terminalListHandlers = new Set<TerminalListHandler>();
   private connectionHandlers = new Set<ConnectionHandler>();
+  private updateStatusHandlers = new Set<UpdateStatusHandler>();
 
   constructor(url: string) {
     this.url = url;
@@ -122,6 +125,9 @@ export class RpcClient {
       case "terminal-list":
         this.terminalListHandlers.forEach((cb) => cb(message.ids));
         break;
+      case "update-status":
+        this.updateStatusHandlers.forEach((cb) => cb(message.status));
+        break;
       case "error":
         this.errorHandlers.forEach((cb) => cb(message.message));
         break;
@@ -185,5 +191,10 @@ export class RpcClient {
   onConnectionChange(cb: ConnectionHandler): () => void {
     this.connectionHandlers.add(cb);
     return () => this.connectionHandlers.delete(cb);
+  }
+
+  onUpdateStatus(cb: UpdateStatusHandler): () => void {
+    this.updateStatusHandlers.add(cb);
+    return () => this.updateStatusHandlers.delete(cb);
   }
 }
