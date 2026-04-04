@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildTerminalHostEnv, resolveTerminalCommand } from "./terminalSession";
+import { buildTerminalHostEnv, resolveLaunchCwd, resolveTerminalCommand } from "./terminalSession";
 
 describe("resolveTerminalCommand", () => {
   test("falls back when SHELL points at a missing executable", () => {
@@ -64,5 +64,31 @@ describe("buildTerminalHostEnv", () => {
     const env = buildTerminalHostEnv("opencode", "opencode", { SHELL: "/definitely/missing-shell" }, "linux");
 
     expect(env.SHELL).toBe("/definitely/missing-shell");
+  });
+});
+
+describe("resolveLaunchCwd", () => {
+  test("prefers an explicit pane cwd", () => {
+    const cwd = resolveLaunchCwd("/tmp/pane", { AGENTZ_LAUNCH_CWD: "/tmp/app" }, "/");
+
+    expect(cwd).toBe("/tmp/pane");
+  });
+
+  test("uses AGENTZ_LAUNCH_CWD when available", () => {
+    const cwd = resolveLaunchCwd(undefined, { AGENTZ_LAUNCH_CWD: "/tmp/app" }, "/");
+
+    expect(cwd).toBe("/tmp/app");
+  });
+
+  test("falls back to HOME when the app launch cwd is root", () => {
+    const cwd = resolveLaunchCwd(undefined, { HOME: "/Users/demo" }, "/");
+
+    expect(cwd).toBe("/Users/demo");
+  });
+
+  test("keeps a non-root process cwd when no better launch cwd is available", () => {
+    const cwd = resolveLaunchCwd(undefined, {}, "/workspace/demo");
+
+    expect(cwd).toBe("/workspace/demo");
   });
 });

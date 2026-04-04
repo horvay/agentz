@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 
 import type { TerminalFrame, TerminalScreenRow } from "../shared/protocol";
@@ -207,6 +208,30 @@ export function buildTerminalHostEnv(
 
   return nextEnv;
 }
+
+export function resolveLaunchCwd(
+  cwd?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  currentWorkingDirectory = process.cwd(),
+  userHomeDirectory = homedir(),
+): string {
+  const explicitCwd = cwd?.trim();
+  if (explicitCwd) return explicitCwd;
+
+  const launchCwd = env.AGENTZ_LAUNCH_CWD?.trim();
+  if (launchCwd) return launchCwd;
+
+  const normalizedCwd = currentWorkingDirectory.trim();
+  if (normalizedCwd.length > 0 && normalizedCwd !== "/") {
+    return normalizedCwd;
+  }
+
+  const home = env.HOME?.trim() || userHomeDirectory.trim();
+  if (home.length > 0) return home;
+
+  return normalizedCwd || ".";
+}
+
 function trimActivityText(text: string): string {
   return text.length > MAX_ACTIVITY_TEXT_CHARS ? text.slice(-MAX_ACTIVITY_TEXT_CHARS) : text;
 }
@@ -756,9 +781,8 @@ export class TerminalSession implements TerminalSessionBackend {
     args?: string[],
     cwd?: string,
   ) {
-    const launchBaseCwd = process.env.AGENTZ_LAUNCH_CWD || process.cwd();
     const rootCwd = process.env.AGENTZ_ROOT ?? process.cwd();
-    const launchCwd = cwd ?? launchBaseCwd;
+    const launchCwd = resolveLaunchCwd(cwd);
     const shell = resolveTerminalCommand(command);
     const shellArgs = args ?? [];
     const hostEnv = buildTerminalHostEnv(shell, command);
