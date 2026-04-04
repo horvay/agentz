@@ -19,7 +19,6 @@ import {
   paneRuntimeStore,
   type PaneRuntimeState,
   type PaneRuntimeStatus,
-  usePaneFrameCount,
   usePaneRuntime,
 } from "./paneRuntimeStore";
 import {
@@ -593,13 +592,6 @@ const PaneSurfaceContainer = memo(function PaneSurfaceContainer(props: PaneSurfa
 });
 
 PaneSurfaceContainer.displayName = "PaneSurfaceContainer";
-
-const StatusMetric = memo(function StatusMetric({ paneCount }: { paneCount: number }) {
-  const frameCount = usePaneFrameCount();
-  return <span className="status-metric">{paneCount} panes · {frameCount} active frames</span>;
-});
-
-StatusMetric.displayName = "StatusMetric";
 
 function App() {
   const [paneIds, setPaneIds] = useState<string[]>([FIRST_ID]);
@@ -1934,9 +1926,9 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar topbar-compact">
+      <div className="floating-chrome" aria-label="Window controls">
         <span
-          className={`status-orb ${rpcReady ? "status-orb-ready" : "status-orb-down"}`}
+          className={`status-orb floating-status-orb ${rpcReady ? "status-orb-ready" : "status-orb-down"}`}
           title={
             rpcReady
               ? "Local terminal backend connected."
@@ -1944,48 +1936,18 @@ function App() {
           }
           aria-label={rpcReady ? "Local terminal backend connected" : "Local terminal backend disconnected"}
         />
-        <div className="topbar-meta">
-          <StatusMetric paneCount={paneIds.length} />
-          <div className="shortcut-cluster" aria-label="Keyboard shortcuts">
-            <span className="shortcut-pill">
-              <span className="shortcut-label">Add</span>
-              <kbd>{shortcuts.addPane}</kbd>
-            </span>
-            <span className="shortcut-pill">
-              <span className="shortcut-label">Cycle</span>
-              <kbd>{shortcuts.toggleBackgroundTerminal}</kbd>
-            </span>
-            <span className="shortcut-pill">
-              <span className="shortcut-label">New Background</span>
-              <kbd>{shortcuts.addBackgroundTerminal}</kbd>
-            </span>
-            <span className="shortcut-pill">
-              <span className="shortcut-label">Focus</span>
-              <kbd>{shortcuts.focusPrevPane}</kbd>
-              <span className="shortcut-divider">/</span>
-              <kbd>{shortcuts.focusNextPane}</kbd>
-            </span>
-            <span className="shortcut-pill">
-              <span className="shortcut-label">Move</span>
-              <kbd>{shortcuts.movePaneLeft}</kbd>
-              <span className="shortcut-divider">/</span>
-              <kbd>{shortcuts.movePaneRight}</kbd>
-            </span>
-            <span className="shortcut-pill">
-              <span className="shortcut-label">Close</span>
-              <kbd>{shortcuts.closePane}</kbd>
-            </span>
-          </div>
-        </div>
-        <span className="topbar-spacer" />
-        <button type="button" className="topbar-settings-button" onClick={openSettings}>
+        <button
+          type="button"
+          className="floating-settings-button"
+          onClick={openSettings}
+          title={`Open settings (${shortcuts.openSettings})`}
+          aria-label={`Open settings (${shortcuts.openSettings})`}
+        >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M19.14 12.94c.04-.3.06-.62.06-.94s-.02-.64-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.16 7.16 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.11.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.7 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94L2.82 14.52a.5.5 0 0 0-.12.63l1.92 3.32c.13.23.4.32.64.22l2.35-.95c.5.4 1.05.73 1.65.97l.36 2.5a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.5c.6-.24 1.15-.57 1.65-.97l2.35.95c.24.1.51.01.64-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z" />
           </svg>
-          <span>Settings</span>
-          <kbd>{shortcuts.openSettings}</kbd>
         </button>
-      </header>
+      </div>
 
       <section className="avatar-strip" ref={avatarStripRef} aria-label="Terminal avatars">
         <div className="avatar-track">
