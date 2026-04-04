@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { startTerminalRpcServer } from "./server";
 import { createDashboardConfigManager } from "./configManager";
 import { applyMacShellEnvironment } from "./shellEnvironment";
+import { initializeAutoUpdates } from "./appUpdater";
 import type { LaunchConfig } from "../shared/protocol";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
 const WINDOW_TITLE = "agentz";
+let mainWindow: BrowserWindow | null = null;
 
 interface RendererTarget {
   kind: "url" | "file";
@@ -75,7 +77,7 @@ function resolveExternalBrowserUrl(rawUrl: string): string | null {
 
 async function createMainWindow(): Promise<BrowserWindow> {
   const target = await getMainViewTarget();
-  const mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     title: WINDOW_TITLE,
     width: 1440,
     height: 900,
@@ -91,33 +93,40 @@ async function createMainWindow(): Promise<BrowserWindow> {
     },
   });
 
-  mainWindow.once("ready-to-show", () => {
-    requestWindowFocus(mainWindow);
-    runFocusBurst(mainWindow, [0, 120, 260]);
+  mainWindow = window;
+
+  window.once("ready-to-show", () => {
+    requestWindowFocus(window);
+    runFocusBurst(window, [0, 120, 260]);
   });
 
-  mainWindow.webContents.on("did-finish-load", () => {
-    runFocusBurst(mainWindow, [0, 120, 260]);
+  window.webContents.on("did-finish-load", () => {
+    runFocusBurst(window, [0, 120, 260]);
   });
-  mainWindow.webContents.on("page-title-updated", (event) => {
+  window.webContents.on("page-title-updated", (event) => {
     event.preventDefault();
-    mainWindow.setTitle(WINDOW_TITLE);
+    window.setTitle(WINDOW_TITLE);
   });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url }) => {
     const externalUrl = resolveExternalBrowserUrl(url);
     if (externalUrl) {
       void shell.openExternal(externalUrl);
     }
     return { action: "deny" };
   });
+  window.on("closed", () => {
+    if (mainWindow === window) {
+      mainWindow = null;
+    }
+  });
 
   if (target.kind === "url") {
-    await mainWindow.loadURL(target.value);
+    await window.loadURL(target.value);
   } else {
-    await mainWindow.loadFile(target.value);
+    await window.loadFile(target.value);
   }
 
-  return mainWindow;
+  return window;
 }
 
 async function bootstrap(): Promise<void> {
@@ -133,6 +142,7 @@ async function bootstrap(): Promise<void> {
 
   app.whenReady().then(async () => {
     await createMainWindow();
+    initializeAutoUpdates(() => mainWindow, () => configManager.getConfig());
     console.log(`RPC listening on ws://${rpcServer.host}:${rpcServer.port}`);
   });
 

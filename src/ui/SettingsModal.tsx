@@ -139,7 +139,7 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
             <p className="settings-eyebrow">agentz settings</p>
             <h2 id="settings-title">Terminal Preferences</h2>
             <p className="settings-subtitle">
-              Width changes apply to new panes. Live rendering and shortcuts update as soon as you change them.
+              Pane behavior, update prompts, and shortcuts update as soon as you change them.
             </p>
           </div>
           <button type="button" className="settings-close-button" onClick={onClose} aria-label="Close settings">
@@ -208,6 +208,35 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
               </div>
               <p className="settings-note">
                 Odd-number cap for fully rendered panes that are currently visible. Default: {DEFAULT_VISIBLE_LIVE_PANES}.
+              </p>
+            </section>
+
+            <section className="settings-section">
+              <h3>App Updates</h3>
+              <button
+                type="button"
+                className={`settings-toggle-card ${config.enableAutoUpdates ? "settings-toggle-card-enabled" : ""}`}
+                role="switch"
+                aria-checked={config.enableAutoUpdates}
+                onClick={() => {
+                  updateConfig((current) => ({
+                    ...current,
+                    enableAutoUpdates: !current.enableAutoUpdates,
+                  }));
+                }}
+              >
+                <span className="settings-toggle-copy">
+                  <span className="settings-toggle-title">Prompt for release updates</span>
+                  <span className="settings-toggle-description">
+                    Check GitHub Releases and ask before downloading or restarting to install.
+                  </span>
+                </span>
+                <span className="settings-toggle-track" aria-hidden="true">
+                  <span className="settings-toggle-thumb" />
+                </span>
+              </button>
+              <p className="settings-note">
+                Turn this off if you want to manage AppImage, macOS, or Windows installs manually.
               </p>
             </section>
 

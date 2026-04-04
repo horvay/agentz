@@ -118,15 +118,21 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          files=(dist/*.dmg)
-          if [ ${#files[@]} -eq 0 ]; then
+          installers=(dist/*.dmg dist/*.zip)
+          metadata=(dist/latest-mac.yml)
+          files=(dist/*.dmg dist/*.zip dist/*.blockmap dist/latest-mac.yml)
+          if [ ${#installers[@]} -eq 0 ]; then
             echo "No macOS artifacts found" >&2
+            exit 1
+          fi
+          if [ ${#metadata[@]} -eq 0 ]; then
+            echo "Missing latest-mac.yml update metadata" >&2
             exit 1
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
 
   build-linux:
-    if: github.event_name == 'workflow_dispatch' && inputs.build_linux == true
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.build_linux == true)
     runs-on: ubuntu-latest
 
     steps:
@@ -166,15 +172,21 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          files=(dist/*.AppImage)
-          if [ ${#files[@]} -eq 0 ]; then
+          appimages=(dist/*.AppImage)
+          metadata=(dist/latest-linux.yml)
+          files=(dist/*.AppImage dist/*.AppImage.blockmap dist/latest-linux.yml)
+          if [ ${#appimages[@]} -eq 0 ]; then
             echo "No Linux artifacts found" >&2
+            exit 1
+          fi
+          if [ ${#metadata[@]} -eq 0 ]; then
+            echo "Missing latest-linux.yml update metadata" >&2
             exit 1
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
 
   build-windows:
-    if: github.event_name == 'workflow_dispatch' && inputs.build_windows == true
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.build_windows == true)
     runs-on: windows-latest
 
     steps:
@@ -219,7 +231,7 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          files=(dist/*.exe)
+          files=(dist/*.exe dist/*.blockmap dist/latest.yml)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No Windows artifacts found" >&2
             exit 1

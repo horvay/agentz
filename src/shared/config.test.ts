@@ -10,6 +10,7 @@ describe("dashboard config shortcuts", () => {
   test("cloneDashboardConfig preserves pane shortcuts", () => {
     const cloned = cloneDashboardConfig(DEFAULT_DASHBOARD_CONFIG);
     expect(cloned.visibleLivePanes).toBe(DEFAULT_DASHBOARD_CONFIG.visibleLivePanes);
+    expect(cloned.enableAutoUpdates).toBe(DEFAULT_DASHBOARD_CONFIG.enableAutoUpdates);
     expect(cloned.shortcuts.toggleBackgroundTerminal).toBe(
       DEFAULT_DASHBOARD_CONFIG.shortcuts.toggleBackgroundTerminal,
     );
@@ -42,5 +43,10 @@ describe("dashboard config shortcuts", () => {
   test("normalizeDashboardConfig keeps visible live pane cap odd", () => {
     const normalized = normalizeDashboardConfig({ visibleLivePanes: 6 });
     expect(normalized.visibleLivePanes).toBe(5);
+  });
+
+  test("normalizeDashboardConfig accepts auto update preference", () => {
+    const normalized = normalizeDashboardConfig({ enableAutoUpdates: false });
+    expect(normalized.enableAutoUpdates).toBe(false);
   });
 });

@@ -176,6 +176,10 @@ Current packaged outputs:
 - macOS: `dmg`
 - Windows: `nsis` installer
 
+Packaged Linux `AppImage`, macOS, and Windows releases check GitHub Releases for updates, ask before downloading, and ask again before restarting to install.
+
+You can turn update prompts on or off in Settings under App Updates.
+
 ### macOS Release Signing
 
 GitHub Releases should only publish macOS installers from a signed and notarized CI build.

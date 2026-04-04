@@ -20,12 +20,14 @@ export interface DashboardShortcuts {
 export interface DashboardConfig {
   defaultPaneWidth: number;
   visibleLivePanes: number;
+  enableAutoUpdates: boolean;
   shortcuts: DashboardShortcuts;
 }
 
 export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   defaultPaneWidth: DEFAULT_PANE_WIDTH,
   visibleLivePanes: DEFAULT_VISIBLE_LIVE_PANES,
+  enableAutoUpdates: true,
   shortcuts: {
     addPane: "Ctrl+Shift+N",
     toggleBackgroundTerminal: "Ctrl+B",
@@ -112,6 +114,7 @@ export function cloneDashboardConfig(config: DashboardConfig): DashboardConfig {
   return {
     defaultPaneWidth: config.defaultPaneWidth,
     visibleLivePanes: config.visibleLivePanes,
+    enableAutoUpdates: config.enableAutoUpdates,
     shortcuts: {
       addPane: config.shortcuts.addPane,
       toggleBackgroundTerminal: config.shortcuts.toggleBackgroundTerminal,
@@ -130,12 +133,14 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
   const defaults = DEFAULT_DASHBOARD_CONFIG;
   let defaultPaneWidth = defaults.defaultPaneWidth;
   let visibleLivePanes = defaults.visibleLivePanes;
+  let enableAutoUpdates = defaults.enableAutoUpdates;
   let shortcuts: DashboardShortcuts = { ...defaults.shortcuts };
 
   if (typeof value === "object" && value) {
     const candidate = value as {
       defaultPaneWidth?: unknown;
       visibleLivePanes?: unknown;
+      enableAutoUpdates?: unknown;
       shortcuts?: Partial<Record<keyof DashboardShortcuts, unknown>>;
     };
 
@@ -148,6 +153,10 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
 
     if (typeof candidate.visibleLivePanes === "number" && Number.isFinite(candidate.visibleLivePanes)) {
       visibleLivePanes = normalizeVisibleLivePanes(candidate.visibleLivePanes);
+    }
+
+    if (typeof candidate.enableAutoUpdates === "boolean") {
+      enableAutoUpdates = candidate.enableAutoUpdates;
     }
 
     if (candidate.shortcuts && typeof candidate.shortcuts === "object") {
@@ -207,6 +216,7 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
   return {
     defaultPaneWidth,
     visibleLivePanes,
+    enableAutoUpdates,
     shortcuts,
   };
 }

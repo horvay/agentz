@@ -1263,6 +1263,96 @@ body.pane-resize-active .pane-resize-handle::before {
   text-align: center;
 }
 
+.settings-toggle-card {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  align-items: center;
+  border: 1px solid rgba(140, 211, 240, 0.22);
+  border-radius: 14px;
+  background:
+    linear-gradient(145deg, rgba(9, 30, 46, 0.88), rgba(5, 17, 30, 0.9)),
+    radial-gradient(circle at 12% 18%, rgba(84, 208, 255, 0.12), transparent 42%);
+  color: #d7f2ff;
+  padding: 15px 16px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    box-shadow 200ms ease,
+    transform 180ms ease;
+}
+
+.settings-toggle-card:hover {
+  border-color: rgba(167, 235, 255, 0.46);
+  box-shadow: 0 10px 24px rgba(6, 22, 35, 0.34);
+  transform: translateY(-1px);
+}
+
+.settings-toggle-card-enabled {
+  border-color: rgba(122, 255, 218, 0.44);
+  box-shadow:
+    inset 0 0 0 1px rgba(122, 255, 218, 0.1),
+    0 12px 26px rgba(5, 29, 25, 0.3);
+}
+
+.settings-toggle-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.settings-toggle-title {
+  color: #ebfbff;
+  font: 700 13px/1.1 "Sora", sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-toggle-description {
+  color: #96bdcd;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-toggle-track {
+  width: 58px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(7, 21, 33, 0.96);
+  box-shadow:
+    inset 0 0 0 1px rgba(123, 186, 213, 0.28),
+    inset 0 6px 14px rgba(0, 0, 0, 0.24);
+  transition:
+    background 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.settings-toggle-card-enabled .settings-toggle-track {
+  background: linear-gradient(145deg, rgba(20, 93, 79, 0.96), rgba(11, 61, 54, 0.96));
+  box-shadow:
+    inset 0 0 0 1px rgba(142, 255, 222, 0.34),
+    0 0 18px rgba(72, 227, 189, 0.18);
+}
+
+.settings-toggle-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: linear-gradient(145deg, rgba(228, 246, 255, 0.96), rgba(185, 223, 240, 0.94));
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  transition: transform 180ms ease;
+}
+
+.settings-toggle-card-enabled .settings-toggle-thumb {
+  transform: translateX(26px);
+}
+
 .settings-shortcut-grid {
   display: grid;
   gap: 10px;
