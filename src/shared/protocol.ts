@@ -17,6 +17,20 @@ export interface LaunchConfig {
   panes?: PaneLaunchConfig[];
 }
 
+export interface AppUpdateStatus {
+  state:
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "downloaded"
+    | "up-to-date"
+    | "disabled"
+    | "unsupported"
+    | "error";
+  message: string;
+}
+
 export interface TerminalFrame {
   id: TerminalId;
   cols: number;
@@ -469,6 +483,9 @@ export type ClientMessage =
       config: DashboardConfig;
     }
   | {
+      type: "check-updates";
+    }
+  | {
       type: "kill";
       id: TerminalId;
     };
@@ -481,6 +498,7 @@ export type ServerMessage =
   | { type: "terminal-frame"; frame: TerminalFrame }
   | { type: "terminal-list"; ids: TerminalId[] }
   | { type: "launch-config"; config: LaunchConfig }
+  | { type: "update-status"; status: AppUpdateStatus }
   | { type: "error"; id?: TerminalId; message: string };
 
 export type JsonServerMessage = Exclude<ServerMessage, { type: "terminal-frame" }>;

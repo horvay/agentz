@@ -2,9 +2,25 @@ import { app, BrowserWindow, dialog } from "electron";
 import { autoUpdater } from "electron-updater";
 import { getAutoUpdateSupport } from "./autoUpdateSupport";
 import type { DashboardConfig } from "../shared/config";
+import type { AppUpdateStatus } from "../shared/protocol";
 
 const STARTUP_UPDATE_DELAY_MS = 12_000;
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1_000;
+const SETTINGS_DISABLED_REASON = "auto updates are disabled in settings";
+
+let currentUpdateStatus: AppUpdateStatus = {
+  state: "idle",
+  message: "Ready to check for updates.",
+};
+const updateStatusListeners = new Set<(status: AppUpdateStatus) => void>();
+let manualUpdateCheck: (() => Promise<void>) | null = null;
+
+function setUpdateStatus(status: AppUpdateStatus): void {
+  currentUpdateStatus = status;
+  for (const listener of updateStatusListeners) {
+    listener(status);
+  }
+}
 
 function logAutoUpdate(message: string): void {
   console.log(`[updater] ${message}`);
@@ -20,7 +36,7 @@ async function promptToDownloadUpdate(version: string, getWindow: () => BrowserW
     noLink: true,
     title: "Update Available",
     message: `agentz ${version} is available.`,
-    detail: "Download the latest AppImage now, or keep working and install it later.",
+    detail: "Download the latest release now, or keep working and install it later.",
   };
 
   const result = targetWindow
@@ -56,8 +72,16 @@ export function initializeAutoUpdates(
 ): void {
   const support = getAutoUpdateSupport(getConfig(), process.env, process.platform, app.isPackaged);
   if (!support.enabled) {
+    setUpdateStatus({
+      state: support.reason === SETTINGS_DISABLED_REASON ? "disabled" : "unsupported",
+      message: support.reason ?? "Auto updates are unavailable.",
+    });
     logAutoUpdate(`disabled: ${support.reason ?? "unknown reason"}`);
-    return;
+    if (support.reason !== SETTINGS_DISABLED_REASON) {
+      return;
+    }
+  } else {
+    setUpdateStatus({ state: "idle", message: "Ready to check for updates." });
   }
 
   let checkInFlight = false;
@@ -72,6 +96,10 @@ export function initializeAutoUpdates(
   const configAllowsUpdates = (): boolean => {
     const nextSupport = getAutoUpdateSupport(getConfig(), process.env, process.platform, app.isPackaged);
     if (!nextSupport.enabled) {
+      setUpdateStatus({
+        state: nextSupport.reason === SETTINGS_DISABLED_REASON ? "disabled" : "unsupported",
+        message: nextSupport.reason ?? "Auto updates are unavailable.",
+      });
       logAutoUpdate(`skipping action: ${nextSupport.reason ?? "unknown reason"}`);
       return false;
     }
@@ -82,16 +110,19 @@ export function initializeAutoUpdates(
     if (checkInFlight) return;
     if (!configAllowsUpdates()) return;
     checkInFlight = true;
+    setUpdateStatus({ state: "checking", message: "Checking for updates..." });
     try {
       logAutoUpdate("checking for updates");
       await autoUpdater.checkForUpdates();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      setUpdateStatus({ state: "error", message: `Update check failed: ${message}` });
       console.error(`[updater] check failed: ${message}`);
     } finally {
       checkInFlight = false;
     }
   };
+  manualUpdateCheck = runUpdateCheck;
 
   autoUpdater.on("checking-for-update", () => {
     logAutoUpdate("contacting release feed");
@@ -99,6 +130,10 @@ export function initializeAutoUpdates(
 
   autoUpdater.on("update-available", async (info) => {
     logAutoUpdate(`update available: ${info.version}`);
+    setUpdateStatus({
+      state: "available",
+      message: `Update ${info.version} is available.`,
+    });
     if (downloadedVersion === info.version || skippedVersion === info.version || downloadInFlight) {
       return;
     }
@@ -107,17 +142,26 @@ export function initializeAutoUpdates(
     const shouldDownload = await promptToDownloadUpdate(info.version, getWindow);
     if (!shouldDownload) {
       skippedVersion = info.version;
+      setUpdateStatus({
+        state: "available",
+        message: `Update ${info.version} is available to download.`,
+      });
       logAutoUpdate(`download skipped for ${info.version}`);
       return;
     }
 
     skippedVersion = null;
     downloadInFlight = true;
+    setUpdateStatus({
+      state: "downloading",
+      message: `Downloading update ${info.version}...`,
+    });
     try {
       logAutoUpdate(`downloading update ${info.version}`);
       await autoUpdater.downloadUpdate();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      setUpdateStatus({ state: "error", message: `Update download failed: ${message}` });
       console.error(`[updater] download failed: ${message}`);
     } finally {
       downloadInFlight = false;
@@ -125,22 +169,40 @@ export function initializeAutoUpdates(
   });
 
   autoUpdater.on("update-not-available", (info) => {
+    setUpdateStatus({
+      state: "up-to-date",
+      message: `agentz ${info.version} is up to date.`,
+    });
     logAutoUpdate(`already current: ${info.version}`);
   });
 
   autoUpdater.on("download-progress", (progress) => {
     if (progress.percent <= 0) return;
+    setUpdateStatus({
+      state: "downloading",
+      message: `Downloading update... ${progress.percent.toFixed(0)}%`,
+    });
     logAutoUpdate(`download ${progress.percent.toFixed(1)}%`);
   });
 
   autoUpdater.on("update-downloaded", async (info) => {
     if (downloadedVersion === info.version) return;
     downloadedVersion = info.version;
+    setUpdateStatus({
+      state: "downloaded",
+      message: `Update ${info.version} is ready to install.`,
+    });
     logAutoUpdate(`update downloaded: ${info.version}`);
     if (!configAllowsUpdates()) return;
 
     const shouldRestart = await promptToInstallUpdate(info.version, getWindow);
-    if (!shouldRestart) return;
+    if (!shouldRestart) {
+      setUpdateStatus({
+        state: "downloaded",
+        message: `Update ${info.version} is downloaded and ready when you are.`,
+      });
+      return;
+    }
 
     setTimeout(() => {
       autoUpdater.quitAndInstall();
@@ -149,6 +211,7 @@ export function initializeAutoUpdates(
 
   autoUpdater.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error);
+    setUpdateStatus({ state: "error", message: `Updater error: ${message}` });
     console.error(`[updater] ${message}`);
   });
 
@@ -160,4 +223,29 @@ export function initializeAutoUpdates(
     void runUpdateCheck();
   }, UPDATE_CHECK_INTERVAL_MS);
   timer.unref();
+}
+
+export function subscribeAutoUpdateStatus(listener: (status: AppUpdateStatus) => void): () => void {
+  updateStatusListeners.add(listener);
+  listener(currentUpdateStatus);
+  return () => {
+    updateStatusListeners.delete(listener);
+  };
+}
+
+export function getCurrentAutoUpdateStatus(): AppUpdateStatus {
+  return currentUpdateStatus;
+}
+
+export async function requestManualUpdateCheck(): Promise<void> {
+  if (!manualUpdateCheck) {
+    if (currentUpdateStatus.state === "idle") {
+      setUpdateStatus({
+        state: "unsupported",
+        message: "Manual update checks are only available in packaged app builds.",
+      });
+    }
+    return;
+  }
+  await manualUpdateCheck();
 }

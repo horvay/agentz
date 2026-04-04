@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { LaunchConfig, PaneLaunchConfig, TerminalFrame } from "../shared/protocol";
+import type { AppUpdateStatus, LaunchConfig, PaneLaunchConfig, TerminalFrame } from "../shared/protocol";
 import {
   cloneDashboardConfig,
   DEFAULT_DASHBOARD_CONFIG,
@@ -600,6 +600,10 @@ function App() {
     cloneDashboardConfig(DEFAULT_DASHBOARD_CONFIG),
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({
+    state: "idle",
+    message: "Ready to check for updates.",
+  });
   const [inputPriorityActive, setInputPriorityActive] = useState(false);
   const [activePane, setActivePane] = useState(FIRST_ID);
   const [paneWidths, setPaneWidths] = useState<Record<string, number>>(() => loadStoredPaneWidths());
@@ -1258,6 +1262,10 @@ function App() {
     setStatus("Settings saved");
   }, []);
 
+  const checkForUpdatesNow = useCallback(() => {
+    rpc.send({ type: "check-updates" });
+  }, []);
+
   const handlePaneShortcut = useCallback(
     (
       shortcut:
@@ -1421,6 +1429,9 @@ function App() {
       hasTerminalListRef.current = true;
       reconcileTerminals();
     });
+    const disposeUpdateStatus = rpc.onUpdateStatus((nextStatus) => {
+      setUpdateStatus(nextStatus);
+    });
     const disposeCreated = rpc.onCreated((id) => {
       paneStatusRef.current = { ...paneStatusRef.current, [id]: "running" };
       paneRuntimeStore.patchPane(id, { status: "running" });
@@ -1582,6 +1593,7 @@ function App() {
       disposeConfig();
       disposeLaunchConfig();
       disposeTerminalList();
+      disposeUpdateStatus();
       disposeCreated();
       disposeFrame();
       disposeError();
@@ -2122,8 +2134,10 @@ function App() {
       <SettingsModal
         open={settingsOpen}
         config={dashboardConfig}
+        updateStatus={updateStatus}
         onClose={() => setSettingsOpen(false)}
         onSave={saveDashboardConfig}
+        onCheckForUpdates={checkForUpdatesNow}
       />
     </main>
   );

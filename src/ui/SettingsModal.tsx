@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import type { AppUpdateStatus } from "../shared/protocol";
 import {
   DEFAULT_VISIBLE_LIVE_PANES,
   MAX_VISIBLE_LIVE_PANES,
@@ -19,8 +20,10 @@ import {
 interface SettingsModalProps {
   open: boolean;
   config: DashboardConfig;
+  updateStatus: AppUpdateStatus;
   onClose: () => void;
   onSave: (nextConfig: DashboardConfig) => void;
+  onCheckForUpdates: () => void;
 }
 
 function clampPaneWidth(value: number): number {
@@ -46,19 +49,29 @@ function findDuplicateShortcutError(shortcuts: DashboardShortcuts): string | nul
   return null;
 }
 
-export function SettingsModal({ open, config, onClose, onSave }: SettingsModalProps) {
+export function SettingsModal({ open, config, updateStatus, onClose, onSave, onCheckForUpdates }: SettingsModalProps) {
   if (!open) return null;
 
-  return <SettingsModalContent config={config} onClose={onClose} onSave={onSave} />;
+  return (
+    <SettingsModalContent
+      config={config}
+      updateStatus={updateStatus}
+      onClose={onClose}
+      onSave={onSave}
+      onCheckForUpdates={onCheckForUpdates}
+    />
+  );
 }
 
 interface SettingsModalContentProps {
   config: DashboardConfig;
+  updateStatus: AppUpdateStatus;
   onClose: () => void;
   onSave: (nextConfig: DashboardConfig) => void;
+  onCheckForUpdates: () => void;
 }
 
-function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentProps) {
+function SettingsModalContent({ config, updateStatus, onClose, onSave, onCheckForUpdates }: SettingsModalContentProps) {
   const [recordingField, setRecordingField] = useState<keyof DashboardShortcuts | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
 
@@ -238,6 +251,24 @@ function SettingsModalContent({ config, onClose, onSave }: SettingsModalContentP
               <p className="settings-note">
                 Turn this off if you want to manage AppImage, macOS, or Windows installs manually.
               </p>
+              <div className="settings-update-actions">
+                <button
+                  type="button"
+                  className="settings-secondary-button"
+                  onClick={onCheckForUpdates}
+                  disabled={
+                    !config.enableAutoUpdates ||
+                    updateStatus.state === "checking" ||
+                    updateStatus.state === "disabled" ||
+                    updateStatus.state === "unsupported"
+                  }
+                >
+                  {updateStatus.state === "checking" ? "Checking..." : "Check now"}
+                </button>
+                <div className="settings-update-status" aria-live="polite">
+                  {updateStatus.message}
+                </div>
+              </div>
             </section>
 
             <section className="settings-section">
