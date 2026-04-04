@@ -178,6 +178,12 @@ Current packaged outputs:
 
 Packaged Linux `AppImage`, macOS, and Windows releases check GitHub Releases for updates, ask before downloading, and ask again before restarting to install.
 
+Release publishing needs to include the updater feed files alongside those installers:
+
+- Linux: `latest-linux*.yml`
+- macOS: `zip` plus `latest-mac*.yml`
+- Windows: `latest.yml`
+
 You can turn update prompts on or off in Settings under App Updates.
 
 ### macOS Release Signing

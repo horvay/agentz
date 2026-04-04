@@ -22,12 +22,12 @@ on:
       build_linux:
         description: Build Linux artifacts
         required: false
-        default: false
+        default: true
         type: boolean
       build_windows:
         description: Build Windows artifacts
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -118,15 +118,20 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
-          installers=(dist/*.dmg dist/*.zip)
-          metadata=(dist/latest-mac.yml)
-          files=(dist/*.dmg dist/*.zip dist/*.blockmap dist/latest-mac.yml)
-          if [ ${#installers[@]} -eq 0 ]; then
-            echo "No macOS artifacts found" >&2
+          dmgs=(dist/*.dmg)
+          zips=(dist/*.zip)
+          metadata=(dist/latest-mac*.yml)
+          files=(dist/*.dmg dist/*.zip dist/*.blockmap dist/latest-mac*.yml)
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "No macOS DMG artifacts found" >&2
+            exit 1
+          fi
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "Missing macOS ZIP artifacts required for auto-updates" >&2
             exit 1
           fi
           if [ ${#metadata[@]} -eq 0 ]; then
-            echo "Missing latest-mac.yml update metadata" >&2
+            echo "Missing macOS updater metadata (latest-mac*.yml)" >&2
             exit 1
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
@@ -173,14 +178,14 @@ jobs:
         run: |
           shopt -s nullglob
           appimages=(dist/*.AppImage)
-          metadata=(dist/latest-linux.yml)
-          files=(dist/*.AppImage dist/*.AppImage.blockmap dist/latest-linux.yml)
+          metadata=(dist/latest-linux*.yml)
+          files=(dist/*.AppImage dist/*.AppImage.blockmap dist/latest-linux*.yml)
           if [ ${#appimages[@]} -eq 0 ]; then
             echo "No Linux artifacts found" >&2
             exit 1
           fi
           if [ ${#metadata[@]} -eq 0 ]; then
-            echo "Missing latest-linux.yml update metadata" >&2
+            echo "Missing Linux updater metadata (latest-linux*.yml)" >&2
             exit 1
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
@@ -231,9 +236,15 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           shopt -s nullglob
+          installers=(dist/*.exe)
+          metadata=(dist/latest.yml)
           files=(dist/*.exe dist/*.blockmap dist/latest.yml)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No Windows artifacts found" >&2
+          if [ ${#installers[@]} -eq 0 ]; then
+            echo "No Windows installer artifacts found" >&2
+            exit 1
+          fi
+          if [ ${#metadata[@]} -eq 0 ]; then
+            echo "Missing Windows updater metadata (latest.yml)" >&2
             exit 1
           fi
           gh release upload "$TAG" "${files[@]}" --clobber
