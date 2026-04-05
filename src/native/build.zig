@@ -1,8 +1,14 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    var target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    if (target.result.os.tag == .windows and target.query.abi == null) {
+        var query = target.query;
+        query.abi = .gnu;
+        target = b.resolveTargetQuery(query);
+    }
 
     const host = b.addExecutable(.{
         .name = "agentz-pty-host",
@@ -14,6 +20,8 @@ pub fn build(b: *std.Build) void {
     });
 
     if (b.lazyDependency("ghostty", .{
+        .target = target,
+        .optimize = optimize,
         .@"emit-lib-vt" = true,
         .@"emit-macos-app" = false,
         .@"emit-xcframework" = false,

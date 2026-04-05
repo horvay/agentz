@@ -4,6 +4,7 @@ import { resolveBundledZig, runInherited } from "./runtime";
 
 function ensureGhosttyLibVtBuildPatch(rootDir: string): void {
   const ghosttyBuildPath = join(rootDir, "deps", "ghostty", "build.zig");
+  const ghosttyConfigPath = join(rootDir, "deps", "ghostty", "src", "build", "Config.zig");
   const optionAnchor = '    const config = try buildpkg.Config.init(b, appVersion);\n';
   const optionBlock =
     '    const emit_lib_vt = b.option(\n' +
@@ -17,7 +18,7 @@ function ensureGhosttyLibVtBuildPatch(rootDir: string): void {
     '    };\n';
   const guardAnchor =
     '    // Ghostty resources like terminfo, shell integration, themes, etc.\n';
-  const guardBlock =
+  const legacyGuardBlock =
     "    // Downstream VT-only consumers only need the exported Zig modules.\n" +
     "    // Avoid instantiating the full app/docs/bench graph here because it pulls\n" +
     "    // in vendored font and image packages that are unrelated to libghostty-vt.\n" +
@@ -25,22 +26,45 @@ function ensureGhosttyLibVtBuildPatch(rootDir: string): void {
     "        return;\n" +
     "    }\n" +
     "\n";
+  const configGuardBlock =
+    "    // Downstream VT-only consumers only need the exported Zig modules.\n" +
+    "    // Avoid instantiating the full app/docs/bench graph here because it pulls\n" +
+    "    // in vendored font and image packages that are unrelated to libghostty-vt.\n" +
+    "    if (config.emit_lib_vt and config.is_dep) {\n" +
+    "        return;\n" +
+    "    }\n" +
+    "\n";
 
+  const configSource = readFileSync(ghosttyConfigPath, "utf8");
   const source = readFileSync(ghosttyBuildPath, "utf8");
+  const supportsConfigFields =
+    configSource.includes("emit_lib_vt:") && configSource.includes("is_dep:");
   let next = source;
 
-  if (!next.includes('const emit_lib_vt = b.option(')) {
-    if (!next.includes(optionAnchor)) {
-      throw new Error(`Unable to patch ${ghosttyBuildPath}: missing config anchor`);
+  if (supportsConfigFields) {
+    next = next.replace(optionBlock, "");
+    next = next.replace(legacyGuardBlock, configGuardBlock);
+  } else {
+    if (!next.includes(optionBlock)) {
+      if (!next.includes(optionAnchor)) {
+        throw new Error(`Unable to patch ${ghosttyBuildPath}: missing config anchor`);
+      }
+      next = next.replace(optionAnchor, optionAnchor + optionBlock);
     }
-    next = next.replace(optionAnchor, optionAnchor + optionBlock);
+    next = next.replace(configGuardBlock, legacyGuardBlock);
   }
 
-  if (!next.includes("if (emit_lib_vt and is_dep) {")) {
+  if (
+    !next.includes("if (config.emit_lib_vt and config.is_dep) {") &&
+    !next.includes("if (emit_lib_vt and is_dep) {")
+  ) {
     if (!next.includes(guardAnchor)) {
       throw new Error(`Unable to patch ${ghosttyBuildPath}: missing resource anchor`);
     }
-    next = next.replace(guardAnchor, guardBlock + guardAnchor);
+    next = next.replace(
+      guardAnchor,
+      (supportsConfigFields ? configGuardBlock : legacyGuardBlock) + guardAnchor,
+    );
   }
 
   if (next !== source) {
