@@ -36,6 +36,15 @@ const FrameMessage = struct {
 
 const OwnedRows = std.ArrayList([]u8);
 
+fn nextSliceCompat(stream: anytype, input: []const u8) !void {
+    const result = stream.nextSlice(input);
+    switch (@typeInfo(@TypeOf(result))) {
+        .error_union => try result,
+        .void => {},
+        else => @compileError("unexpected nextSlice return type"),
+    }
+}
+
 fn isAltScreen(term: *ghostty_vt.Terminal) bool {
     return term.modes.get(.alt_screen_save_cursor_clear_enter) or
         term.modes.get(.alt_screen) or
@@ -458,7 +467,7 @@ pub fn main() !void {
             const decoded = try alloc.alloc(u8, decoded_len);
             defer alloc.free(decoded);
             _ = std.base64.standard.Decoder.decode(decoded, encoded) catch continue;
-            try stream.nextSlice(decoded);
+            try nextSliceCompat(&stream, decoded);
             try emitFrame(alloc, stdout_writer, &term, &previous_render_rows, &previous_alt_screen, &has_snapshot, false);
             continue;
         }

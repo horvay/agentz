@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
     });
 
     if (b.lazyDependency("ghostty", .{
+        .@"emit-lib-vt" = true,
         .@"emit-macos-app" = false,
         .@"emit-xcframework" = false,
     })) |dep| {

@@ -63,6 +63,15 @@ const ScreenRowPayload = struct {
     text: []const u8,
 };
 
+fn nextSliceCompat(stream: anytype, input: []const u8) !void {
+    const result = stream.nextSlice(input);
+    switch (@typeInfo(@TypeOf(result))) {
+        .error_union => try result,
+        .void => {},
+        else => @compileError("unexpected nextSlice return type"),
+    }
+}
+
 const ExecSpec = struct {
     command_z: [:0]u8,
     arg_storage: std.ArrayList([:0]u8),
@@ -999,7 +1008,7 @@ pub fn main() !void {
                 const read_len = c.read(master_fd, &pty_buf, pty_buf.len);
                 if (read_len > 0) {
                     const bytes = pty_buf[0..@intCast(read_len)];
-                    try stream.nextSlice(bytes);
+                    try nextSliceCompat(&stream, bytes);
                     try pending_vt_bytes.appendSlice(alloc, bytes);
                     pending_frame = true;
                     if (try maybeEmitPendingFrame(

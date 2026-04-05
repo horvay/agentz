@@ -17,6 +17,15 @@ const PROCESS_TERMINATE: win.DWORD = 0x0001;
 const HPCON = win.LPVOID;
 const LPPROC_THREAD_ATTRIBUTE_LIST = ?*anyopaque;
 
+fn nextSliceCompat(stream: anytype, input: []const u8) !void {
+    const result = stream.nextSlice(input);
+    switch (@typeInfo(@TypeOf(result))) {
+        .error_union => try result,
+        .void => {},
+        else => @compileError("unexpected nextSlice return type"),
+    }
+}
+
 const STARTUPINFOEX = extern struct {
     StartupInfo: win.STARTUPINFOW,
     lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST,
@@ -1397,7 +1406,7 @@ pub fn main() !void {
                     output_open = false;
                 } else {
                     const bytes = pty_buf[0..read_len];
-                    try stream.nextSlice(bytes);
+                    try nextSliceCompat(&stream, bytes);
                     try pending_vt_bytes.appendSlice(alloc, bytes);
                     try scanOscCwd(alloc, &osc_buffer, bytes, &last_known_cwd);
                     pending_frame = true;
