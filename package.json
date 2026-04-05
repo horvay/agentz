@@ -87,7 +87,13 @@
 			{
 				"from": "src/native/zig-out/bin",
 				"to": "bin",
-				"filter": ["agentz-pty-host", "agentz-pty-host.exe"]
+				"filter": [
+					"agentz-pty-host",
+					"agentz-pty-host.exe",
+					"agentz-pam-auth-helper",
+					"agentz-macos-auth-helper",
+					"agentz-windows-auth-helper.exe"
+				]
 			}
 		],
 		"linux": {

@@ -17,16 +17,27 @@ describe("createDisabledRpcAuth", () => {
 });
 
 describe("createWebRpcAuth", () => {
-  test("reports unsupported status on non-linux platforms", () => {
+  test("reports system auth for macOS", () => {
     const auth = createWebRpcAuth("darwin");
     expect(auth.enabled).toBe(true);
     expect(auth.sessionStatus()).toMatchObject({
       enabled: true,
       authenticated: false,
       provider: "system",
-      supported: false,
+      supported: true,
       platformLabel: "macOS",
     });
     expect(auth.authorizeWebSocket()).toBe(false);
+  });
+
+  test("reports system auth for Windows", () => {
+    const auth = createWebRpcAuth("win32");
+    expect(auth.sessionStatus()).toMatchObject({
+      enabled: true,
+      authenticated: false,
+      provider: "system",
+      supported: true,
+      platformLabel: "Windows",
+    });
   });
 });

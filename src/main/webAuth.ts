@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { WebAuthLoginResponse, WebAuthSessionStatus } from "../shared/webAuth";
-import { authenticateLinuxSystemUser, suggestedSystemUsername } from "./linuxPamAuth";
+import { authenticateSystemUser, platformLabel, suggestedSystemUsername } from "./systemAuth";
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 
@@ -25,28 +25,12 @@ function pruneExpiredSessions(sessions: Map<string, SessionRecord>, now = Date.n
   }
 }
 
-function createUnsupportedSystemRpcAuth(platform: NodeJS.Platform): RpcAuthController {
-  const platformLabel = platform === "darwin" ? "macOS" : platform === "win32" ? "Windows" : platform;
-
-  return {
-    enabled: true,
-    sessionStatus: () => ({
-      enabled: true,
-      authenticated: false,
-      provider: "system",
-      supported: false,
-      platformLabel,
-      message: "System-account web login is currently implemented only on Linux.",
-    }),
-    login: async () => null,
-    logout: () => {},
-    authorizeWebSocket: () => false,
-  };
-}
-
-function createLinuxPamRpcAuth(): RpcAuthController {
+function createSystemRpcAuth(platform: NodeJS.Platform): RpcAuthController {
   const sessions = new Map<string, SessionRecord>();
   const usernameHint = suggestedSystemUsername();
+  const label = platformLabel(platform);
+  const loginPrompt = `Sign in with the ${label} account on this machine.`;
+  const loginSuccess = `Authenticated with the ${label} account on this machine.`;
 
   const sessionStatus = (token?: string | null): WebAuthSessionStatus => {
     pruneExpiredSessions(sessions);
@@ -56,9 +40,9 @@ function createLinuxPamRpcAuth(): RpcAuthController {
         authenticated: false,
         provider: "system",
         supported: true,
-        platformLabel: "Linux",
+        platformLabel: label,
         suggestedUsername: usernameHint,
-        message: "Sign in with the Linux account on this machine.",
+        message: loginPrompt,
       };
     }
 
@@ -69,9 +53,9 @@ function createLinuxPamRpcAuth(): RpcAuthController {
         authenticated: false,
         provider: "system",
         supported: true,
-        platformLabel: "Linux",
+        platformLabel: label,
         suggestedUsername: usernameHint,
-        message: "Sign in with the Linux account on this machine.",
+        message: loginPrompt,
       };
     }
 
@@ -80,21 +64,21 @@ function createLinuxPamRpcAuth(): RpcAuthController {
       authenticated: true,
       provider: "system",
       supported: true,
-      platformLabel: "Linux",
+      platformLabel: label,
       username: session.username,
       suggestedUsername: usernameHint,
-      message: "Authenticated with the Linux account on this machine.",
+      message: loginSuccess,
     };
   };
 
-  console.log("[web-auth] Web login enabled via Linux system authentication.");
+  console.log(`[web-auth] Web login enabled via ${label} system authentication.`);
 
   return {
     enabled: true,
     sessionStatus,
     login: async (username, password) => {
       pruneExpiredSessions(sessions);
-      const valid = await authenticateLinuxSystemUser(username, password);
+      const valid = await authenticateSystemUser(platform, username, password);
       if (!valid) {
         return null;
       }
@@ -113,10 +97,10 @@ function createLinuxPamRpcAuth(): RpcAuthController {
           authenticated: true,
           provider: "system",
           supported: true,
-          platformLabel: "Linux",
+          platformLabel: label,
           username: normalizedUsername,
           suggestedUsername: usernameHint,
-          message: "Authenticated with the Linux account on this machine.",
+          message: loginSuccess,
         },
       };
     },
@@ -148,8 +132,21 @@ export function createDisabledRpcAuth(): RpcAuthController {
 }
 
 export function createWebRpcAuth(platform: NodeJS.Platform = process.platform): RpcAuthController {
-  if (platform === "linux") {
-    return createLinuxPamRpcAuth();
+  if (platform === "linux" || platform === "darwin" || platform === "win32") {
+    return createSystemRpcAuth(platform);
   }
-  return createUnsupportedSystemRpcAuth(platform);
+  return {
+    enabled: true,
+    sessionStatus: () => ({
+      enabled: true,
+      authenticated: false,
+      provider: "system",
+      supported: false,
+      platformLabel: platformLabel(platform),
+      message: `System-account web login is not supported on ${platformLabel(platform)}.`,
+    }),
+    login: async () => null,
+    logout: () => {},
+    authorizeWebSocket: () => false,
+  };
 }

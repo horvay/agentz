@@ -124,11 +124,15 @@ Web mode stays local-only:
 
 Remote/network access is intentionally disabled until that path is secured.
 
-Web mode now requires a browser login backed by the machine account on Linux. Use the same username and password you would use to sign into the computer itself.
+Web mode now requires a browser login backed by the machine account on the host OS:
 
-- `AGENTZ_PAM_SERVICE` optionally overrides the PAM service name used for Linux authentication
+- Linux: PAM-backed login using the same account you use to sign into the machine
+- macOS: OpenDirectory-backed login using the same account you use to sign into the machine
+- Windows: Win32 `LogonUser` login using the same account you use to sign into the machine
 
-System-account web login is not implemented yet for macOS or Windows.
+Linux-only option:
+
+- `AGENTZ_PAM_SERVICE` overrides the PAM service name used for Linux authentication
 
 ### Launch Panes With Predefined Commands
 
