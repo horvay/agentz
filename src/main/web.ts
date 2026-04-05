@@ -1,5 +1,6 @@
 import { startTerminalRpcServer } from "./server";
 import { createDashboardConfigManager } from "./configManager";
+import { createWebRpcAuth } from "./webAuth";
 import type { LaunchConfig } from "../shared/protocol";
 
 function parseLaunchConfigFromEnv(): LaunchConfig | null {
@@ -15,6 +16,7 @@ function parseLaunchConfigFromEnv(): LaunchConfig | null {
 
 const launchConfig = parseLaunchConfigFromEnv();
 const configManager = createDashboardConfigManager();
-const { host, port } = startTerminalRpcServer(launchConfig ?? {}, configManager);
+const auth = createWebRpcAuth();
+const { host, port } = startTerminalRpcServer(launchConfig ?? {}, configManager, { auth });
 
 console.log(`Web backend listening on ws://${host}:${port}`);

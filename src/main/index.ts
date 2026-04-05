@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { startTerminalRpcServer } from "./server";
 import { createDashboardConfigManager } from "./configManager";
 import { applyMacShellEnvironment } from "./shellEnvironment";
-import { initializeAutoUpdates } from "./appUpdater";
+import {
+  getCurrentAutoUpdateStatus,
+  initializeAutoUpdates,
+  requestManualUpdateCheck,
+  subscribeAutoUpdateStatus,
+} from "./appUpdater";
 import type { LaunchConfig } from "../shared/protocol";
 
 const DEV_SERVER_PORT = 5173;
@@ -134,7 +139,13 @@ async function bootstrap(): Promise<void> {
 
   const launchConfig = parseLaunchConfigFromEnv();
   const configManager = createDashboardConfigManager();
-  const rpcServer = startTerminalRpcServer(launchConfig ?? {}, configManager);
+  const rpcServer = startTerminalRpcServer(launchConfig ?? {}, configManager, {
+    updates: {
+      currentStatus: getCurrentAutoUpdateStatus,
+      requestManualCheck: requestManualUpdateCheck,
+      subscribe: subscribeAutoUpdateStatus,
+    },
+  });
 
   app.on("before-quit", () => {
     rpcServer.close();

@@ -12,7 +12,7 @@ if (buildCode !== 0) {
 await runManaged([
   // Remote web serving is intentionally disabled until the transport is secured.
   // spawnInherited([bun, "x", "vite", "--host", "0.0.0.0", "--port", "5173"]),
-  spawnInherited([bun, "x", "vite", "--host", "127.0.0.1", "--port", "5173"]),
+  spawnInherited([bun, "x", "vite", "--clearScreen", "false", "--host", "127.0.0.1", "--port", "5173"]),
   spawnInherited([bun, "src/main/web.ts"], {
     env: getDesktopLaunchEnv(),
     // env: {

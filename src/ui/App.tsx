@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { AppUpdateStatus, LaunchConfig, PaneLaunchConfig, TerminalFrame } from "../shared/protocol";
+import type { WebAuthSessionStatus } from "../shared/webAuth";
 import {
   cloneDashboardConfig,
   DEFAULT_DASHBOARD_CONFIG,
@@ -33,26 +34,16 @@ import { selectLivePaneIds } from "./livePaneSelection";
 import { recoverTerminalLayout } from "./terminalRecovery";
 import { assignPaneAvatars, pickDeterministicAvatar } from "./avatarAssignments";
 import { dispatchTerminalTextPaste } from "./terminalTextPaste";
+import {
+  fetchWebAuthSession,
+  loadStoredWebAuthToken,
+  loginWebAuth,
+  logoutWebAuth,
+  resolveRpcUrl,
+  storeWebAuthToken,
+} from "./webAuth";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
-
-function resolveRpcUrl(): string {
-  return "ws://127.0.0.1:4599";
-  // Remote RPC connections are intentionally disabled until the transport is secured.
-  // if (typeof window === "undefined") {
-  //   return "ws://127.0.0.1:4599";
-  // }
-  //
-  // const { hostname, protocol } = window.location;
-  // if (!hostname) {
-  //   return "ws://127.0.0.1:4599";
-  // }
-  //
-  // const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
-  // return `${wsProtocol}//${hostname}:4599`;
-}
-
-const rpc = new RpcClient(resolveRpcUrl());
 const FIRST_ID = "term-1";
 const BACKGROUND_TERMINAL_SUFFIX = "-bg";
 const WIDTH_STORAGE_KEY = "agentz.paneWidths.v1";
@@ -538,6 +529,7 @@ ActiveTerminalPane.displayName = "ActiveTerminalPane";
 interface PaneSurfaceContainerProps {
   paneId: string;
   sessionId: string;
+  rpc: RpcClient;
   index: number;
   live: boolean;
   active: boolean;
@@ -567,7 +559,7 @@ const PaneSurfaceContainer = memo(function PaneSurfaceContainer(props: PaneSurfa
       <ActiveTerminalPane
         paneId={props.paneId}
         sessionId={props.sessionId}
-        rpc={rpc}
+        rpc={props.rpc}
         active={props.active}
         accentStyle={props.accentStyle}
         shortcuts={props.shortcuts}
@@ -593,7 +585,107 @@ const PaneSurfaceContainer = memo(function PaneSurfaceContainer(props: PaneSurfa
 
 PaneSurfaceContainer.displayName = "PaneSurfaceContainer";
 
-function App() {
+interface LoginScreenProps {
+  session: WebAuthSessionStatus;
+  pending: boolean;
+  error: string | null;
+  onSubmit: (username: string, password: string) => void | Promise<void>;
+}
+
+function LoginScreen({ session, pending, error, onSubmit }: LoginScreenProps) {
+  const [username, setUsername] = useState(session.suggestedUsername ?? "");
+  const [password, setPassword] = useState("");
+  const systemLabel = session.platformLabel ?? "System";
+  const canSubmit = pending === false && session.supported !== false;
+
+  useEffect(() => {
+    setUsername(session.suggestedUsername ?? "");
+  }, [session.suggestedUsername]);
+
+  return (
+    <main className="auth-shell">
+      <div className="auth-noise" aria-hidden />
+      <section className="auth-panel" aria-label="agentz web sign in">
+        <div className="auth-copy">
+          <span className="auth-kicker">Web Access Gate</span>
+          <h1>Sign in before opening the terminal deck.</h1>
+          <p>{session.message ?? `Web mode uses your ${systemLabel} account on this machine. The desktop app still launches directly.`}</p>
+        </div>
+
+        <div className="auth-metrics" aria-hidden>
+          <div>
+            <span>Scope</span>
+            <strong>Web Only</strong>
+          </div>
+          <div>
+            <span>Backend</span>
+            <strong>127.0.0.1:4599</strong>
+          </div>
+          <div>
+            <span>Mode</span>
+            <strong>{session.supported === false ? "Unavailable" : `${systemLabel} Account`}</strong>
+          </div>
+        </div>
+
+        {session.supported === false ? (
+          <div className="auth-unsupported">
+            <p className="auth-error">{session.message ?? "System-account login is not available on this platform yet."}</p>
+          </div>
+        ) : (
+          <form
+            className="auth-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSubmit(username, password);
+            }}
+          >
+            <label className="auth-field">
+              <span>Username</span>
+              <input
+                autoComplete="username"
+                name="username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="agentz"
+              />
+            </label>
+
+            <label className="auth-field">
+              <span>Password</span>
+              <input
+                autoComplete="current-password"
+                name="password"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder={`Enter ${systemLabel.toLowerCase()} password`}
+              />
+            </label>
+
+            {error ? <p className="auth-error">{error}</p> : null}
+
+            <button type="submit" className="auth-submit" disabled={!canSubmit}>
+              {pending ? "Checking..." : "Open agentz"}
+            </button>
+          </form>
+        )}
+
+        <footer className="auth-footer">
+          <span>Suggested username: {session.suggestedUsername ?? "agentz"}</span>
+          <span>{session.supported === false ? "This mode needs platform-specific system auth support." : `Use your ${systemLabel} username and password.`}</span>
+        </footer>
+      </section>
+    </main>
+  );
+}
+
+interface DashboardAppProps {
+  rpc: RpcClient;
+  authSession: WebAuthSessionStatus;
+  onLogout: (() => void | Promise<void>) | null;
+}
+
+function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
   const [paneIds, setPaneIds] = useState<string[]>([FIRST_ID]);
   const [status, setStatus] = useState("Connecting...");
   const [dashboardConfig, setDashboardConfig] = useState<DashboardConfig>(() =>
@@ -1948,17 +2040,33 @@ function App() {
           }
           aria-label={rpcReady ? "Local terminal backend connected" : "Local terminal backend disconnected"}
         />
-        <button
-          type="button"
-          className="floating-settings-button"
-          onClick={openSettings}
-          title={`Open settings (${shortcuts.openSettings})`}
-          aria-label={`Open settings (${shortcuts.openSettings})`}
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M19.14 12.94c.04-.3.06-.62.06-.94s-.02-.64-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.16 7.16 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.11.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.7 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94L2.82 14.52a.5.5 0 0 0-.12.63l1.92 3.32c.13.23.4.32.64.22l2.35-.95c.5.4 1.05.73 1.65.97l.36 2.5a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.5c.6-.24 1.15-.57 1.65-.97l2.35.95c.24.1.51.01.64-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z" />
-          </svg>
-        </button>
+        <div className="floating-actions">
+          {authSession.enabled ? (
+            <button
+              type="button"
+              className="floating-user-pill"
+              onClick={() => {
+                void onLogout?.();
+              }}
+              title={`Signed in as ${authSession.username ?? authSession.suggestedUsername ?? "agentz"}. Sign out.`}
+              aria-label="Sign out of web mode"
+            >
+              <span>{authSession.username ?? authSession.suggestedUsername ?? "agentz"}</span>
+              <strong>Sign Out</strong>
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="floating-settings-button"
+            onClick={openSettings}
+            title={`Open settings (${shortcuts.openSettings})`}
+            aria-label={`Open settings (${shortcuts.openSettings})`}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M19.14 12.94c.04-.3.06-.62.06-.94s-.02-.64-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.63l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.16 7.16 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.11.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.7 8.85a.5.5 0 0 0 .12.63l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94L2.82 14.52a.5.5 0 0 0-.12.63l1.92 3.32c.13.23.4.32.64.22l2.35-.95c.5.4 1.05.73 1.65.97l.36 2.5a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.5c.6-.24 1.15-.57 1.65-.97l2.35.95c.24.1.51.01.64-.22l1.92-3.32a.5.5 0 0 0-.12-.63l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <section className="avatar-strip" ref={avatarStripRef} aria-label="Terminal avatars">
@@ -2044,6 +2152,7 @@ function App() {
                     <PaneSurfaceContainer
                       paneId={id}
                       sessionId={id}
+                      rpc={rpc}
                       index={index}
                       live={livePaneIdSet.has(id)}
                       active={activeSessionId === id}
@@ -2080,6 +2189,7 @@ function App() {
                       <PaneSurfaceContainer
                         paneId={id}
                         sessionId={id}
+                        rpc={rpc}
                         index={index}
                         live={renderableSessionIdSet.has(id)}
                         active={activeSessionId === id}
@@ -2096,6 +2206,7 @@ function App() {
                       <PaneSurfaceContainer
                         paneId={id}
                         sessionId={backgroundLayerSessionId}
+                        rpc={rpc}
                         index={index}
                         live={renderableSessionIdSet.has(backgroundLayerSessionId)}
                         active={activeSessionId === backgroundLayerSessionId}
@@ -2141,6 +2252,139 @@ function App() {
       />
     </main>
   );
+}
+
+function App() {
+  const [authSession, setAuthSession] = useState<WebAuthSessionStatus | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authPending, setAuthPending] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const refreshAuthSession = useCallback(async (token: string | null) => {
+    const session = await fetchWebAuthSession(token);
+    setAuthSession(session);
+    setAuthToken(session.enabled && session.authenticated ? token : null);
+    return session;
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const initialToken = loadStoredWebAuthToken();
+
+    void (async () => {
+      try {
+        const session = await fetchWebAuthSession(initialToken);
+        if (cancelled) return;
+        if (session.enabled && session.authenticated) {
+          setAuthToken(initialToken);
+        } else {
+          storeWebAuthToken(null);
+          setAuthToken(null);
+        }
+        setAuthSession(session);
+      } catch (error) {
+        if (cancelled) return;
+        setAuthError(error instanceof Error ? error.message : "Failed to check web authentication.");
+      } finally {
+        if (!cancelled) {
+          setAuthPending(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleLogin = useCallback(async (username: string, password: string) => {
+    setAuthPending(true);
+    setAuthError(null);
+    try {
+      const result = await loginWebAuth(username, password);
+      storeWebAuthToken(result.token);
+      setAuthToken(result.token);
+      setAuthSession(result.session);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Login failed.");
+    } finally {
+      setAuthPending(false);
+    }
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    const token = authToken;
+    setAuthPending(true);
+    setAuthError(null);
+    try {
+      await logoutWebAuth(token);
+    } catch {
+      // Ignore logout errors and clear the local session anyway.
+    }
+    storeWebAuthToken(null);
+    try {
+      const session = await refreshAuthSession(null);
+      setAuthSession(session);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Sign out failed.");
+      setAuthSession({
+        enabled: true,
+        authenticated: false,
+      });
+    } finally {
+      setAuthToken(null);
+      setAuthPending(false);
+    }
+  }, [authToken, refreshAuthSession]);
+
+  const rpc = useMemo(() => {
+    if (!authSession) return null;
+    if (authSession.enabled && !authSession.authenticated) return null;
+    return new RpcClient(resolveRpcUrl(authToken));
+  }, [authSession, authToken]);
+
+  useEffect(() => {
+    return () => {
+      rpc?.close();
+    };
+  }, [rpc]);
+
+  if (!authSession || authPending && authSession.authenticated !== true && authSession.enabled !== false) {
+    return (
+      <main className="auth-shell auth-shell-loading">
+        <section className="auth-panel auth-panel-loading">
+          <span className="auth-kicker">agentz</span>
+          <h1>Checking web access…</h1>
+          <p>{authError ?? "Contacting the local terminal backend."}</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (authSession.enabled && !authSession.authenticated) {
+    return (
+      <LoginScreen
+        session={authSession}
+        pending={authPending}
+        error={authError}
+        onSubmit={handleLogin}
+      />
+    );
+  }
+
+  if (!rpc) {
+    return (
+      <main className="auth-shell auth-shell-loading">
+        <section className="auth-panel auth-panel-loading">
+          <span className="auth-kicker">agentz</span>
+          <h1>Preparing terminal deck…</h1>
+          <p>{authError ?? "Connecting to the RPC backend."}</p>
+        </section>
+      </main>
+    );
+  }
+
+  return <DashboardApp rpc={rpc} authSession={authSession} onLogout={authSession.enabled ? handleLogout : null} />;
 }
 
 export default App;

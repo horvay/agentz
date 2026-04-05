@@ -36,6 +36,7 @@ export class RpcClient {
   private readonly url: string;
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
+  private closed = false;
   private queuedMessages: string[] = [];
   private frameHandlers = new Set<FrameHandler>();
   private exitHandlers = new Set<ExitHandler>();
@@ -54,6 +55,7 @@ export class RpcClient {
   }
 
   private connect(): void {
+    if (this.closed) return;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -82,6 +84,7 @@ export class RpcClient {
   }
 
   private scheduleReconnect(): void {
+    if (this.closed) return;
     if (this.reconnectTimer != null) return;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
@@ -137,6 +140,7 @@ export class RpcClient {
   }
 
   send(message: ClientMessage): void {
+    if (this.closed) return;
     const payload = JSON.stringify(message);
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(payload);
@@ -196,5 +200,19 @@ export class RpcClient {
   onUpdateStatus(cb: UpdateStatusHandler): () => void {
     this.updateStatusHandlers.add(cb);
     return () => this.updateStatusHandlers.delete(cb);
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.reconnectTimer != null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const ws = this.ws;
+    this.ws = null;
+    if (!ws) return;
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close();
+    }
   }
 }
