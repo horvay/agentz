@@ -551,12 +551,7 @@ export function TerminalPane({
       if (enterSequence) {
         event.preventDefault();
         userInputHandlerRef.current(id);
-        syncViewportSizeToServer({
-          immediate: IS_WINDOWS,
-          requestSnapshot: true,
-          forceSnapshot: true,
-          snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
-        });
+        syncViewportSizeToServer({ immediate: IS_WINDOWS });
         rpc.send({ type: "input", id, data: enterSequence, encoding: "utf8" });
         return false;
       }
@@ -637,22 +632,12 @@ export function TerminalPane({
 
     const dataSubscription = terminal.onData((data) => {
       userInputHandlerRef.current(id);
-      syncViewportSizeToServer({
-        immediate: IS_WINDOWS,
-        requestSnapshot: true,
-        forceSnapshot: true,
-        snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
-      });
+      syncViewportSizeToServer({ immediate: IS_WINDOWS });
       rpc.send({ type: "input", id, data, encoding: "utf8" });
     });
     const binarySubscription = terminal.onBinary((data) => {
       userInputHandlerRef.current(id);
-      syncViewportSizeToServer({
-        immediate: IS_WINDOWS,
-        requestSnapshot: true,
-        forceSnapshot: true,
-        snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
-      });
+      syncViewportSizeToServer({ immediate: IS_WINDOWS });
       rpc.send({ type: "input", id, data, encoding: "binary" });
     });
     const resizeSubscription = terminal.onResize(({ cols, rows }) => {
