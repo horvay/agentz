@@ -386,8 +386,20 @@ export function TerminalPane({
         });
         return;
       }
-      const activeBuffer = terminal.buffer.active;
-      const scrollbackOffset = Math.max(0, activeBuffer.baseY - activeBuffer.viewportY);
+      if (typeof payloadWithModes === "string") {
+        // Keep primary-screen full restores atomic too. Resetting xterm first can
+        // leave the pane visibly blank between rapid shell updates on Windows.
+        terminal.write(`\u001b[?1049l\u001b[H\u001b[2J\u001b[3J${payloadWithModes}`, () => {
+          syncTerminalCursor(terminal, screen, frame);
+          lastModeStateKeyRef.current = nextModeStateKey;
+          if (TERMINAL_DEBUG) {
+            console.log("[terminal-pane] applyFrame full primary complete", { id, seq: frame.seq });
+          }
+          terminal.scrollToBottom();
+          done();
+        });
+        return;
+      }
       terminal.reset();
       terminal.write(payloadWithModes, () => {
         syncTerminalCursor(terminal, screen, frame);
@@ -395,12 +407,7 @@ export function TerminalPane({
         if (TERMINAL_DEBUG) {
           console.log("[terminal-pane] applyFrame full complete", { id, seq: frame.seq });
         }
-        if (scrollbackOffset > 0) {
-          const nextTarget = Math.max(0, terminal.buffer.active.baseY - scrollbackOffset);
-          terminal.scrollToLine(nextTarget);
-        } else {
-          terminal.scrollToBottom();
-        }
+        terminal.scrollToBottom();
         done();
       });
       return;
