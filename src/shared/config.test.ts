@@ -11,6 +11,7 @@ describe("dashboard config shortcuts", () => {
     const cloned = cloneDashboardConfig(DEFAULT_DASHBOARD_CONFIG);
     expect(cloned.visibleLivePanes).toBe(DEFAULT_DASHBOARD_CONFIG.visibleLivePanes);
     expect(cloned.enableAutoUpdates).toBe(DEFAULT_DASHBOARD_CONFIG.enableAutoUpdates);
+    expect(cloned.remoteAccess.enabled).toBe(DEFAULT_DASHBOARD_CONFIG.remoteAccess.enabled);
     expect(cloned.shortcuts.toggleBackgroundTerminal).toBe(
       DEFAULT_DASHBOARD_CONFIG.shortcuts.toggleBackgroundTerminal,
     );
@@ -48,5 +49,14 @@ describe("dashboard config shortcuts", () => {
   test("normalizeDashboardConfig accepts auto update preference", () => {
     const normalized = normalizeDashboardConfig({ enableAutoUpdates: false });
     expect(normalized.enableAutoUpdates).toBe(false);
+  });
+
+  test("normalizeDashboardConfig accepts remote access preference", () => {
+    const normalized = normalizeDashboardConfig({
+      remoteAccess: {
+        enabled: true,
+      },
+    });
+    expect(normalized.remoteAccess.enabled).toBe(true);
   });
 });

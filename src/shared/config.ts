@@ -17,10 +17,15 @@ export interface DashboardShortcuts {
   openSettings: string;
 }
 
+export interface RemoteAccessConfig {
+  enabled: boolean;
+}
+
 export interface DashboardConfig {
   defaultPaneWidth: number;
   visibleLivePanes: number;
   enableAutoUpdates: boolean;
+  remoteAccess: RemoteAccessConfig;
   shortcuts: DashboardShortcuts;
 }
 
@@ -28,6 +33,9 @@ export const DEFAULT_DASHBOARD_CONFIG: DashboardConfig = {
   defaultPaneWidth: DEFAULT_PANE_WIDTH,
   visibleLivePanes: DEFAULT_VISIBLE_LIVE_PANES,
   enableAutoUpdates: true,
+  remoteAccess: {
+    enabled: false,
+  },
   shortcuts: {
     addPane: "Ctrl+Shift+N",
     toggleBackgroundTerminal: "Ctrl+B",
@@ -115,6 +123,9 @@ export function cloneDashboardConfig(config: DashboardConfig): DashboardConfig {
     defaultPaneWidth: config.defaultPaneWidth,
     visibleLivePanes: config.visibleLivePanes,
     enableAutoUpdates: config.enableAutoUpdates,
+    remoteAccess: {
+      enabled: config.remoteAccess.enabled,
+    },
     shortcuts: {
       addPane: config.shortcuts.addPane,
       toggleBackgroundTerminal: config.shortcuts.toggleBackgroundTerminal,
@@ -134,6 +145,7 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
   let defaultPaneWidth = defaults.defaultPaneWidth;
   let visibleLivePanes = defaults.visibleLivePanes;
   let enableAutoUpdates = defaults.enableAutoUpdates;
+  let remoteAccess: RemoteAccessConfig = { ...defaults.remoteAccess };
   let shortcuts: DashboardShortcuts = { ...defaults.shortcuts };
 
   if (typeof value === "object" && value) {
@@ -141,6 +153,9 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
       defaultPaneWidth?: unknown;
       visibleLivePanes?: unknown;
       enableAutoUpdates?: unknown;
+      remoteAccess?: {
+        enabled?: unknown;
+      };
       shortcuts?: Partial<Record<keyof DashboardShortcuts, unknown>>;
     };
 
@@ -157,6 +172,14 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
 
     if (typeof candidate.enableAutoUpdates === "boolean") {
       enableAutoUpdates = candidate.enableAutoUpdates;
+    }
+
+    if (candidate.remoteAccess && typeof candidate.remoteAccess === "object") {
+      if (typeof candidate.remoteAccess.enabled === "boolean") {
+        remoteAccess = {
+          enabled: candidate.remoteAccess.enabled,
+        };
+      }
     }
 
     if (candidate.shortcuts && typeof candidate.shortcuts === "object") {
@@ -217,6 +240,7 @@ export function normalizeDashboardConfig(value: unknown): DashboardConfig {
     defaultPaneWidth,
     visibleLivePanes,
     enableAutoUpdates,
+    remoteAccess,
     shortcuts,
   };
 }

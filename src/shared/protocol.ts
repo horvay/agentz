@@ -1,4 +1,5 @@
 import type { DashboardConfig } from "./config";
+import type { RemoteAccessState } from "./webAuth";
 
 export type TerminalId = string;
 
@@ -442,6 +443,10 @@ export type ClientMessage =
       rows: number;
     }
   | {
+      type: "focus-terminal";
+      id: TerminalId;
+    }
+  | {
       type: "input";
       id: TerminalId;
       data: string;
@@ -479,8 +484,23 @@ export type ClientMessage =
       type: "get-config";
     }
   | {
+      type: "get-remote-access-state";
+    }
+  | {
       type: "set-config";
       config: DashboardConfig;
+    }
+  | {
+      type: "approve-remote-pairing";
+      requestId: string;
+    }
+  | {
+      type: "reject-remote-pairing";
+      requestId: string;
+    }
+  | {
+      type: "forget-remote-device";
+      deviceId: string;
     }
   | {
       type: "check-updates";
@@ -493,6 +513,7 @@ export type ClientMessage =
 export type ServerMessage =
   | { type: "ready"; serverVersion: string }
   | { type: "config"; config: DashboardConfig }
+  | { type: "remote-access-state"; state: RemoteAccessState }
   | { type: "terminal-created"; id: TerminalId }
   | { type: "terminal-exited"; id: TerminalId; exitCode: number }
   | { type: "terminal-frame"; frame: TerminalFrame }

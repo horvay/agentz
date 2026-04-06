@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, TouchEvent as ReactTouchEvent } from "react";
 import type { AppUpdateStatus, LaunchConfig, PaneLaunchConfig, TerminalFrame } from "../shared/protocol";
-import type { WebAuthSessionStatus } from "../shared/webAuth";
+import type { RemoteAccessState, RemoteSessionStatus } from "../shared/webAuth";
 import {
   cloneDashboardConfig,
   DEFAULT_DASHBOARD_CONFIG,
@@ -34,13 +34,21 @@ import { selectLivePaneIds } from "./livePaneSelection";
 import { recoverTerminalLayout } from "./terminalRecovery";
 import { assignPaneAvatars, pickDeterministicAvatar } from "./avatarAssignments";
 import { dispatchTerminalTextPaste } from "./terminalTextPaste";
+import { DEBUG_LOGS_ENABLED } from "./debugLogs";
 import {
-  fetchWebAuthSession,
-  loadStoredWebAuthToken,
-  loginWebAuth,
-  logoutWebAuth,
+  describeThisDevice,
+  fetchRemoteAccessStatus,
+  isRemoteWebRuntime,
+  loadPendingPairingRequestId,
+  loadStoredRemoteDeviceToken,
+  loadStoredRemoteSessionToken,
+  pollRemotePairing,
+  resolveRpcProtocols,
   resolveRpcUrl,
-  storeWebAuthToken,
+  startRemotePairing,
+  storePendingPairingRequestId,
+  storeRemoteDeviceToken,
+  storeRemoteSessionToken,
 } from "./webAuth";
 import idleIconUrl from "../../assets/icons/idle.svg";
 import questionIconUrl from "../../assets/icons/question.svg";
@@ -54,10 +62,13 @@ const ACTIVE_INPUT_FLOW_HOLD_MS = 180;
 const PANE_CENTER_ANIMATION_MS = 160;
 const LIVE_VISIBLE_PANE_FRAME_INTERVAL_MS = 90;
 const VISIBLE_PANE_INTERSECTION_RATIO = 0.2;
+const MOBILE_BREAKPOINT_PX = 820;
+const MOBILE_SWIPE_MIN_PX = 54;
 const AVATAR_IDS = avatarCatalog.map((avatar) => avatar.id);
 const avatarById: Record<AvatarId, AvatarDefinition> = Object.fromEntries(
   avatarCatalog.map((avatar) => [avatar.id, avatar]),
 ) as Record<AvatarId, AvatarDefinition>;
+const DASHBOARD_DEBUG = DEBUG_LOGS_ENABLED;
 type BackgroundTerminalMap = Record<string, string[]>;
 
 function paneTitle(index: number): string {
@@ -123,6 +134,10 @@ function loadStoredPaneWidths(): Record<string, number> {
   } catch {
     return {};
   }
+}
+
+function isMobileViewportWidth(width: number): boolean {
+  return width <= MOBILE_BREAKPOINT_PX;
 }
 
 function assignUniqueAvatars(ids: string[]): Record<string, AvatarId> {
@@ -201,8 +216,12 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     rows: frame.rows,
     seq: frame.seq,
     cwd: frame.cwd,
+    screenMode: frame.screenMode,
+    screenRows: frame.screenRows,
+    renderVt: frame.renderVt,
     renderPatchKind: frame.renderPatchKind,
     renderPatchVt: frame.renderPatchVt,
+    renderPatchBytes: frame.renderPatchBytes,
     chunk: frame.chunk.slice(-MAX_ACTIVITY_CHUNK_CHARS),
     vt: frame.vt.slice(-MAX_ACTIVITY_VT_CHARS),
     previewLines: frame.previewLines,
@@ -281,9 +300,14 @@ function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalF
   const isMetadataOnly =
     !next.renderVt && !next.renderPatchVt && !next.renderPatchBytes && !next.screenRows?.length && !next.chunk;
   if (!isCursorOnly && !isMetadataOnly) return next;
+  const carriesRenderablePayload =
+    next.screenMode === "full" ||
+    typeof next.renderVt === "string" ||
+    typeof next.renderPatchVt === "string" ||
+    next.renderPatchBytes instanceof Uint8Array;
   return {
     ...existing,
-    seq: next.seq,
+    seq: carriesRenderablePayload ? next.seq : existing.seq,
     cols: next.cols,
     rows: next.rows,
     cwd: next.cwd ?? existing.cwd,
@@ -484,6 +508,7 @@ interface ActiveTerminalPaneProps {
   sessionId: string;
   rpc: RpcClient;
   active: boolean;
+  autoClaimViewport: boolean;
   accentStyle?: CSSProperties;
   shortcuts: DashboardConfig["shortcuts"];
   onActivate: (id: string) => void;
@@ -513,6 +538,7 @@ const ActiveTerminalPane = memo(function ActiveTerminalPane(props: ActiveTermina
       currentFrame={pane.frame}
       pendingFrames={pane.queuedFrames}
       active={props.active}
+      autoClaimViewport={props.autoClaimViewport}
       accentStyle={props.accentStyle}
       shortcuts={props.shortcuts}
       onActivate={() => props.onActivate(props.paneId)}
@@ -533,6 +559,7 @@ interface PaneSurfaceContainerProps {
   index: number;
   live: boolean;
   active: boolean;
+  autoClaimViewport: boolean;
   accentStyle?: CSSProperties;
   shortcuts: DashboardConfig["shortcuts"];
   onActivate: (id: string) => void;
@@ -561,6 +588,7 @@ const PaneSurfaceContainer = memo(function PaneSurfaceContainer(props: PaneSurfa
         sessionId={props.sessionId}
         rpc={props.rpc}
         active={props.active}
+        autoClaimViewport={props.autoClaimViewport}
         accentStyle={props.accentStyle}
         shortcuts={props.shortcuts}
         onActivate={props.onActivate}
@@ -585,95 +613,83 @@ const PaneSurfaceContainer = memo(function PaneSurfaceContainer(props: PaneSurfa
 
 PaneSurfaceContainer.displayName = "PaneSurfaceContainer";
 
-interface LoginScreenProps {
-  session: WebAuthSessionStatus;
+interface RemoteAccessGateProps {
+  session: RemoteSessionStatus;
   pending: boolean;
   error: string | null;
-  onSubmit: (username: string, password: string) => void | Promise<void>;
+  onSubmitPasscode: (passcode: string) => void | Promise<void>;
 }
 
-function LoginScreen({ session, pending, error, onSubmit }: LoginScreenProps) {
-  const [username, setUsername] = useState(session.suggestedUsername ?? "");
-  const [password, setPassword] = useState("");
-  const systemLabel = session.platformLabel ?? "System";
-  const canSubmit = pending === false && session.supported !== false;
-
-  useEffect(() => {
-    setUsername(session.suggestedUsername ?? "");
-  }, [session.suggestedUsername]);
+function RemoteAccessGate({ session, pending, error, onSubmitPasscode }: RemoteAccessGateProps) {
+  const [passcode, setPasscode] = useState("");
+  const canSubmit = Boolean(passcode.trim()) && pending === false && session.enabled && session.pairingsLocked === false;
 
   return (
-    <main className="auth-shell">
+    <main className="auth-shell auth-shell-remote">
       <div className="auth-noise" aria-hidden />
-      <section className="auth-panel" aria-label="agentz web sign in">
+      <section className="auth-panel auth-panel-remote" aria-label="agentz remote access">
         <div className="auth-copy">
-          <span className="auth-kicker">Web Access Gate</span>
-          <h1>Sign in before opening the terminal deck.</h1>
-          <p>{session.message ?? `Web mode uses your ${systemLabel} account on this machine. The desktop app still launches directly.`}</p>
+          <span className="auth-kicker">Remote Pairing</span>
+          <h1>
+            {session.pendingPairing
+              ? "Approval is waiting in the desktop app."
+              : session.enabled
+                ? "Enter the passcode before this browser can knock."
+                : "Remote access is currently turned off."}
+          </h1>
+          <p>
+            {session.message ??
+              "The desktop app now owns remote access directly. Pair this browser there instead of signing into the machine itself."}
+          </p>
         </div>
 
         <div className="auth-metrics" aria-hidden>
           <div>
-            <span>Scope</span>
-            <strong>Web Only</strong>
-          </div>
-          <div>
-            <span>Backend</span>
-            <strong>127.0.0.1:4599</strong>
-          </div>
-          <div>
             <span>Mode</span>
-            <strong>{session.supported === false ? "Unavailable" : `${systemLabel} Account`}</strong>
+            <strong>Pairing + Approval</strong>
+          </div>
+          <div>
+            <span>Browser</span>
+            <strong>{describeThisDevice()}</strong>
+          </div>
+          <div>
+            <span>Status</span>
+            <strong>{session.pendingPairing ? "Awaiting Approval" : session.pairingsLocked ? "Locked" : "Passcode Gate"}</strong>
           </div>
         </div>
 
-        {session.supported === false ? (
-          <div className="auth-unsupported">
-            <p className="auth-error">{session.message ?? "System-account login is not available on this platform yet."}</p>
-          </div>
-        ) : (
-          <form
-            className="auth-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              onSubmit(username, password);
-            }}
-          >
-            <label className="auth-field">
-              <span>Username</span>
-              <input
-                autoComplete="username"
-                name="username"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                placeholder="agentz"
-              />
-            </label>
-
-            <label className="auth-field">
-              <span>Password</span>
-              <input
-                autoComplete="current-password"
-                name="password"
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder={`Enter ${systemLabel.toLowerCase()} password`}
-              />
-            </label>
-
-            {error ? <p className="auth-error">{error}</p> : null}
-
-            <button type="submit" className="auth-submit" disabled={!canSubmit}>
-              {pending ? "Checking..." : "Open agentz"}
-            </button>
-          </form>
-        )}
-
-        <footer className="auth-footer">
-          <span>Suggested username: {session.suggestedUsername ?? "agentz"}</span>
-          <span>{session.supported === false ? "This mode needs platform-specific system auth support." : `Use your ${systemLabel} username and password.`}</span>
-        </footer>
+        {session.pendingPairing
+          ? (
+            <div className="auth-wait-card">
+              <strong>Approval required</strong>
+              <p>Open Settings in the desktop app and approve this browser from the Remote Access section.</p>
+            </div>
+          )
+          : (
+            <form
+              className="auth-form auth-form-passcode"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void onSubmitPasscode(passcode);
+              }}
+            >
+              <label className="auth-field auth-field-passcode">
+                <span>Pairing passcode</span>
+                <input
+                  autoComplete="one-time-code"
+                  inputMode="text"
+                  name="passcode"
+                  value={passcode}
+                  onChange={(event) => setPasscode(event.target.value.toUpperCase())}
+                  placeholder="ABCD-1234"
+                />
+              </label>
+              {error ? <p className="auth-error">{error}</p> : null}
+              <button type="submit" className="auth-submit" disabled={!canSubmit}>
+                {pending ? "Checking..." : session.pairingsLocked ? "Pairing locked" : "Request access"}
+              </button>
+            </form>
+          )}
       </section>
     </main>
   );
@@ -681,16 +697,28 @@ function LoginScreen({ session, pending, error, onSubmit }: LoginScreenProps) {
 
 interface DashboardAppProps {
   rpc: RpcClient;
-  authSession: WebAuthSessionStatus;
-  onLogout: (() => void | Promise<void>) | null;
+  remoteAccessState: RemoteAccessState | null;
+  remoteSessionLabel?: string | null;
+  onApproveRemotePairing: (requestId: string) => void;
+  onRejectRemotePairing: (requestId: string) => void;
+  onForgetRemoteDevice: (deviceId: string) => void;
 }
 
-function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
+function DashboardApp({
+  rpc,
+  remoteAccessState,
+  remoteSessionLabel,
+  onApproveRemotePairing,
+  onRejectRemotePairing,
+  onForgetRemoteDevice,
+}: DashboardAppProps) {
+  const autoClaimViewport = remoteSessionLabel == null;
   const [paneIds, setPaneIds] = useState<string[]>([FIRST_ID]);
   const [status, setStatus] = useState("Connecting...");
   const [dashboardConfig, setDashboardConfig] = useState<DashboardConfig>(() =>
     cloneDashboardConfig(DEFAULT_DASHBOARD_CONFIG),
   );
+  const [currentRemoteAccessState, setCurrentRemoteAccessState] = useState<RemoteAccessState | null>(remoteAccessState);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus>({
     state: "idle",
@@ -707,8 +735,12 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
   const [paneCwds, setPaneCwds] = useState<Record<string, string | undefined>>({});
   const [paneStackFlipNonce, setPaneStackFlipNonce] = useState<Record<string, number>>({});
   const [visiblePaneIds, setVisiblePaneIds] = useState<string[]>([FIRST_ID]);
+  const [pendingViewportClaimSessionId, setPendingViewportClaimSessionId] = useState<string | null>(null);
   const [stripWidth, setStripWidth] = useState(0);
   const [avatarStripWidth, setAvatarStripWidth] = useState(0);
+  const [isMobileViewport, setIsMobileViewport] = useState<boolean>(() =>
+    typeof window !== "undefined" ? isMobileViewportWidth(window.innerWidth) : false
+  );
   const activePaneRef = useRef(FIRST_ID);
   const framesRef = useRef<Record<string, TerminalFrame>>({});
   const frameQueuesRef = useRef<Record<string, TerminalFrame[]>>({});
@@ -737,14 +769,20 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
   const inputPriorityActiveRef = useRef(false);
   const paneFlowPausedRef = useRef<Record<string, boolean>>({});
   const paneTextPasteHandlersRef = useRef<Record<string, (text: string) => void>>({});
+  const mobileSwipeRef = useRef<{ x: number; y: number } | null>(null);
   const bootstrappedRef = useRef(false);
   const hasLaunchConfigRef = useRef(false);
   const hasDashboardConfigRef = useRef(false);
   const hasTerminalListRef = useRef(false);
   const serverTerminalIdsRef = useRef<string[]>([]);
+  const previousAllSessionIdsRef = useRef<string[]>([FIRST_ID]);
   const shortcuts = dashboardConfig.shortcuts;
   const defaultPaneWidth = dashboardConfig.defaultPaneWidth;
   const defaultPaneWidthRef = useRef(defaultPaneWidth);
+
+  useEffect(() => {
+    setCurrentRemoteAccessState(remoteAccessState);
+  }, [remoteAccessState]);
 
   activePaneRef.current = activePane;
   paneIdsRef.current = paneIds;
@@ -766,6 +804,7 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       ),
     [activePane, backgroundTerminalIds, visibleSessionIds],
   );
+  const activePaneRuntime = usePaneRuntime(activePane);
   const allSessionIds = useMemo(() => {
     const sessionIds = [...paneIds];
     for (const paneId of paneIds) {
@@ -860,10 +899,50 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
   const setActivePaneCentered = useCallback(
     (id: string, behavior: ScrollBehavior = "smooth") => {
       setActivePane(id);
-      centerPaneWhenReady(id, behavior);
+      if (!isMobileViewport) {
+        centerPaneWhenReady(id, behavior);
+      }
     },
-    [centerPaneWhenReady],
+    [centerPaneWhenReady, isMobileViewport],
   );
+
+  const queueViewportClaimForPane = useCallback((paneId: string) => {
+    if (autoClaimViewport) return;
+    const sessionId = visibleSessionIdForPane(
+      paneId,
+      backgroundTerminalIdsRef.current[paneId],
+      visibleSessionIdsRef.current[paneId],
+    );
+    setPendingViewportClaimSessionId(sessionId);
+  }, [autoClaimViewport]);
+
+  const activatePaneFromUi = useCallback((paneId: string, behavior: ScrollBehavior = "smooth") => {
+    queueViewportClaimForPane(paneId);
+    setActivePaneCentered(paneId, behavior);
+  }, [queueViewportClaimForPane, setActivePaneCentered]);
+
+  useEffect(() => {
+    const syncViewportMode = () => {
+      setIsMobileViewport(isMobileViewportWidth(window.innerWidth));
+    };
+    syncViewportMode();
+    window.addEventListener("resize", syncViewportMode);
+    return () => window.removeEventListener("resize", syncViewportMode);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileViewport) return;
+    setVisiblePaneIds((prev) => (prev.length === 1 && prev[0] === activePane ? prev : [activePane]));
+  }, [activePane, isMobileViewport]);
+
+  useEffect(() => {
+    if (!pendingViewportClaimSessionId) return;
+    if (activeSessionId !== pendingViewportClaimSessionId) return;
+    const frame = window.requestAnimationFrame(() => {
+      setPendingViewportClaimSessionId((current) => current === activeSessionId ? null : current);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSessionId, pendingViewportClaimSessionId]);
 
   useEffect(() => {
     const strip = stripRef.current;
@@ -873,9 +952,10 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
     const observer = new ResizeObserver(syncWidth);
     observer.observe(strip);
     return () => observer.disconnect();
-  }, []);
+  }, [isMobileViewport]);
 
   useEffect(() => {
+    if (isMobileViewport) return;
     const strip = stripRef.current;
     if (!strip) return;
 
@@ -921,7 +1001,7 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       observer.disconnect();
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [paneIds, paneWidths]);
+  }, [isMobileViewport, paneIds, paneWidths]);
 
   useEffect(() => {
     const avatarStrip = avatarStripRef.current;
@@ -938,6 +1018,9 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
     launch?: PaneLaunchConfig,
   ) => {
     if (createdIdsRef.current.has(id)) return;
+    if (DASHBOARD_DEBUG) {
+      console.log("[dashboard] createTerminal", { id, launch });
+    }
     createdIdsRef.current.add(id);
     rpc.send({
       type: "create",
@@ -951,6 +1034,11 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
   }, []);
 
   const ensureBootstrapTerminals = useCallback(() => {
+    if (DASHBOARD_DEBUG) {
+      console.log("[dashboard] ensureBootstrapTerminals", {
+        launchConfig: launchConfigRef.current,
+      });
+    }
     const launchPanes = normalizeLaunchPanes(launchConfigRef.current);
     const cappedLaunchPanes = launchPanes.slice(0, MAX_AVATAR_PANES);
     if (launchPanes.length > MAX_AVATAR_PANES) {
@@ -1131,6 +1219,15 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
   }, [createTerminal, ensureBootstrapTerminals]);
 
   const reconcileTerminals = useCallback(() => {
+    if (DASHBOARD_DEBUG) {
+      console.log("[dashboard] reconcileTerminals", {
+        hasLaunchConfig: hasLaunchConfigRef.current,
+        hasDashboardConfig: hasDashboardConfigRef.current,
+        hasTerminalList: hasTerminalListRef.current,
+        bootstrapped: bootstrappedRef.current,
+        serverIds: serverTerminalIdsRef.current,
+      });
+    }
     if (!hasLaunchConfigRef.current || !hasDashboardConfigRef.current || !hasTerminalListRef.current) return;
     const serverIds = serverTerminalIdsRef.current;
     if (!bootstrappedRef.current) {
@@ -1178,10 +1275,10 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
     });
     avatarStatesRef.current = { ...avatarStatesRef.current, [id]: "idle" };
     paneRuntimeStore.patchPane(id, { status: "booting", avatarState: "idle", queuedFrames: [] });
-    setActivePaneCentered(id);
+    activatePaneFromUi(id);
     const cwd = resolveNewPaneCwd(activeSessionIdRef.current, paneCwds, framesRef.current);
     createTerminal(id, cwd ? { cwd } : undefined);
-  }, [createTerminal, defaultPaneWidth, paneCwds, setActivePaneCentered]);
+  }, [activatePaneFromUi, createTerminal, defaultPaneWidth, paneCwds]);
 
   const triggerPaneStackFlip = useCallback((paneId: string) => {
     setPaneStackFlipNonce((prev) => ({
@@ -1235,7 +1332,7 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       if (backgroundIds.length === 0) {
         createBackgroundTerminalForPane(paneId);
         triggerPaneStackFlip(paneId);
-        setActivePaneCentered(paneId);
+        activatePaneFromUi(paneId);
         setStatus(`${paneLabel} background terminal ready`);
         return;
       }
@@ -1253,12 +1350,12 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
         return { ...prev, [paneId]: nextSessionId };
       });
       triggerPaneStackFlip(paneId);
-      setActivePaneCentered(paneId);
+      activatePaneFromUi(paneId);
       setStatus(
         `${paneLabel} ${nextSessionId === paneId ? "main terminal restored" : "background terminal opened"}`,
       );
     },
-    [createBackgroundTerminalForPane, setActivePaneCentered, triggerPaneStackFlip],
+    [activatePaneFromUi, createBackgroundTerminalForPane, triggerPaneStackFlip],
   );
 
   const addBackgroundTerminalForPane = useCallback(
@@ -1269,10 +1366,10 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       const backgroundId = createBackgroundTerminalForPane(paneId);
       const backgroundCount = (backgroundTerminalIdsRef.current[paneId]?.length ?? 0) + 1;
       triggerPaneStackFlip(paneId);
-      setActivePaneCentered(paneId);
+      activatePaneFromUi(paneId);
       setStatus(`${paneLabel} background terminal ${backgroundCount} opened (${backgroundId})`);
     },
-    [createBackgroundTerminalForPane, setActivePaneCentered, triggerPaneStackFlip],
+    [activatePaneFromUi, createBackgroundTerminalForPane, triggerPaneStackFlip],
   );
 
   const toggleBackgroundTerminal = useCallback(() => {
@@ -1302,9 +1399,9 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       const step = direction === "right" ? 1 : -1;
       const nextIndex = Math.max(0, Math.min(paneIdsRef.current.length - 1, currentIndex + step));
       if (nextIndex === currentIndex) return;
-      setActivePaneCentered(paneIdsRef.current[nextIndex]);
+      activatePaneFromUi(paneIdsRef.current[nextIndex]);
     },
-    [setActivePaneCentered],
+    [activatePaneFromUi],
   );
 
   const reorderActivePane = useCallback(
@@ -1503,6 +1600,7 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       hasTerminalListRef.current = false;
       rpc.send({ type: "launch-config" });
       rpc.send({ type: "get-config" });
+      rpc.send({ type: "get-remote-access-state" });
       rpc.send({ type: "list" });
     });
     const disposeConfig = rpc.onConfig((config) => {
@@ -1510,6 +1608,9 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       hasDashboardConfigRef.current = true;
       setDashboardConfig(config);
       reconcileTerminals();
+    });
+    const disposeRemoteAccessState = rpc.onRemoteAccessState((state) => {
+      setCurrentRemoteAccessState(state);
     });
     const disposeLaunchConfig = rpc.onLaunchConfig((config) => {
       launchConfigRef.current = config;
@@ -1527,6 +1628,11 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
     const disposeCreated = rpc.onCreated((id) => {
       paneStatusRef.current = { ...paneStatusRef.current, [id]: "running" };
       paneRuntimeStore.patchPane(id, { status: "running" });
+      if (!serverTerminalIdsRef.current.includes(id)) {
+        serverTerminalIdsRef.current = [...serverTerminalIdsRef.current, id];
+        hasTerminalListRef.current = true;
+        reconcileTerminals();
+      }
       setStatus("Connected");
     });
     const disposeFrame = rpc.onFrame((frame) => {
@@ -1667,10 +1773,6 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       }
     });
 
-    rpc.send({ type: "launch-config" });
-    rpc.send({ type: "get-config" });
-    rpc.send({ type: "list" });
-
     return () => {
       if (pendingFrameFlushRafRef.current != null) {
         window.cancelAnimationFrame(pendingFrameFlushRafRef.current);
@@ -1683,6 +1785,7 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       disposeConnection();
       disposeReady();
       disposeConfig();
+      disposeRemoteAccessState();
       disposeLaunchConfig();
       disposeTerminalList();
       disposeUpdateStatus();
@@ -1706,6 +1809,23 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       rpc.send({ type: "flow", id, paused });
     }
   }, [activeSessionId, allSessionIds, inputPriorityActive]);
+
+  useEffect(() => {
+    const previousIds = new Set(previousAllSessionIdsRef.current);
+    const addedIds = allSessionIds.filter((id) => !previousIds.has(id));
+    previousAllSessionIdsRef.current = allSessionIds;
+    if (addedIds.length === 0) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      addedIds.forEach((id) => {
+        rpc.send({ type: "snapshot", id });
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [allSessionIds, rpc]);
 
   const handleFramesQueued = useCallback((id: string, lastSeq: number) => {
     const pending = frameQueuesRef.current[id];
@@ -1918,21 +2038,24 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
   }, [activeSessionId, allSessionIds, backgroundFrameIntervalMs, renderableSessionIds]);
 
   useEffect(() => {
+    if (isMobileViewport) return;
     centerPaneWhenReady(activePane, "smooth");
-  }, [activePane, centerPaneWhenReady]);
+  }, [activePane, centerPaneWhenReady, isMobileViewport]);
 
   useLayoutEffect(() => {
+    if (isMobileViewport) return;
     if (!activePane) return;
     centerPaneWhenReady(activePane, "auto");
-  }, [activePane, paneIds, paneWidths, stripWidth, centerPaneWhenReady]);
+  }, [activePane, paneIds, paneWidths, stripWidth, centerPaneWhenReady, isMobileViewport]);
 
   useEffect(() => {
+    if (isMobileViewport) return;
     const firstId = paneIds[0];
     if (!firstId) return;
     requestAnimationFrame(() => {
       centerPaneWhenReady(activePaneRef.current || firstId, "auto");
     });
-  }, [paneIds, stripWidth, centerPaneWhenReady]);
+  }, [paneIds, stripWidth, centerPaneWhenReady, isMobileViewport]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1940,6 +2063,7 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
   }, [paneWidths]);
 
   useEffect(() => {
+    if (isMobileViewport) return;
     const onMove = (event: MouseEvent) => {
       const drag = resizeDragRef.current;
       if (!drag) return;
@@ -1964,7 +2088,7 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [centerPaneWhenReady]);
+  }, [centerPaneWhenReady, isMobileViewport]);
 
   const rpcReady = status !== "Connecting..." && !status.startsWith("RPC error");
   const leadSpacerWidth = useMemo(() => {
@@ -2028,6 +2152,145 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
     return out;
   }, [paneCwdSignature, paneIds]);
 
+  const handleMobileSwipeStart = useCallback((event: ReactTouchEvent<HTMLElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    mobileSwipeRef.current = { x: touch.clientX, y: touch.clientY };
+  }, []);
+
+  const handleMobileSwipeEnd = useCallback((event: ReactTouchEvent<HTMLElement>) => {
+    const start = mobileSwipeRef.current;
+    mobileSwipeRef.current = null;
+    const touch = event.changedTouches[0];
+    if (!start || !touch) return;
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (Math.abs(deltaX) < MOBILE_SWIPE_MIN_PX) return;
+    if (Math.abs(deltaX) <= Math.abs(deltaY) * 1.2) return;
+    moveActivePane(deltaX < 0 ? "right" : "left");
+  }, [moveActivePane]);
+
+  const renderPaneSlotContent = useCallback((id: string, index: number, mobile = false) => {
+    const backgroundIds = backgroundTerminalIds[id] ?? [];
+    const backgroundCount = backgroundIds.length;
+    const visibleSessionId = visibleSessionIdForPane(id, backgroundIds, visibleSessionIds[id]);
+    const backgroundVisible = visibleSessionId !== id;
+    const backgroundLayerSessionId = backgroundVisible ? visibleSessionId : (backgroundIds[0] ?? id);
+    const visibleBackgroundIndex = backgroundVisible ? Math.max(0, backgroundIds.indexOf(visibleSessionId)) + 1 : 0;
+
+    if (backgroundCount === 0) {
+      return (
+        <>
+          {!mobile
+            ? (
+              <button
+                type="button"
+                className="pane-stack-badge pane-stack-badge-create"
+                onClick={() => cyclePaneTerminalForPane(id)}
+                aria-label={`Create background terminal for ${paneTitle(index)}`}
+                title={`Create background terminal (${shortcuts.toggleBackgroundTerminal})`}
+              >
+                <span>Create Background Terminal</span>
+                <kbd>{shortcuts.toggleBackgroundTerminal}</kbd>
+              </button>
+            )
+            : null}
+          <PaneSurfaceContainer
+            paneId={id}
+            sessionId={id}
+            rpc={rpc}
+            index={index}
+            live={livePaneIdSet.has(id)}
+            active={activeSessionId === id}
+            autoClaimViewport={autoClaimViewport || pendingViewportClaimSessionId === id}
+            accentStyle={paneAccentStyles[id]}
+            shortcuts={shortcuts}
+            onActivate={activatePaneFromUi}
+            onFramesQueued={handleFramesQueued}
+            onShortcut={handlePaneShortcut}
+            onUserInput={handlePaneUserInput}
+            onTextPasteRegister={handlePaneTextPasteRegister}
+          />
+        </>
+      );
+    }
+
+    return (
+      <div className="pane-stack-shell">
+        <div className="pane-stack-controls">
+          <button
+            type="button"
+            className="pane-stack-badge"
+            onClick={() => bringRearTerminalToFront(id)}
+            aria-label={`${backgroundVisible ? "Background terminal is in front" : "Main terminal is in front"} for ${paneTitle(index)}. Press to cycle.`}
+            title={`${backgroundVisible ? "Background terminal" : "Main terminal"} (${shortcuts.toggleBackgroundTerminal} to cycle)`}
+          >
+            <span>{backgroundVisible ? `Background ${visibleBackgroundIndex}` : "Main"}</span>
+            {!mobile ? <kbd>{shortcuts.toggleBackgroundTerminal}</kbd> : null}
+          </button>
+        </div>
+        <div className="pane-stack">
+          <div className="pane-stack-shadow pane-stack-shadow-rear" aria-hidden />
+          <div className="pane-stack-shadow pane-stack-shadow-front" aria-hidden />
+          <div className="pane-stack-layer pane-stack-layer-main" aria-hidden={backgroundVisible}>
+            <PaneSurfaceContainer
+              paneId={id}
+              sessionId={id}
+              rpc={rpc}
+              index={index}
+              live={renderableSessionIdSet.has(id)}
+              active={activeSessionId === id}
+              autoClaimViewport={autoClaimViewport || pendingViewportClaimSessionId === id}
+              accentStyle={paneAccentStyles[id]}
+              shortcuts={shortcuts}
+              onActivate={activatePaneFromUi}
+              onFramesQueued={handleFramesQueued}
+              onShortcut={handlePaneShortcut}
+              onUserInput={handlePaneUserInput}
+              onTextPasteRegister={handlePaneTextPasteRegister}
+            />
+          </div>
+          <div className="pane-stack-layer pane-stack-layer-background" aria-hidden={!backgroundVisible}>
+            <PaneSurfaceContainer
+              paneId={id}
+              sessionId={backgroundLayerSessionId}
+              rpc={rpc}
+              index={index}
+              live={renderableSessionIdSet.has(backgroundLayerSessionId)}
+              active={activeSessionId === backgroundLayerSessionId}
+              autoClaimViewport={autoClaimViewport || pendingViewportClaimSessionId === backgroundLayerSessionId}
+              accentStyle={paneAccentStyles[id]}
+              shortcuts={shortcuts}
+              onActivate={activatePaneFromUi}
+              onFramesQueued={handleFramesQueued}
+              onShortcut={handlePaneShortcut}
+              onUserInput={handlePaneUserInput}
+              onTextPasteRegister={handlePaneTextPasteRegister}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }, [
+    activeSessionId,
+    backgroundTerminalIds,
+    bringRearTerminalToFront,
+    cyclePaneTerminalForPane,
+    handleFramesQueued,
+    handlePaneShortcut,
+    handlePaneTextPasteRegister,
+    handlePaneUserInput,
+    livePaneIdSet,
+    paneAccentStyles,
+    renderableSessionIdSet,
+    rpc,
+    activatePaneFromUi,
+    shortcuts,
+    visibleSessionIds,
+    autoClaimViewport,
+    pendingViewportClaimSessionId,
+  ]);
+
   return (
     <main className="app-shell">
       <div className="floating-chrome" aria-label="Window controls">
@@ -2041,20 +2304,14 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
           aria-label={rpcReady ? "Local terminal backend connected" : "Local terminal backend disconnected"}
         />
         <div className="floating-actions">
-          {authSession.enabled ? (
-            <button
-              type="button"
-              className="floating-user-pill"
-              onClick={() => {
-                void onLogout?.();
-              }}
-              title={`Signed in as ${authSession.username ?? authSession.suggestedUsername ?? "agentz"}. Sign out.`}
-              aria-label="Sign out of web mode"
-            >
-              <span>{authSession.username ?? authSession.suggestedUsername ?? "agentz"}</span>
-              <strong>Sign Out</strong>
-            </button>
-          ) : null}
+          {remoteSessionLabel
+            ? (
+              <div className="floating-user-pill" title={`Connected as ${remoteSessionLabel}`}>
+                <span>{remoteSessionLabel}</span>
+                <strong>Remote</strong>
+              </div>
+            )
+            : null}
           <button
             type="button"
             className="floating-settings-button"
@@ -2069,225 +2326,301 @@ function DashboardApp({ rpc, authSession, onLogout }: DashboardAppProps) {
         </div>
       </div>
 
-      <section className="avatar-strip" ref={avatarStripRef} aria-label="Terminal avatars">
-        <div className="avatar-track">
-          {paneIds.map((id, index) => {
-            const avatarId = paneAvatarIds[id];
-            const avatar = avatarId ? avatarById[avatarId] : undefined;
-            const isActive = activePane === id;
-            const relative = index - activeAvatarIndex;
-            const direction = relative === 0 ? 0 : relative > 0 ? 1 : -1;
-            const sideRank =
-              direction < 0 ? activeAvatarIndex - index - 1 : direction > 0 ? index - activeAvatarIndex - 1 : 0;
-            const spread =
-              direction === 0
-                ? 0
-                : direction < 0
-                  ? avatarLayout.left.base + sideRank * avatarLayout.left.step
-                  : avatarLayout.right.base + sideRank * avatarLayout.right.step;
-            const offset = direction * spread;
-            const distance = Math.abs(relative);
-            const scale = isActive ? 1 : Math.max(0.72, 0.9 - distance * 0.11);
-
-            return (
-              <AvatarChipContainer
-                key={`avatar-${id}`}
-                id={id}
-                index={index}
-                avatar={avatar}
-                isActive={isActive}
-                offset={offset}
-                scale={scale}
-                zIndex={120 - distance}
-                accentStyle={paneAccentStyles[id]}
-                onActivate={setActivePaneCentered}
-              />
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="pane-grid" ref={stripRef}>
-        <div className="pane-edge-spacer" style={{ width: `${leadSpacerWidth}px` }} aria-hidden />
-        {paneIds.map((id, index) => (
-          <div
-            key={id}
-            className={`pane-slot ${(backgroundTerminalIds[id]?.length ?? 0) > 0 ? "pane-slot-has-background" : ""} ${
-              visibleSessionIdForPane(id, backgroundTerminalIds[id], visibleSessionIds[id]) !== id
-                ? "pane-slot-background-visible"
-                : ""
-            } ${
-              paneStackFlipNonce[id]
-                ? paneStackFlipNonce[id] % 2 === 0
-                  ? "pane-slot-stack-flip-b"
-                  : "pane-slot-stack-flip-a"
-                : ""
-            }`}
-            ref={(node) => {
-              paneSlotsRef.current[id] = node;
-            }}
-            style={{ width: `${paneWidthForId(id)}px` }}
-          >
-            {(() => {
-              const backgroundIds = backgroundTerminalIds[id] ?? [];
-              const backgroundCount = backgroundIds.length;
-              const visibleSessionId = visibleSessionIdForPane(id, backgroundIds, visibleSessionIds[id]);
-              const backgroundVisible = visibleSessionId !== id;
-              const backgroundLayerSessionId = backgroundVisible ? visibleSessionId : (backgroundIds[0] ?? id);
-              const visibleBackgroundIndex = backgroundVisible ? Math.max(0, backgroundIds.indexOf(visibleSessionId)) + 1 : 0;
-
-              if (backgroundCount === 0) {
-                return (
-                  <>
-                    <button
-                      type="button"
-                      className="pane-stack-badge pane-stack-badge-create"
-                      onClick={() => cyclePaneTerminalForPane(id)}
-                      aria-label={`Create background terminal for ${paneTitle(index)}`}
-                      title={`Create background terminal (${shortcuts.toggleBackgroundTerminal})`}
-                    >
-                      <span>Create Background Terminal</span>
-                      <kbd>{shortcuts.toggleBackgroundTerminal}</kbd>
-                    </button>
-                    <PaneSurfaceContainer
-                      paneId={id}
-                      sessionId={id}
-                      rpc={rpc}
-                      index={index}
-                      live={livePaneIdSet.has(id)}
-                      active={activeSessionId === id}
-                      accentStyle={paneAccentStyles[id]}
-                      shortcuts={shortcuts}
-                      onActivate={setActivePaneCentered}
-                      onFramesQueued={handleFramesQueued}
-                      onShortcut={handlePaneShortcut}
-                      onUserInput={handlePaneUserInput}
-                      onTextPasteRegister={handlePaneTextPasteRegister}
-                    />
-                  </>
-                );
-              }
-
-              return (
-                <div className="pane-stack-shell">
-                  <div className="pane-stack-controls">
-                    <button
-                      type="button"
-                      className="pane-stack-badge"
-                      onClick={() => bringRearTerminalToFront(id)}
-                      aria-label={`${backgroundVisible ? "Background terminal is in front" : "Main terminal is in front"} for ${paneTitle(index)}. Press to cycle.`}
-                      title={`${backgroundVisible ? "Background terminal" : "Main terminal"} (${shortcuts.toggleBackgroundTerminal} to cycle)`}
-                    >
-                      <span>{backgroundVisible ? `Background ${visibleBackgroundIndex}` : "Main"}</span>
-                      <kbd>{shortcuts.toggleBackgroundTerminal}</kbd>
-                    </button>
-                  </div>
-                  <div className="pane-stack">
-                    <div className="pane-stack-shadow pane-stack-shadow-rear" aria-hidden />
-                    <div className="pane-stack-shadow pane-stack-shadow-front" aria-hidden />
-                    <div className="pane-stack-layer pane-stack-layer-main" aria-hidden={backgroundVisible}>
-                      <PaneSurfaceContainer
-                        paneId={id}
-                        sessionId={id}
-                        rpc={rpc}
-                        index={index}
-                        live={renderableSessionIdSet.has(id)}
-                        active={activeSessionId === id}
-                        accentStyle={paneAccentStyles[id]}
-                        shortcuts={shortcuts}
-                        onActivate={setActivePaneCentered}
-                        onFramesQueued={handleFramesQueued}
-                        onShortcut={handlePaneShortcut}
-                        onUserInput={handlePaneUserInput}
-                        onTextPasteRegister={handlePaneTextPasteRegister}
-                      />
+      {isMobileViewport
+        ? (
+          <>
+            <section className="mobile-pane-toolbar" aria-label="Mobile terminal controls">
+              <div className="mobile-pane-nav">
+                {(() => {
+                  const avatarId = paneAvatarIds[activePane];
+                  const avatar = avatarId ? avatarById[avatarId] : undefined;
+                  const avatarState = activePaneRuntime.avatarState ?? "idle";
+                  const avatarSrc = avatar ? avatarSrcForState(avatar, avatarState) : undefined;
+                  return (
+                    <div className="mobile-avatar-card" style={paneAccentStyles[activePane]}>
+                      <div className="mobile-avatar-frame">
+                        {avatarSrc
+                          ? <img className="mobile-avatar-image" src={avatarSrc} alt={avatar?.name ?? paneTitle(activeAvatarIndex)} />
+                          : <div className="mobile-avatar-fallback">{paneTitle(activeAvatarIndex).slice(-1)}</div>}
+                      </div>
+                      <div className="mobile-pane-status">
+                        <strong>{paneTitle(activeAvatarIndex)}</strong>
+                        <span>{activeAvatarIndex + 1} / {Math.max(1, paneIds.length)}</span>
+                      </div>
                     </div>
-                    <div className="pane-stack-layer pane-stack-layer-background" aria-hidden={!backgroundVisible}>
-                      <PaneSurfaceContainer
-                        paneId={id}
-                        sessionId={backgroundLayerSessionId}
-                        rpc={rpc}
-                        index={index}
-                        live={renderableSessionIdSet.has(backgroundLayerSessionId)}
-                        active={activeSessionId === backgroundLayerSessionId}
-                        accentStyle={paneAccentStyles[id]}
-                        shortcuts={shortcuts}
-                        onActivate={setActivePaneCentered}
-                        onFramesQueued={handleFramesQueued}
-                        onShortcut={handlePaneShortcut}
-                        onUserInput={handlePaneUserInput}
-                        onTextPasteRegister={handlePaneTextPasteRegister}
-                      />
-                    </div>
-                  </div>
+                  );
+                })()}
+              </div>
+              <div className="mobile-pane-actions">
+                <div className="mobile-pane-status">
+                  <strong>Swipe</strong>
+                  <span>Left or right</span>
                 </div>
-              );
-            })()}
-            <div
-              className="pane-resize-handle"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label={`Resize ${paneTitle(index)}`}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                resizeDragRef.current = {
-                  id,
-                  startX: event.clientX,
-                  startWidth: paneWidthForId(id),
-                };
-                document.body.classList.add("pane-resize-active");
-              }}
-            />
-          </div>
-        ))}
-        <div className="pane-edge-spacer" style={{ width: `${trailSpacerWidth}px` }} aria-hidden />
-      </section>
+                <button
+                  type="button"
+                  className="mobile-pane-button mobile-pane-button-accent"
+                  onClick={() => addTerminalPane()}
+                  aria-label="Open a new terminal"
+                >
+                  New
+                </button>
+                <button
+                  type="button"
+                  className="mobile-pane-button mobile-pane-button-accent"
+                  onClick={() => activePane && cyclePaneTerminalForPane(activePane)}
+                  disabled={!activePane}
+                  aria-label="Create or cycle background terminal"
+                >
+                  BG
+                </button>
+                <button
+                  type="button"
+                  className="mobile-pane-button"
+                  onClick={() => activePane && addBackgroundTerminalForPane(activePane)}
+                  disabled={!activePane}
+                  aria-label="Open another background terminal"
+                >
+                  +BG
+                </button>
+                <button
+                  type="button"
+                  className="mobile-pane-button"
+                  onClick={() => closeActivePane()}
+                  disabled={!activePane}
+                  aria-label="Close current terminal"
+                >
+                  Close
+                </button>
+              </div>
+            </section>
+            <section
+              className="mobile-pane-deck"
+              ref={stripRef}
+              onTouchStart={handleMobileSwipeStart}
+              onTouchEnd={handleMobileSwipeEnd}
+              aria-label="Mobile terminal deck"
+            >
+              {paneIds.map((id, index) => {
+                if (id !== activePane) return null;
+                return (
+                  <div
+                    key={id}
+                    className={`pane-slot mobile-pane-slot ${(backgroundTerminalIds[id]?.length ?? 0) > 0 ? "pane-slot-has-background" : ""} ${
+                      visibleSessionIdForPane(id, backgroundTerminalIds[id], visibleSessionIds[id]) !== id
+                        ? "pane-slot-background-visible"
+                        : ""
+                    } ${
+                      paneStackFlipNonce[id]
+                        ? paneStackFlipNonce[id] % 2 === 0
+                          ? "pane-slot-stack-flip-b"
+                          : "pane-slot-stack-flip-a"
+                        : ""
+                    }`}
+                    ref={(node) => {
+                      paneSlotsRef.current[id] = node;
+                    }}
+                  >
+                    {renderPaneSlotContent(id, index, true)}
+                  </div>
+                );
+              })}
+            </section>
+            <div className="mobile-pane-hint" aria-hidden>
+              Swipe left or right to move between terminals
+            </div>
+          </>
+        )
+        : (
+          <>
+            <section className="avatar-strip" ref={avatarStripRef} aria-label="Terminal avatars">
+              <div className="avatar-track">
+                {paneIds.map((id, index) => {
+                  const avatarId = paneAvatarIds[id];
+                  const avatar = avatarId ? avatarById[avatarId] : undefined;
+                  const isActive = activePane === id;
+                  const relative = index - activeAvatarIndex;
+                  const direction = relative === 0 ? 0 : relative > 0 ? 1 : -1;
+                  const sideRank =
+                    direction < 0 ? activeAvatarIndex - index - 1 : direction > 0 ? index - activeAvatarIndex - 1 : 0;
+                  const spread =
+                    direction === 0
+                      ? 0
+                      : direction < 0
+                        ? avatarLayout.left.base + sideRank * avatarLayout.left.step
+                        : avatarLayout.right.base + sideRank * avatarLayout.right.step;
+                  const offset = direction * spread;
+                  const distance = Math.abs(relative);
+                  const scale = isActive ? 1 : Math.max(0.72, 0.9 - distance * 0.11);
+
+                  return (
+                    <AvatarChipContainer
+                      key={`avatar-${id}`}
+                      id={id}
+                      index={index}
+                      avatar={avatar}
+                      isActive={isActive}
+                      offset={offset}
+                      scale={scale}
+                      zIndex={120 - distance}
+                      accentStyle={paneAccentStyles[id]}
+                      onActivate={activatePaneFromUi}
+                    />
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="pane-grid" ref={stripRef}>
+              <div className="pane-edge-spacer" style={{ width: `${leadSpacerWidth}px` }} aria-hidden />
+              {paneIds.map((id, index) => (
+                <div
+                  key={id}
+                  className={`pane-slot ${(backgroundTerminalIds[id]?.length ?? 0) > 0 ? "pane-slot-has-background" : ""} ${
+                    visibleSessionIdForPane(id, backgroundTerminalIds[id], visibleSessionIds[id]) !== id
+                      ? "pane-slot-background-visible"
+                      : ""
+                  } ${
+                    paneStackFlipNonce[id]
+                      ? paneStackFlipNonce[id] % 2 === 0
+                        ? "pane-slot-stack-flip-b"
+                        : "pane-slot-stack-flip-a"
+                      : ""
+                  }`}
+                  ref={(node) => {
+                    paneSlotsRef.current[id] = node;
+                  }}
+                  style={{ width: `${paneWidthForId(id)}px` }}
+                >
+                  {renderPaneSlotContent(id, index)}
+                  <div
+                    className="pane-resize-handle"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label={`Resize ${paneTitle(index)}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      resizeDragRef.current = {
+                        id,
+                        startX: event.clientX,
+                        startWidth: paneWidthForId(id),
+                      };
+                      document.body.classList.add("pane-resize-active");
+                    }}
+                  />
+                </div>
+              ))}
+              <div className="pane-edge-spacer" style={{ width: `${trailSpacerWidth}px` }} aria-hidden />
+            </section>
+          </>
+        )}
       <SettingsModal
         open={settingsOpen}
         config={dashboardConfig}
+        remoteAccessState={currentRemoteAccessState}
+        remoteAccessControlsEnabled={Boolean(currentRemoteAccessState)}
         updateStatus={updateStatus}
         onClose={() => setSettingsOpen(false)}
         onSave={saveDashboardConfig}
         onCheckForUpdates={checkForUpdatesNow}
+        onApproveRemotePairing={onApproveRemotePairing}
+        onRejectRemotePairing={onRejectRemotePairing}
+        onForgetRemoteDevice={onForgetRemoteDevice}
       />
     </main>
   );
 }
 
-function App() {
-  const [authSession, setAuthSession] = useState<WebAuthSessionStatus | null>(null);
-  const [authToken, setAuthToken] = useState<string | null>(null);
-  const [authPending, setAuthPending] = useState(true);
-  const [authError, setAuthError] = useState<string | null>(null);
+function LocalDesktopApp() {
+  const rpc = useMemo(() => new RpcClient(resolveRpcUrl(), resolveRpcProtocols()), []);
 
-  const refreshAuthSession = useCallback(async (token: string | null) => {
-    const session = await fetchWebAuthSession(token);
-    setAuthSession(session);
-    setAuthToken(session.enabled && session.authenticated ? token : null);
-    return session;
+  useEffect(() => () => rpc.close(), [rpc]);
+
+  return (
+    <DashboardApp
+      rpc={rpc}
+      remoteAccessState={null}
+      onApproveRemotePairing={(requestId) => rpc.send({ type: "approve-remote-pairing", requestId })}
+      onRejectRemotePairing={(requestId) => rpc.send({ type: "reject-remote-pairing", requestId })}
+      onForgetRemoteDevice={(deviceId) => rpc.send({ type: "forget-remote-device", deviceId })}
+    />
+  );
+}
+
+function RemoteWebApp() {
+  const [session, setSession] = useState<RemoteSessionStatus | null>(null);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [pending, setPending] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [pairingRequestId, setPairingRequestId] = useState<string | null>(() => loadPendingPairingRequestId());
+
+  const loadAnonymousState = useCallback(async (requestId?: string | null) => {
+    const nextSession = await fetchRemoteAccessStatus(null, requestId);
+    setSession(nextSession);
+    return nextSession;
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    const initialToken = loadStoredWebAuthToken();
 
     void (async () => {
       try {
-        const session = await fetchWebAuthSession(initialToken);
-        if (cancelled) return;
-        if (session.enabled && session.authenticated) {
-          setAuthToken(initialToken);
-        } else {
-          storeWebAuthToken(null);
-          setAuthToken(null);
+        const storedSessionToken = loadStoredRemoteSessionToken();
+        const storedRequestId = loadPendingPairingRequestId();
+
+        if (storedSessionToken) {
+          try {
+            const restoredSession = await fetchRemoteAccessStatus(storedSessionToken, storedRequestId);
+            if (cancelled) return;
+            if (restoredSession.authenticated) {
+              setSessionToken(storedSessionToken);
+              setSession(restoredSession);
+              return;
+            }
+            storeRemoteSessionToken(null);
+          } catch {
+            storeRemoteSessionToken(null);
+          }
         }
-        setAuthSession(session);
-      } catch (error) {
+
+        if (storedRequestId) {
+          try {
+            const pairingStatus = await pollRemotePairing(storedRequestId);
+            if (cancelled) return;
+            if (pairingStatus.status === "approved" && pairingStatus.token && pairingStatus.deviceToken) {
+              storeRemoteDeviceToken(pairingStatus.deviceToken);
+              storeRemoteSessionToken(pairingStatus.token);
+              storePendingPairingRequestId(null);
+              setPairingRequestId(null);
+              setSessionToken(pairingStatus.token);
+              setSession(pairingStatus.session);
+              return;
+            }
+            setSession(pairingStatus.session);
+            if (pairingStatus.status === "pending") {
+              setPairingRequestId(storedRequestId);
+              return;
+            }
+            storePendingPairingRequestId(null);
+            setPairingRequestId(null);
+          } catch {
+            storePendingPairingRequestId(null);
+          }
+        }
+
+        const nextSession = await loadAnonymousState(storedRequestId);
         if (cancelled) return;
-        setAuthError(error instanceof Error ? error.message : "Failed to check web authentication.");
+        if (nextSession.pendingPairing && storedRequestId) {
+          setPairingRequestId(storedRequestId);
+        } else {
+          storePendingPairingRequestId(null);
+          setPairingRequestId(null);
+        }
+      } catch (nextError) {
+        if (cancelled) return;
+        setError(nextError instanceof Error ? nextError.message : "Failed to load remote access.");
       } finally {
         if (!cancelled) {
-          setAuthPending(false);
+          setPending(false);
         }
       }
     })();
@@ -2295,79 +2628,124 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const handleLogin = useCallback(async (username: string, password: string) => {
-    setAuthPending(true);
-    setAuthError(null);
-    try {
-      const result = await loginWebAuth(username, password);
-      storeWebAuthToken(result.token);
-      setAuthToken(result.token);
-      setAuthSession(result.session);
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Login failed.");
-    } finally {
-      setAuthPending(false);
-    }
-  }, []);
-
-  const handleLogout = useCallback(async () => {
-    const token = authToken;
-    setAuthPending(true);
-    setAuthError(null);
-    try {
-      await logoutWebAuth(token);
-    } catch {
-      // Ignore logout errors and clear the local session anyway.
-    }
-    storeWebAuthToken(null);
-    try {
-      const session = await refreshAuthSession(null);
-      setAuthSession(session);
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Sign out failed.");
-      setAuthSession({
-        enabled: true,
-        authenticated: false,
-      });
-    } finally {
-      setAuthToken(null);
-      setAuthPending(false);
-    }
-  }, [authToken, refreshAuthSession]);
-
-  const rpc = useMemo(() => {
-    if (!authSession) return null;
-    if (authSession.enabled && !authSession.authenticated) return null;
-    return new RpcClient(resolveRpcUrl(authToken));
-  }, [authSession, authToken]);
+  }, [loadAnonymousState]);
 
   useEffect(() => {
-    return () => {
-      rpc?.close();
-    };
-  }, [rpc]);
+    if (!pairingRequestId) return;
+    if (!session?.pendingPairing) return;
 
-  if (!authSession || authPending && authSession.authenticated !== true && authSession.enabled !== false) {
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const status = await pollRemotePairing(pairingRequestId);
+          if (cancelled) return;
+          if (status.status === "pending") {
+            setSession(status.session);
+            return;
+          }
+          if (status.status === "rejected") {
+            storePendingPairingRequestId(null);
+            setPairingRequestId(null);
+            setSession(status.session);
+            setError(status.session.message ?? "Pairing request rejected.");
+            return;
+          }
+          if (status.token && status.deviceToken) {
+            storeRemoteDeviceToken(status.deviceToken);
+            storePendingPairingRequestId(null);
+            setPairingRequestId(null);
+            setSessionToken(status.token);
+            setSession(status.session);
+            setError(null);
+          }
+        } catch (nextError) {
+          if (cancelled) return;
+          setError(nextError instanceof Error ? nextError.message : "Failed to poll pairing status.");
+        }
+      })();
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [pairingRequestId, session?.pendingPairing]);
+
+  const handleSubmitPasscode = useCallback(async (passcode: string) => {
+    setPending(true);
+    setError(null);
+    try {
+      const storedDeviceToken = loadStoredRemoteDeviceToken();
+      const result = await startRemotePairing(passcode, describeThisDevice(), storedDeviceToken);
+      if (result.token) {
+        if (result.deviceToken) {
+          storeRemoteDeviceToken(result.deviceToken);
+        }
+        storeRemoteSessionToken(result.token);
+        storePendingPairingRequestId(null);
+        setPairingRequestId(null);
+        setSessionToken(result.token);
+        setSession(result.session);
+        return;
+      }
+      storePendingPairingRequestId(result.requestId ?? null);
+      setPairingRequestId(result.requestId ?? null);
+      setSession(result.session);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Pairing failed.");
+      setSession((current) => current ?? {
+        enabled: true,
+        authenticated: false,
+        pairingsLocked: false,
+        pendingPairing: false,
+      });
+    } finally {
+      setPending(false);
+    }
+  }, []);
+
+  const rpc = useMemo(() => {
+    if (!session?.authenticated || !sessionToken) return null;
+    return new RpcClient(resolveRpcUrl(), resolveRpcProtocols(sessionToken));
+  }, [session?.authenticated, sessionToken]);
+
+  useEffect(() => () => rpc?.close(), [rpc]);
+
+  useEffect(() => {
+    if (!rpc) return;
+    return rpc.onUnauthorized(() => {
+      storeRemoteSessionToken(null);
+      setSessionToken(null);
+      setError("This remote session expired. Enter the desktop passcode again.");
+      void loadAnonymousState(null);
+    });
+  }, [loadAnonymousState, rpc]);
+
+  if (!session && pending) {
     return (
       <main className="auth-shell auth-shell-loading">
         <section className="auth-panel auth-panel-loading">
           <span className="auth-kicker">agentz</span>
-          <h1>Checking web access…</h1>
-          <p>{authError ?? "Contacting the local terminal backend."}</p>
+          <h1>Checking remote access…</h1>
+          <p>{error ?? "Contacting the desktop app."}</p>
         </section>
       </main>
     );
   }
 
-  if (authSession.enabled && !authSession.authenticated) {
+  if (!session || !session.authenticated) {
     return (
-      <LoginScreen
-        session={authSession}
-        pending={authPending}
-        error={authError}
-        onSubmit={handleLogin}
+      <RemoteAccessGate
+        session={session ?? {
+          enabled: false,
+          authenticated: false,
+          pairingsLocked: false,
+          pendingPairing: false,
+        }}
+        pending={pending}
+        error={error}
+        onSubmitPasscode={handleSubmitPasscode}
       />
     );
   }
@@ -2378,13 +2756,26 @@ function App() {
         <section className="auth-panel auth-panel-loading">
           <span className="auth-kicker">agentz</span>
           <h1>Preparing terminal deck…</h1>
-          <p>{authError ?? "Connecting to the RPC backend."}</p>
+          <p>{error ?? "Connecting to the remote terminal backend."}</p>
         </section>
       </main>
     );
   }
 
-  return <DashboardApp rpc={rpc} authSession={authSession} onLogout={authSession.enabled ? handleLogout : null} />;
+  return (
+    <DashboardApp
+      rpc={rpc}
+      remoteAccessState={null}
+      remoteSessionLabel={session.deviceLabel}
+      onApproveRemotePairing={() => {}}
+      onRejectRemotePairing={() => {}}
+      onForgetRemoteDevice={() => {}}
+    />
+  );
+}
+
+function App() {
+  return isRemoteWebRuntime() ? <RemoteWebApp /> : <LocalDesktopApp />;
 }
 
 export default App;

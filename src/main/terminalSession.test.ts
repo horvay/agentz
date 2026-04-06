@@ -54,6 +54,13 @@ describe("buildTerminalHostEnv", () => {
     expect(env.PATH).toContain("/usr/bin");
   });
 
+  test("drops FORCE_COLOR when NO_COLOR is set", () => {
+    const env = buildTerminalHostEnv("/bin/sh", undefined, { NO_COLOR: "1", FORCE_COLOR: "1" }, "linux");
+
+    expect(env.NO_COLOR).toBe("1");
+    expect(env.FORCE_COLOR).toBeUndefined();
+  });
+
   test("replaces an invalid SHELL when launching the default shell", () => {
     const env = buildTerminalHostEnv("/bin/sh", undefined, { SHELL: "/definitely/missing-shell" }, "linux");
 

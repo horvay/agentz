@@ -70,10 +70,7 @@
 				"to": "bin",
 				"filter": [
 					"agentz-pty-host",
-					"agentz-pty-host.exe",
-					"agentz-pam-auth-helper",
-					"agentz-macos-auth-helper",
-					"agentz-windows-auth-helper.exe"
+					"agentz-pty-host.exe"
 				]
 			}
 		],

@@ -8,8 +8,12 @@ import {
   type TerminalFrame,
 } from "../shared/protocol";
 import type { DashboardConfig } from "../shared/config";
+import type { RemoteAccessState, WebSocketCloseInfo } from "../shared/webAuth";
+import { DEBUG_LOGS_ENABLED } from "./debugLogs";
 
 const RPC_RECONNECT_DELAY_MS = 600;
+const WS_CLOSE_UNAUTHORIZED = 4401;
+const RPC_DEBUG = DEBUG_LOGS_ENABLED;
 
 type FrameHandler = (frame: TerminalFrame) => void;
 type ExitHandler = (id: string, exitCode: number) => void;
@@ -21,12 +25,15 @@ type ConfigHandler = (config: DashboardConfig) => void;
 type TerminalListHandler = (ids: TerminalId[]) => void;
 type ConnectionHandler = (connected: boolean) => void;
 type UpdateStatusHandler = (status: AppUpdateStatus) => void;
+type UnauthorizedHandler = (details: WebSocketCloseInfo) => void;
+type RemoteAccessStateHandler = (state: RemoteAccessState) => void;
 
 function shouldQueueDisconnectedMessage(message: ClientMessage): boolean {
   return (
     message.type === "create" ||
     message.type === "launch-config" ||
     message.type === "get-config" ||
+    message.type === "get-remote-access-state" ||
     message.type === "list" ||
     message.type === "set-config"
   );
@@ -34,6 +41,7 @@ function shouldQueueDisconnectedMessage(message: ClientMessage): boolean {
 
 export class RpcClient {
   private readonly url: string;
+  private readonly protocols: string[];
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
   private closed = false;
@@ -48,9 +56,19 @@ export class RpcClient {
   private terminalListHandlers = new Set<TerminalListHandler>();
   private connectionHandlers = new Set<ConnectionHandler>();
   private updateStatusHandlers = new Set<UpdateStatusHandler>();
+  private unauthorizedHandlers = new Set<UnauthorizedHandler>();
+  private remoteAccessStateHandlers = new Set<RemoteAccessStateHandler>();
+  private lastConnectionState = false;
+  private hasReady = false;
+  private lastLaunchConfig: LaunchConfig | null = null;
+  private lastConfig: DashboardConfig | null = null;
+  private lastTerminalList: TerminalId[] | null = null;
+  private lastUpdateStatus: AppUpdateStatus | null = null;
+  private lastRemoteAccessState: RemoteAccessState | null = null;
 
-  constructor(url: string) {
+  constructor(url: string, protocols: string[] = []) {
     this.url = url;
+    this.protocols = protocols;
     this.connect();
   }
 
@@ -60,10 +78,14 @@ export class RpcClient {
       return;
     }
 
-    const ws = new WebSocket(this.url);
+    const ws = new WebSocket(this.url, this.protocols);
     ws.binaryType = "arraybuffer";
     ws.addEventListener("open", () => {
       if (this.ws !== ws) return;
+      this.lastConnectionState = true;
+      if (RPC_DEBUG) {
+        console.log("[rpc-client] open", { url: this.url, protocols: this.protocols });
+      }
       this.connectionHandlers.forEach((cb) => cb(true));
       this.flushQueuedMessages();
     });
@@ -71,13 +93,26 @@ export class RpcClient {
       if (this.ws !== ws) return;
       this.onMessage(event);
     });
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event) => {
       if (this.ws !== ws) return;
+      this.lastConnectionState = false;
+      if (RPC_DEBUG) {
+        console.log("[rpc-client] close", { code: event.code, reason: event.reason });
+      }
       this.connectionHandlers.forEach((cb) => cb(false));
+      if (event.code === WS_CLOSE_UNAUTHORIZED) {
+        this.unauthorizedHandlers.forEach((cb) => cb({
+          code: event.code,
+          reason: event.reason || "Session expired",
+        }));
+      }
       this.scheduleReconnect();
     });
     ws.addEventListener("error", () => {
       if (this.ws !== ws) return;
+      if (RPC_DEBUG) {
+        console.log("[rpc-client] error");
+      }
       this.scheduleReconnect();
     });
     this.ws = ws;
@@ -109,6 +144,9 @@ export class RpcClient {
     }
 
     const message = JSON.parse(String(event.data)) as JsonServerMessage;
+    if (RPC_DEBUG) {
+      console.log("[rpc-client] message", message.type);
+    }
     switch (message.type) {
       case "terminal-exited":
         this.exitHandlers.forEach((cb) => cb(message.id, message.exitCode));
@@ -117,19 +155,28 @@ export class RpcClient {
         this.createdHandlers.forEach((cb) => cb(message.id));
         break;
       case "ready":
+        this.hasReady = true;
         this.readyHandlers.forEach((cb) => cb());
         break;
       case "launch-config":
+        this.lastLaunchConfig = message.config;
         this.launchConfigHandlers.forEach((cb) => cb(message.config));
         break;
       case "config":
+        this.lastConfig = message.config;
         this.configHandlers.forEach((cb) => cb(message.config));
         break;
       case "terminal-list":
+        this.lastTerminalList = message.ids;
         this.terminalListHandlers.forEach((cb) => cb(message.ids));
         break;
       case "update-status":
+        this.lastUpdateStatus = message.status;
         this.updateStatusHandlers.forEach((cb) => cb(message.status));
+        break;
+      case "remote-access-state":
+        this.lastRemoteAccessState = message.state;
+        this.remoteAccessStateHandlers.forEach((cb) => cb(message.state));
         break;
       case "error":
         this.errorHandlers.forEach((cb) => cb(message.message));
@@ -141,6 +188,9 @@ export class RpcClient {
 
   send(message: ClientMessage): void {
     if (this.closed) return;
+    if (RPC_DEBUG) {
+      console.log("[rpc-client] send", message.type);
+    }
     const payload = JSON.stringify(message);
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(payload);
@@ -174,32 +224,61 @@ export class RpcClient {
 
   onReady(cb: ReadyHandler): () => void {
     this.readyHandlers.add(cb);
+    if (this.hasReady) {
+      cb();
+    }
     return () => this.readyHandlers.delete(cb);
   }
 
   onLaunchConfig(cb: LaunchConfigHandler): () => void {
     this.launchConfigHandlers.add(cb);
+    if (this.lastLaunchConfig) {
+      cb(this.lastLaunchConfig);
+    }
     return () => this.launchConfigHandlers.delete(cb);
   }
 
   onConfig(cb: ConfigHandler): () => void {
     this.configHandlers.add(cb);
+    if (this.lastConfig) {
+      cb(this.lastConfig);
+    }
     return () => this.configHandlers.delete(cb);
   }
 
   onTerminalList(cb: TerminalListHandler): () => void {
     this.terminalListHandlers.add(cb);
+    if (this.lastTerminalList !== null) {
+      cb(this.lastTerminalList);
+    }
     return () => this.terminalListHandlers.delete(cb);
   }
 
   onConnectionChange(cb: ConnectionHandler): () => void {
     this.connectionHandlers.add(cb);
+    cb(this.lastConnectionState);
     return () => this.connectionHandlers.delete(cb);
   }
 
   onUpdateStatus(cb: UpdateStatusHandler): () => void {
     this.updateStatusHandlers.add(cb);
+    if (this.lastUpdateStatus) {
+      cb(this.lastUpdateStatus);
+    }
     return () => this.updateStatusHandlers.delete(cb);
+  }
+
+  onUnauthorized(cb: UnauthorizedHandler): () => void {
+    this.unauthorizedHandlers.add(cb);
+    return () => this.unauthorizedHandlers.delete(cb);
+  }
+
+  onRemoteAccessState(cb: RemoteAccessStateHandler): () => void {
+    this.remoteAccessStateHandlers.add(cb);
+    if (this.lastRemoteAccessState) {
+      cb(this.lastRemoteAccessState);
+    }
+    return () => this.remoteAccessStateHandlers.delete(cb);
   }
 
   close(): void {

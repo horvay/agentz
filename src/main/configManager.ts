@@ -14,6 +14,15 @@ export interface DashboardConfigManager {
   getConfigPath: () => string;
 }
 
+function withSessionOnlyRemoteAccessDisabled(config: DashboardConfig): DashboardConfig {
+  return {
+    ...config,
+    remoteAccess: {
+      enabled: false,
+    },
+  };
+}
+
 function resolveConfigPath(): string {
   const xdgRoot = process.env.XDG_CONFIG_HOME?.trim();
   const configDir = xdgRoot ? join(xdgRoot, "agentz") : join(homedir(), ".config", "agentz");
@@ -35,7 +44,7 @@ function loadConfigFile(configPath: string): DashboardConfig {
   try {
     const raw = readFileSync(configPath, "utf8");
     const parsed = JSON.parse(raw) as unknown;
-    return normalizeDashboardConfig(parsed);
+    return withSessionOnlyRemoteAccessDisabled(normalizeDashboardConfig(parsed));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown config error";
     throw new Error(`Invalid dashboard config at ${configPath}: ${message}`);
@@ -50,7 +59,7 @@ export function createDashboardConfigManager(): DashboardConfigManager {
     getConfig: () => cloneDashboardConfig(config),
     setConfig: (next) => {
       config = normalizeDashboardConfig(next);
-      writeConfigFile(configPath, config);
+      writeConfigFile(configPath, withSessionOnlyRemoteAccessDisabled(config));
       return cloneDashboardConfig(config);
     },
     getConfigPath: () => configPath,

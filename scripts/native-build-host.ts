@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveBundledZig, runInherited } from "./runtime";
 
@@ -80,62 +80,6 @@ const zigCode = await runInherited([zig, "build", "-Doptimize=ReleaseFast"], {
 });
 if (zigCode !== 0) {
   process.exit(zigCode);
-}
-
-const outputDir = join(rootDir, "src", "native", "zig-out", "bin");
-mkdirSync(outputDir, { recursive: true });
-
-if (process.platform === "linux") {
-  const helperCode = await runInherited([
-    "cc",
-    "-O2",
-    "-Wall",
-    "-Wextra",
-    "-o",
-    join(outputDir, "agentz-pam-auth-helper"),
-    join(rootDir, "src", "native", "pam_auth_helper.c"),
-    "-lpam",
-  ], {
-    cwd: rootDir,
-  });
-  process.exit(helperCode);
-}
-
-if (process.platform === "darwin") {
-  const helperCode = await runInherited([
-    "cc",
-    "-O2",
-    "-Wall",
-    "-Wextra",
-    "-fobjc-arc",
-    "-o",
-    join(outputDir, "agentz-macos-auth-helper"),
-    join(rootDir, "src", "native", "macos_auth_helper.m"),
-    "-framework",
-    "Foundation",
-    "-framework",
-    "OpenDirectory",
-  ], {
-    cwd: rootDir,
-  });
-  process.exit(helperCode);
-}
-
-if (process.platform === "win32") {
-  const helperCode = await runInherited([
-    zig,
-    "cc",
-    "-O2",
-    "-Wall",
-    "-Wextra",
-    "-o",
-    join(outputDir, "agentz-windows-auth-helper.exe"),
-    join(rootDir, "src", "native", "windows_auth_helper.c"),
-    "-ladvapi32",
-  ], {
-    cwd: rootDir,
-  });
-  process.exit(helperCode);
 }
 
 process.exit(0);

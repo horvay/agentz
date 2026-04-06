@@ -188,6 +188,10 @@ export function buildTerminalHostEnv(
 ): NodeJS.ProcessEnv {
   const nextEnv = { ...env };
 
+  if (typeof nextEnv.NO_COLOR === "string" && nextEnv.NO_COLOR.trim().length > 0) {
+    delete nextEnv.FORCE_COLOR;
+  }
+
   if (!nextEnv.TERM || nextEnv.TERM.trim().length === 0) {
     nextEnv.TERM = "xterm-256color";
   }

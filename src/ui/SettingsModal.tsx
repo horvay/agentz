@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AppUpdateStatus } from "../shared/protocol";
+import type { RemoteAccessState } from "../shared/webAuth";
 import {
   DEFAULT_VISIBLE_LIVE_PANES,
   MAX_VISIBLE_LIVE_PANES,
@@ -20,10 +21,15 @@ import {
 interface SettingsModalProps {
   open: boolean;
   config: DashboardConfig;
+  remoteAccessState: RemoteAccessState | null;
+  remoteAccessControlsEnabled?: boolean;
   updateStatus: AppUpdateStatus;
   onClose: () => void;
   onSave: (nextConfig: DashboardConfig) => void;
   onCheckForUpdates: () => void;
+  onApproveRemotePairing: (requestId: string) => void;
+  onRejectRemotePairing: (requestId: string) => void;
+  onForgetRemoteDevice: (deviceId: string) => void;
 }
 
 function clampPaneWidth(value: number): number {
@@ -49,29 +55,71 @@ function findDuplicateShortcutError(shortcuts: DashboardShortcuts): string | nul
   return null;
 }
 
-export function SettingsModal({ open, config, updateStatus, onClose, onSave, onCheckForUpdates }: SettingsModalProps) {
+function formatTimeLabel(timestamp: number): string {
+  return new Date(timestamp).toLocaleString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+export function SettingsModal({
+  open,
+  config,
+  remoteAccessState,
+  remoteAccessControlsEnabled = true,
+  updateStatus,
+  onClose,
+  onSave,
+  onCheckForUpdates,
+  onApproveRemotePairing,
+  onRejectRemotePairing,
+  onForgetRemoteDevice,
+}: SettingsModalProps) {
   if (!open) return null;
 
   return (
     <SettingsModalContent
       config={config}
+      remoteAccessState={remoteAccessState}
+      remoteAccessControlsEnabled={remoteAccessControlsEnabled}
       updateStatus={updateStatus}
       onClose={onClose}
       onSave={onSave}
       onCheckForUpdates={onCheckForUpdates}
+      onApproveRemotePairing={onApproveRemotePairing}
+      onRejectRemotePairing={onRejectRemotePairing}
+      onForgetRemoteDevice={onForgetRemoteDevice}
     />
   );
 }
 
 interface SettingsModalContentProps {
   config: DashboardConfig;
+  remoteAccessState: RemoteAccessState | null;
+  remoteAccessControlsEnabled: boolean;
   updateStatus: AppUpdateStatus;
   onClose: () => void;
   onSave: (nextConfig: DashboardConfig) => void;
   onCheckForUpdates: () => void;
+  onApproveRemotePairing: (requestId: string) => void;
+  onRejectRemotePairing: (requestId: string) => void;
+  onForgetRemoteDevice: (deviceId: string) => void;
 }
 
-function SettingsModalContent({ config, updateStatus, onClose, onSave, onCheckForUpdates }: SettingsModalContentProps) {
+function SettingsModalContent({
+  config,
+  remoteAccessState,
+  remoteAccessControlsEnabled,
+  updateStatus,
+  onClose,
+  onSave,
+  onCheckForUpdates,
+  onApproveRemotePairing,
+  onRejectRemotePairing,
+  onForgetRemoteDevice,
+}: SettingsModalContentProps) {
   const [recordingField, setRecordingField] = useState<keyof DashboardShortcuts | null>(null);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
 
@@ -152,7 +200,7 @@ function SettingsModalContent({ config, updateStatus, onClose, onSave, onCheckFo
             <p className="settings-eyebrow">agentz settings</p>
             <h2 id="settings-title">Terminal Preferences</h2>
             <p className="settings-subtitle">
-              Pane behavior, update prompts, and shortcuts update as soon as you change them.
+              Pane behavior, remote access, update prompts, and shortcuts update as soon as you change them.
             </p>
           </div>
           <button type="button" className="settings-close-button" onClick={onClose} aria-label="Close settings">
@@ -222,6 +270,136 @@ function SettingsModalContent({ config, updateStatus, onClose, onSave, onCheckFo
               <p className="settings-note">
                 Odd-number cap for fully rendered panes that are currently visible. Default: {DEFAULT_VISIBLE_LIVE_PANES}.
               </p>
+            </section>
+
+            <section className="settings-section">
+              <h3>Remote Access</h3>
+              <button
+                type="button"
+                className={`settings-toggle-card ${config.remoteAccess.enabled ? "settings-toggle-card-enabled" : ""}`}
+                role="switch"
+                aria-checked={config.remoteAccess.enabled}
+                disabled={!remoteAccessControlsEnabled}
+                onClick={() => {
+                  updateConfig((current) => ({
+                    ...current,
+                    remoteAccess: {
+                      enabled: !current.remoteAccess.enabled,
+                    },
+                  }));
+                }}
+              >
+                <span className="settings-toggle-copy">
+                  <span className="settings-toggle-title">Expose this desktop on the network</span>
+                  <span className="settings-toggle-description">
+                    {remoteAccessControlsEnabled
+                      ? "Browser clients must enter the generated passcode for every new session, then wait for approval here the first time."
+                      : "Remote access settings stay desktop-only, even when you open agentz from another device."}
+                  </span>
+                </span>
+                <span className="settings-toggle-track" aria-hidden="true">
+                  <span className="settings-toggle-thumb" />
+                </span>
+              </button>
+              <div className="settings-remote-grid">
+                <div className="settings-remote-card">
+                  <span className="settings-remote-label">Pairing passcode</span>
+                  <strong className="settings-remote-passcode">
+                    {config.remoteAccess.enabled
+                      ? remoteAccessControlsEnabled
+                        ? remoteAccessState?.passcode ?? "Desktop only"
+                        : "Desktop only"
+                      : "Disabled"}
+                  </strong>
+                  <p className="settings-note">
+                    Three failed passcode attempts lock all new pairings until the desktop app restarts. Network exposure always starts disabled again on the next launch.
+                  </p>
+                </div>
+                <div className="settings-remote-card">
+                  <span className="settings-remote-label">Reachable URLs</span>
+                  {config.remoteAccess.enabled && remoteAccessState?.urls.length
+                    ? (
+                      <div className="settings-remote-url-list">
+                        {remoteAccessState.urls.map((url) => <code key={url}>{url}</code>)}
+                      </div>
+                    )
+                    : <p className="settings-note">Enable remote access in the desktop app to publish URLs for other devices.</p>}
+                </div>
+              </div>
+              {!remoteAccessControlsEnabled
+                ? <p className="settings-note">Open Settings on the desktop app to change exposure, passcodes, or approvals.</p>
+                : null}
+              {remoteAccessState?.pairingsLocked && remoteAccessControlsEnabled
+                ? <p className="settings-error">Pairing is locked until the app restarts.</p>
+                : null}
+              <section className="settings-remote-subsection">
+                <div className="settings-remote-subsection-header">
+                  <h4>Pending approvals</h4>
+                  <span>{remoteAccessState?.pendingRequests.length ?? 0}</span>
+                </div>
+                {remoteAccessControlsEnabled && remoteAccessState?.pendingRequests.length
+                  ? (
+                    <div className="settings-approval-list">
+                      {remoteAccessState.pendingRequests.map((request) => (
+                        <div key={request.id} className="settings-approval-card">
+                          <div className="settings-approval-copy">
+                            <strong>{request.deviceName}</strong>
+                            <span>{request.remoteAddress}</span>
+                            <span>Requested {formatTimeLabel(request.requestedAt)}</span>
+                          </div>
+                          <div className="settings-approval-actions">
+                            <button
+                              type="button"
+                              className="settings-secondary-button"
+                              onClick={() => onApproveRemotePairing(request.id)}
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              className="settings-secondary-button settings-secondary-button-danger"
+                              onClick={() => onRejectRemotePairing(request.id)}
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                  : <p className="settings-note">{remoteAccessControlsEnabled ? "No devices are waiting for approval right now." : "Pending approvals are only manageable from the desktop app."}</p>}
+              </section>
+
+              <section className="settings-remote-subsection">
+                <div className="settings-remote-subsection-header">
+                  <h4>Approved devices</h4>
+                  <span>{remoteAccessState?.approvedDevices.length ?? 0}</span>
+                </div>
+                {remoteAccessControlsEnabled && remoteAccessState?.approvedDevices.length
+                  ? (
+                    <div className="settings-approval-list">
+                      {remoteAccessState.approvedDevices.map((device) => (
+                        <div key={device.id} className="settings-approval-card">
+                          <div className="settings-approval-copy">
+                            <strong>{device.label}</strong>
+                            <span>Approved {formatTimeLabel(device.approvedAt)}</span>
+                            <span>Last seen {formatTimeLabel(device.lastSeenAt)}</span>
+                          </div>
+                          <div className="settings-approval-actions">
+                            <button
+                              type="button"
+                              className="settings-secondary-button settings-secondary-button-danger"
+                              onClick={() => onForgetRemoteDevice(device.id)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                  : <p className="settings-note">{remoteAccessControlsEnabled ? "Approved browsers show up here and can be removed at any time." : "Approved devices are listed and managed from the desktop app."}</p>}
+              </section>
             </section>
 
             <section className="settings-section">

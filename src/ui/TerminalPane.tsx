@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
-import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "xterm";
 
 import type { TerminalFrame } from "../shared/protocol";
@@ -22,6 +21,7 @@ import { createTerminalUrlLinkProvider, isModifierLinkActivation } from "./termi
 import { shouldBypassPaneFocusForMouseSelection } from "./terminalMouseFocus";
 import { prependTerminalModePrefix, terminalModeStateKey } from "./terminalModes";
 import { inspectAvatarState } from "./avatarState";
+import { DEBUG_LOGS_ENABLED } from "./debugLogs";
 
 const RESIZE_DEBOUNCE_MS = 40;
 const RESIZE_SNAPSHOT_DELAY_MS = 140;
@@ -53,6 +53,7 @@ const TERMINAL_THEME = {
   brightCyan: "#a6e8ff",
   brightWhite: "#f4f8ff",
 };
+const TERMINAL_DEBUG = DEBUG_LOGS_ENABLED;
 
 interface Props {
   id: string;
@@ -60,6 +61,7 @@ interface Props {
   currentFrame?: TerminalFrame;
   pendingFrames?: TerminalFrame[];
   active: boolean;
+  autoClaimViewport: boolean;
   accentStyle?: CSSProperties;
   shortcuts: DashboardShortcuts;
   onActivate: (id: string) => void;
@@ -140,10 +142,35 @@ function syncTerminalCursor(
   screen?.classList.toggle("terminal-screen-cursor-hidden", frame?.cursorVisible === false);
 }
 
-function refreshTerminalViewport(terminal: Terminal): void {
-  if (terminal.rows <= 0) return;
-  (terminal as Terminal & { clearTextureAtlas?: () => void }).clearTextureAtlas?.();
-  terminal.refresh(0, terminal.rows - 1);
+function measuredCellSize(terminal: Terminal): { width: number; height: number } | null {
+  const core = (terminal as Terminal & {
+    _core?: {
+      _renderService?: {
+        _renderer?: {
+          value?: {
+            dimensions?: {
+              css?: {
+                cell?: {
+                  width?: number;
+                  height?: number;
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+  })._core;
+  const cell = core?._renderService?._renderer?.value?.dimensions?.css?.cell;
+  const width = cell?.width;
+  const height = cell?.height;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width == null || height == null) {
+    return null;
+  }
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+  return { width, height };
 }
 
 export function TerminalPane({
@@ -152,6 +179,7 @@ export function TerminalPane({
   currentFrame,
   pendingFrames,
   active,
+  autoClaimViewport,
   accentStyle,
   shortcuts,
   onActivate,
@@ -163,7 +191,6 @@ export function TerminalPane({
   const stageRef = useRef<HTMLDivElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
   const resizeSyncTimeoutRef = useRef<number | null>(null);
   const snapshotSyncTimeoutRef = useRef<number | null>(null);
   const focusTimeoutRef = useRef<number | null>(null);
@@ -181,6 +208,7 @@ export function TerminalPane({
   const framesQueuedHandlerRef = useRef(onFramesQueued);
   const userInputHandlerRef = useRef(onUserInput);
   const currentFrameRef = useRef(currentFrame);
+  const hasViewportControlRef = useRef(autoClaimViewport && active);
 
   shortcutsRef.current = shortcuts;
   shortcutHandlerRef.current = onShortcut;
@@ -243,6 +271,43 @@ export function TerminalPane({
     terminalRef.current?.focus();
   };
 
+  const claimViewportControl = () => {
+    hasViewportControlRef.current = true;
+    rpc.send({ type: "focus-terminal", id });
+    syncViewportSizeToServer({
+      immediate: IS_WINDOWS,
+      requestSnapshot: true,
+      forceSnapshot: true,
+      snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
+    });
+  };
+
+  const syncViewportSizeToServer = (
+    {
+      immediate = false,
+      requestSnapshot = false,
+      forceSnapshot = false,
+      snapshotDelayMs = 0,
+    }: { immediate?: boolean; requestSnapshot?: boolean; forceSnapshot?: boolean; snapshotDelayMs?: number } = {},
+  ) => {
+    const terminal = terminalRef.current;
+    const screen = screenRef.current;
+    if (!terminal || !screen) return;
+    const screenWidth = screen.clientWidth;
+    const screenHeight = screen.clientHeight;
+    if (screenWidth <= 0 || screenHeight <= 0) return;
+    const cell = measuredCellSize(terminal);
+    if (!cell) return;
+    const nextCols = Math.max(2, Math.floor(screenWidth / cell.width));
+    const nextRows = Math.max(1, Math.floor(screenHeight / cell.height));
+    queueResizeSync(nextCols, nextRows, {
+      immediate,
+      requestSnapshot,
+      forceSnapshot,
+      snapshotDelayMs,
+    });
+  };
+
   const scheduleTerminalFocus = () => {
     if (focusTimeoutRef.current != null) {
       window.clearTimeout(focusTimeoutRef.current);
@@ -258,19 +323,38 @@ export function TerminalPane({
     const terminal = terminalRef.current;
     const screen = screenRef.current;
     if (!terminal) {
+      if (TERMINAL_DEBUG) {
+        console.log("[terminal-pane] applyFrame skipped: terminal missing", {
+          id,
+          seq: frame.seq,
+          screenMode: frame.screenMode,
+          renderVtLen: frame.renderVt?.length ?? 0,
+          renderPatchVtLen: frame.renderPatchVt?.length ?? 0,
+          renderPatchBytesLen: frame.renderPatchBytes?.length ?? 0,
+        });
+      }
       done();
       return;
     }
 
-    if (terminal.cols > 0 && terminal.rows > 0 && (frame.cols !== terminal.cols || frame.rows !== terminal.rows)) {
-      queueResizeSync(terminal.cols, terminal.rows, {
-        immediate: true,
-        requestSnapshot: true,
-        forceSnapshot: true,
-        snapshotDelayMs: RESIZE_SNAPSHOT_DELAY_MS,
+    if (TERMINAL_DEBUG) {
+      console.log("[terminal-pane] applyFrame", {
+        id,
+        seq: frame.seq,
+        screenMode: frame.screenMode,
+        altScreen: frame.altScreen,
+        cols: frame.cols,
+        rows: frame.rows,
+        termCols: terminal.cols,
+        termRows: terminal.rows,
+        renderVtLen: frame.renderVt?.length ?? 0,
+        renderPatchVtLen: frame.renderPatchVt?.length ?? 0,
+        renderPatchBytesLen: frame.renderPatchBytes?.length ?? 0,
       });
-      done();
-      return;
+    }
+
+    if (frame.cols > 0 && frame.rows > 0 && (frame.cols !== terminal.cols || frame.rows !== terminal.rows)) {
+      terminal.resize(frame.cols, frame.rows);
     }
 
     const payload = framePayload(frame);
@@ -283,6 +367,9 @@ export function TerminalPane({
       if (payloadWithModes.length === 0) {
         syncTerminalCursor(terminal, screen, frame);
         lastModeStateKeyRef.current = nextModeStateKey;
+        if (TERMINAL_DEBUG) {
+          console.log("[terminal-pane] applyFrame full empty payload", { id, seq: frame.seq });
+        }
         done();
         return;
       }
@@ -292,6 +379,9 @@ export function TerminalPane({
         terminal.write(`\u001b[?1049h\u001b[H\u001b[2J${payloadWithModes}`, () => {
           syncTerminalCursor(terminal, screen, frame);
           lastModeStateKeyRef.current = nextModeStateKey;
+          if (TERMINAL_DEBUG) {
+            console.log("[terminal-pane] applyFrame full alt complete", { id, seq: frame.seq });
+          }
           done();
         });
         return;
@@ -302,6 +392,9 @@ export function TerminalPane({
       terminal.write(payloadWithModes, () => {
         syncTerminalCursor(terminal, screen, frame);
         lastModeStateKeyRef.current = nextModeStateKey;
+        if (TERMINAL_DEBUG) {
+          console.log("[terminal-pane] applyFrame full complete", { id, seq: frame.seq });
+        }
         if (scrollbackOffset > 0) {
           const nextTarget = Math.max(0, terminal.buffer.active.baseY - scrollbackOffset);
           terminal.scrollToLine(nextTarget);
@@ -316,6 +409,9 @@ export function TerminalPane({
     if (payloadWithModes.length === 0) {
       syncTerminalCursor(terminal, screen, frame);
       lastModeStateKeyRef.current = nextModeStateKey;
+      if (TERMINAL_DEBUG) {
+        console.log("[terminal-pane] applyFrame patch empty payload", { id, seq: frame.seq });
+      }
       done();
       return;
     }
@@ -323,6 +419,9 @@ export function TerminalPane({
     terminal.write(payloadWithModes, () => {
       syncTerminalCursor(terminal, screen, frame);
       lastModeStateKeyRef.current = nextModeStateKey;
+      if (TERMINAL_DEBUG) {
+        console.log("[terminal-pane] applyFrame patch complete", { id, seq: frame.seq });
+      }
       done();
     });
   };
@@ -344,6 +443,16 @@ export function TerminalPane({
     const nextFrame = pendingFramesRef.current[nextIndex];
     if (!nextFrame) return;
 
+    if (TERMINAL_DEBUG) {
+      console.log("[terminal-pane] drainFrameQueue", {
+        id,
+        nextIndex,
+        queued: pendingFramesRef.current.length,
+        seq: nextFrame.seq,
+        screenMode: nextFrame.screenMode,
+      });
+    }
+
     pendingFrameStartRef.current = nextIndex + 1;
     processingFramesRef.current = true;
     applyFrame(nextFrame, () => {
@@ -364,9 +473,41 @@ export function TerminalPane({
     const highestQueuedSeq = pendingFramesRef.current[pendingFramesRef.current.length - 1]?.seq ?? lastAppliedSeqRef.current;
     const nextFrames = frames.filter((frame) => hasRenderablePayload(frame) && frame.seq > highestQueuedSeq);
     if (nextFrames.length === 0) return;
+    if (TERMINAL_DEBUG) {
+      console.log("[terminal-pane] enqueueFrames", {
+        id,
+        incoming: frames.map((frame) => ({ seq: frame.seq, screenMode: frame.screenMode })),
+        accepted: nextFrames.map((frame) => ({ seq: frame.seq, screenMode: frame.screenMode })),
+        highestQueuedSeq,
+      });
+    }
     pendingFramesRef.current.push(...nextFrames);
     drainFrameQueue();
   };
+
+  const prioritizeFullFrame = (frame: TerminalFrame) => {
+    if (!hasRenderablePayload(frame)) return;
+    if (frame.seq < lastAppliedSeqRef.current) return;
+    if (TERMINAL_DEBUG) {
+      console.log("[terminal-pane] prioritizeFullFrame", {
+        id,
+        seq: frame.seq,
+        screenMode: frame.screenMode,
+        renderVtLen: frame.renderVt?.length ?? 0,
+      });
+    }
+    pendingFramesRef.current = [frame];
+    pendingFrameStartRef.current = 0;
+    drainFrameQueue();
+  };
+
+  useEffect(() => {
+    if (!active) {
+      hasViewportControlRef.current = false;
+    } else if (autoClaimViewport) {
+      hasViewportControlRef.current = true;
+    }
+  }, [active, autoClaimViewport]);
 
   useEffect(() => {
     if (!onTextPasteRegister) return;
@@ -400,8 +541,6 @@ export function TerminalPane({
       smoothScrollDuration: 0,
       theme: TERMINAL_THEME,
     });
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
     const linkProvider = createTerminalUrlLinkProvider(terminal, openExternalUrl);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
@@ -412,6 +551,12 @@ export function TerminalPane({
       if (enterSequence) {
         event.preventDefault();
         userInputHandlerRef.current(id);
+        syncViewportSizeToServer({
+          immediate: IS_WINDOWS,
+          requestSnapshot: true,
+          forceSnapshot: true,
+          snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
+        });
         rpc.send({ type: "input", id, data: enterSequence, encoding: "utf8" });
         return false;
       }
@@ -492,10 +637,22 @@ export function TerminalPane({
 
     const dataSubscription = terminal.onData((data) => {
       userInputHandlerRef.current(id);
+      syncViewportSizeToServer({
+        immediate: IS_WINDOWS,
+        requestSnapshot: true,
+        forceSnapshot: true,
+        snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
+      });
       rpc.send({ type: "input", id, data, encoding: "utf8" });
     });
     const binarySubscription = terminal.onBinary((data) => {
       userInputHandlerRef.current(id);
+      syncViewportSizeToServer({
+        immediate: IS_WINDOWS,
+        requestSnapshot: true,
+        forceSnapshot: true,
+        snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
+      });
       rpc.send({ type: "input", id, data, encoding: "binary" });
     });
     const resizeSubscription = terminal.onResize(({ cols, rows }) => {
@@ -508,30 +665,38 @@ export function TerminalPane({
     terminal.open(screen);
     const linkProviderDisposable = terminal.registerLinkProvider(linkProvider);
     terminalRef.current = terminal;
-    fitAddonRef.current = fitAddon;
+    if (TERMINAL_DEBUG) {
+      console.log("[terminal-pane] terminal mounted", { id });
+    }
+    drainFrameQueue();
 
-    const fitTerminal = () => {
-      fitAddon.fit();
-      refreshTerminalViewport(terminal);
-      queueResizeSync(terminal.cols, terminal.rows, {
+    const resizeTerminalToStage = () => {
+      if (!measuredCellSize(terminal)) {
+        window.requestAnimationFrame(resizeTerminalToStage);
+        return;
+      }
+      if (!hasViewportControlRef.current) {
+        return;
+      }
+      syncViewportSizeToServer({
         immediate: IS_WINDOWS,
         requestSnapshot: true,
         snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
       });
     };
 
-    fitTerminal();
+    window.requestAnimationFrame(resizeTerminalToStage);
     if (active) {
       scheduleTerminalFocus();
     }
 
     const resizeObserver = new ResizeObserver(() => {
-      window.requestAnimationFrame(fitTerminal);
+      window.requestAnimationFrame(resizeTerminalToStage);
     });
     resizeObserver.observe(stage);
 
     void document.fonts?.ready.then(() => {
-      fitTerminal();
+      resizeTerminalToStage();
     });
 
     return () => {
@@ -542,7 +707,6 @@ export function TerminalPane({
       linkProviderDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
-      fitAddonRef.current = null;
       pendingFramesRef.current = [];
       pendingFrameStartRef.current = 0;
       processingFramesRef.current = false;
@@ -571,14 +735,21 @@ export function TerminalPane({
   }, [pendingFrames]);
 
   useEffect(() => {
-    if (pendingFrames?.length) return;
     if (!hasRenderablePayload(currentFrame)) return;
+    if (currentFrame.screenMode === "full" || currentFrame.renderVt) {
+      prioritizeFullFrame(currentFrame);
+      return;
+    }
+    if (pendingFrames?.length) return;
     if (currentFrame.seq <= lastAppliedSeqRef.current) return;
     enqueueFrames([currentFrame]);
   }, [currentFrame, pendingFrames]);
 
   useEffect(() => {
     if (active) {
+      if (autoClaimViewport || document.hasFocus()) {
+        claimViewportControl();
+      }
       if (skipNextActiveFocusRef.current) {
         skipNextActiveFocusRef.current = false;
         return;
@@ -595,16 +766,17 @@ export function TerminalPane({
     if (helper instanceof HTMLTextAreaElement) {
       helper.blur();
     }
-  }, [active]);
+  }, [active, autoClaimViewport, id, rpc]);
 
   useEffect(() => {
     if (!active) return;
     const onWindowFocus = () => {
+      claimViewportControl();
       scheduleTerminalFocus();
     };
     window.addEventListener("focus", onWindowFocus);
     return () => window.removeEventListener("focus", onWindowFocus);
-  }, [active]);
+  }, [active, autoClaimViewport, id, rpc]);
 
   return (
     <section className={`pane-shell ${active ? "pane-active" : ""}`} style={accentStyle}>
@@ -622,11 +794,16 @@ export function TerminalPane({
             moved: false,
             bypassFocus,
           };
+          claimViewportControl();
           if (bypassFocus) return;
           if (!active) onActivate(id);
           if (!active && event.button === 0) {
             skipNextActiveFocusRef.current = true;
           }
+        }}
+        onFocusCapture={() => {
+          if (!active) return;
+          claimViewportControl();
         }}
         onMouseMoveCapture={(event) => {
           const interaction = pointerInteractionRef.current;
