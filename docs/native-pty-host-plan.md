@@ -381,21 +381,22 @@ Recommended behavior:
 ### Fast Validation
 
 1. Build native host:
-   - `bun run native:build:bridge`
-2. Run a direct smoke test against `TerminalSession`:
-   - `bun run test:opencode`
+   - `bun run native:build:host`
+2. Launch the app in dev mode:
+   - `bun run dev`
+3. Follow the manual validation workflow below with `opencode`
 
 ### Screenshot Validation
 
-At least one screenshot test must pass before this migration is considered working.
+At least one screenshot capture during manual validation must confirm correct rendering.
 
 Recommended order:
 
-1. `bun run test:shell:scroll:screenshot`
+1. Shell prompt and scrollback
    - simplest shell-driven validation
-2. `bun run test:nvim:screenshot`
+2. `nvim`
    - validates alternate screen, cursor movement, and TUI rendering
-3. `bun run test:opencode:screenshot`
+3. `opencode`
    - validates more complex interactive CLI behavior
 
 ### Manual Validation

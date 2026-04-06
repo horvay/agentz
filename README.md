@@ -114,7 +114,7 @@ bun run dev
 ### Run Web Mode
 
 ```bash
-bun run web
+bun run scripts/web-dev.ts
 ```
 
 Web mode stays local-only:
@@ -157,20 +157,18 @@ Primary interactive validation target:
 
 - `opencode`
 
-Basic smoke check:
+Manual validation workflow:
 
 ```bash
-bun run test:opencode
+bun run dev
 ```
 
-Useful screenshot checks:
+Then:
 
-```bash
-bun run test:opencode:screenshot
-bun run test:opencode:add-pane:screenshot
-bun run test:nvim:screenshot
-bun run test:shell:scroll:screenshot
-```
+- open at least one terminal pane
+- start `opencode` inside the pane
+- verify typing, submission, cursor redraw, resize behavior, and scrollback
+- repeat with two panes to confirm session isolation
 
 ## Release Builds
 
