@@ -324,6 +324,9 @@ function SettingsModalContent({
                       </div>
                     )
                     : <p className="settings-note">Enable remote access in the desktop app to publish URLs for other devices.</p>}
+                  <p className="settings-note">
+                    Remote URLs now use a local CA-signed HTTPS certificate. Trust the agentz CA certificate on each phone or laptop once, then future remote sessions from this desktop can load without the usual self-signed warning.
+                  </p>
                 </div>
               </div>
               {!remoteAccessControlsEnabled

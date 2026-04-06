@@ -1,4 +1,5 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -37,6 +38,18 @@ const SESSION_SWEEP_INTERVAL_MS = 30 * 1000;
 interface StartTerminalRpcServerOptions {
   host?: string;
   port?: number;
+  tls?: {
+    key: string | Buffer;
+    cert: string | Buffer;
+  };
+  bindings?: Array<{
+    host: string;
+    port: number;
+    tls?: {
+      key: string | Buffer;
+      cert: string | Buffer;
+    };
+  }>;
   terminals?: TerminalManager;
   remoteAccess?: RemoteAccessController;
   updates?: RpcUpdateController;
@@ -61,6 +74,12 @@ interface ClientContext {
 
 interface CloseServerOptions {
   killTerminals?: boolean;
+}
+
+interface RpcServerBindingInfo {
+  host: string;
+  port: number;
+  secure: boolean;
 }
 
 const UNSUPPORTED_UPDATE_STATUS: AppUpdateStatus = {
@@ -250,9 +269,21 @@ export function startTerminalRpcServer(
   launchConfig: LaunchConfig,
   configManager: DashboardConfigManager,
   options: StartTerminalRpcServerOptions = {},
-): { host: string; port: number; close: (closeOptions?: CloseServerOptions) => Promise<void> } {
-  const host = options.host ?? DEFAULT_LOCAL_HOST;
-  const port = options.port ?? RPC_PORT;
+): {
+  host: string;
+  port: number;
+  secure: boolean;
+  bindings: RpcServerBindingInfo[];
+  close: (closeOptions?: CloseServerOptions) => Promise<void>;
+} {
+  const bindings = options.bindings?.length
+    ? options.bindings
+    : [{
+        host: options.host ?? DEFAULT_LOCAL_HOST,
+        port: options.port ?? RPC_PORT,
+        tls: options.tls,
+      }];
+  const primaryBinding = bindings[0]!;
   const remoteAccess = options.remoteAccess ?? createRemoteAccessController();
   const updates = options.updates ?? {
     currentStatus: () => UNSUPPORTED_UPDATE_STATUS,
@@ -318,13 +349,13 @@ export function startTerminalRpcServer(
     return false;
   }
 
-  const httpServer = createServer(async (req, res) => {
+  const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     const method = req.method ?? "GET";
     const url = (() => {
       try {
-        return new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
+        return new URL(req.url ?? "/", `http://${req.headers.host ?? `${primaryBinding.host}:${primaryBinding.port}`}`);
       } catch {
-        return new URL(`http://${host}:${port}/`);
+        return new URL(`http://${primaryBinding.host}:${primaryBinding.port}/`);
       }
     })();
     const pathnameValue = url.pathname;
@@ -415,7 +446,7 @@ export function startTerminalRpcServer(
 
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     res.end("agentz RPC endpoint");
-  });
+  };
   const websocketServer = new WebSocketServer({
     noServer: true,
     handleProtocols: (protocols) => {
@@ -488,22 +519,29 @@ export function startTerminalRpcServer(
     });
   }
 
-  httpServer.on("upgrade", (req, socket, head) => {
-    const isLocal = isLoopbackRequest(req);
-    const sessionToken = extractWebSocketToken(req);
-    if (!remoteAccess.authorizeWebSocket(sessionToken, isLocal)) {
-      rejectUpgrade(socket, 401, "Unauthorized");
-      return;
-    }
+  const servers = bindings.map((binding) => {
+    const server = binding.tls
+      ? createHttpsServer({ key: binding.tls.key, cert: binding.tls.cert }, requestHandler)
+      : createHttpServer(requestHandler);
+    server.on("upgrade", (req, socket, head) => {
+      const isLocal = isLoopbackRequest(req);
+      const sessionToken = extractWebSocketToken(req);
+      if (!remoteAccess.authorizeWebSocket(sessionToken, isLocal)) {
+        rejectUpgrade(socket, 401, "Unauthorized");
+        return;
+      }
 
-    websocketServer.handleUpgrade(req, socket, head, (ws) => {
-      clientContexts.set(ws, {
-        isLocal,
-        sessionToken: sessionToken ?? null,
-        terminalPreferences: new Map(),
+      websocketServer.handleUpgrade(req, socket, head, (ws) => {
+        clientContexts.set(ws, {
+          isLocal,
+          sessionToken: sessionToken ?? null,
+          terminalPreferences: new Map(),
+        });
+        websocketServer.emit("connection", ws, req);
       });
-      websocketServer.emit("connection", ws, req);
     });
+    server.listen(binding.port, binding.host);
+    return { server, binding };
   });
 
   websocketServer.on("connection", (ws: WebSocket) => {
@@ -701,7 +739,6 @@ export function startTerminalRpcServer(
     });
   });
 
-  httpServer.listen(port, host);
   const disposeUpdateStatus = updates.subscribe((status) => {
     broadcast({ type: "update-status", status });
   });
@@ -742,15 +779,25 @@ export function startTerminalRpcServer(
     clients.clear();
     clientContexts.clear();
     websocketServer.close();
-    await new Promise<void>((resolve) => {
-      httpServer.close(() => resolve());
-    });
+    await Promise.all(servers.map(({ server }) => new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    })));
     if (closeOptions.killTerminals !== false) {
       terminals.killAll();
     }
   };
 
-  return { host, port, close };
+  return {
+    host: primaryBinding.host,
+    port: primaryBinding.port,
+    secure: Boolean(primaryBinding.tls),
+    bindings: bindings.map((binding) => ({
+      host: binding.host,
+      port: binding.port,
+      secure: Boolean(binding.tls),
+    })),
+    close,
+  };
 }
 
 export { DEFAULT_LOCAL_HOST, DEFAULT_REMOTE_HOST };

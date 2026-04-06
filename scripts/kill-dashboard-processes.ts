@@ -91,7 +91,7 @@ function killMatchingWindowsProcesses(): void {
   }
 
   const portOwners = queryJson(
-    "Get-NetTCPConnection -LocalPort 5173,4599 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ConvertTo-Json -Compress",
+    "Get-NetTCPConnection -LocalPort 5173,4599,4600 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ConvertTo-Json -Compress",
   )
     .map((value) => Number(value))
     .filter((pid) => Number.isFinite(pid) && pid > 0);

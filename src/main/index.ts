@@ -1,8 +1,7 @@
 import { app, BrowserWindow, shell } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import os from "node:os";
-import { startTerminalRpcServer, DEFAULT_REMOTE_HOST, RPC_PORT } from "./server";
+import { startTerminalRpcServer, DEFAULT_LOCAL_HOST, DEFAULT_REMOTE_HOST, RPC_PORT } from "./server";
 import { createDashboardConfigManager } from "./configManager";
 import { applyMacShellEnvironment } from "./shellEnvironment";
 import {
@@ -14,6 +13,7 @@ import {
 import { TerminalManager } from "./terminalManager";
 import { createRemoteAccessController } from "./webAuth";
 import type { LaunchConfig } from "../shared/protocol";
+import { ensureRemoteTlsContext, REMOTE_RPC_PORT, resolveRemoteAccessUrls } from "./remoteTls";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
@@ -159,7 +159,8 @@ async function bootstrap(): Promise<void> {
 
   const launchConfig = parseLaunchConfigFromEnv();
   const configManager = createDashboardConfigManager();
-  const remoteAccessDevicesPath = join(dirname(configManager.getConfigPath()), "remote-access-devices.json");
+  const configDir = dirname(configManager.getConfigPath());
+  const remoteAccessDevicesPath = join(configDir, "remote-access-devices.json");
   const loadApprovedDevices = () => {
     if (!existsSync(remoteAccessDevicesPath)) return [];
     try {
@@ -203,44 +204,39 @@ async function bootstrap(): Promise<void> {
     writeFileSync(remoteAccessDevicesPath, `${JSON.stringify(devices, null, 2)}\n`, "utf8");
   };
   const terminals = new TerminalManager();
-  const resolveRemoteAccessUrls = () => {
-    const interfaces = os.networkInterfaces();
-    const urls = new Set<string>();
-    for (const entries of Object.values(interfaces)) {
-      for (const entry of entries ?? []) {
-        if (entry.internal || entry.family !== "IPv4") continue;
-        urls.add(`http://${entry.address}:${RPC_PORT}`);
-      }
-    }
-    if (urls.size === 0) {
-      urls.add(`http://127.0.0.1:${RPC_PORT}`);
-    }
-    return [...urls];
-  };
+  const remoteTls = await ensureRemoteTlsContext(configDir);
   const remoteAccess = createRemoteAccessController({
-    resolveUrls: resolveRemoteAccessUrls,
+    resolveUrls: () => resolveRemoteAccessUrls(REMOTE_RPC_PORT),
     initialApprovedDevices: loadApprovedDevices(),
     onApprovedDevicesChanged: saveApprovedDevices,
   });
   remoteAccess.setEnabled(configManager.getConfig().remoteAccess.enabled);
-
-  const startRpcServer = (host: string) =>
-    startTerminalRpcServer(launchConfig ?? {}, configManager, {
-      host,
-      port: RPC_PORT,
-      terminals,
-      remoteAccess,
-      updates: {
-        currentStatus: getCurrentAutoUpdateStatus,
-        requestManualCheck: requestManualUpdateCheck,
-        subscribe: subscribeAutoUpdateStatus,
+  const rpcServer = startTerminalRpcServer(launchConfig ?? {}, configManager, {
+    bindings: [
+      {
+        host: DEFAULT_LOCAL_HOST,
+        port: RPC_PORT,
       },
-      onConfigChanged: (nextConfig) => {
-        remoteAccess.setEnabled(nextConfig.remoteAccess.enabled);
+      {
+        host: DEFAULT_REMOTE_HOST,
+        port: REMOTE_RPC_PORT,
+        tls: {
+          key: remoteTls.key,
+          cert: remoteTls.cert,
+        },
       },
-    });
-
-  let rpcServer = startRpcServer(DEFAULT_REMOTE_HOST);
+    ],
+    terminals,
+    remoteAccess,
+    updates: {
+      currentStatus: getCurrentAutoUpdateStatus,
+      requestManualCheck: requestManualUpdateCheck,
+      subscribe: subscribeAutoUpdateStatus,
+    },
+    onConfigChanged: (nextConfig) => {
+      remoteAccess.setEnabled(nextConfig.remoteAccess.enabled);
+    },
+  });
 
   app.on("before-quit", () => {
     void rpcServer.close();
@@ -249,7 +245,10 @@ async function bootstrap(): Promise<void> {
   app.whenReady().then(async () => {
     await createMainWindow();
     initializeAutoUpdates(() => mainWindow, () => configManager.getConfig());
-    console.log(`RPC listening on ws://${rpcServer.host}:${rpcServer.port}`);
+    console.log(`Local RPC listening on ws://${DEFAULT_LOCAL_HOST}:${RPC_PORT}`);
+    console.log(`Remote access listening on wss://0.0.0.0:${REMOTE_RPC_PORT}`);
+    console.log(`Remote local CA: ${remoteTls.caCertPath}`);
+    console.log(`Remote server certificate: ${remoteTls.certPath}`);
   });
 
   app.on("activate", async () => {
