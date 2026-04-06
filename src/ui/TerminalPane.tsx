@@ -487,7 +487,7 @@ export function TerminalPane({
 
   const prioritizeFullFrame = (frame: TerminalFrame) => {
     if (!hasRenderablePayload(frame)) return;
-    if (frame.seq < lastAppliedSeqRef.current) return;
+    if (frame.seq <= lastAppliedSeqRef.current) return;
     if (TERMINAL_DEBUG) {
       console.log("[terminal-pane] prioritizeFullFrame", {
         id,
