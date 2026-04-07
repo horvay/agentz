@@ -1667,6 +1667,7 @@ function DashboardApp({
 
       if (owningPaneId && backgroundTerminalIdsRef.current[owningPaneId]?.includes(id)) {
         setStatus(`${id} exited (${code})`);
+        serverTerminalIdsRef.current = serverTerminalIdsRef.current.filter((terminalId) => terminalId !== id);
         delete pendingFrameUpdatesRef.current[id];
         delete avatarActivityRef.current[id];
         delete framesRef.current[id];
@@ -1709,13 +1710,15 @@ function DashboardApp({
       }
 
       setStatus(`${id} exited (${code})`);
+      const backgroundIds = backgroundTerminalIdsRef.current[id] ?? [];
+      const removedTerminalIds = new Set([id, ...backgroundIds]);
+      serverTerminalIdsRef.current = serverTerminalIdsRef.current.filter((terminalId) => !removedTerminalIds.has(terminalId));
       delete pendingFrameUpdatesRef.current[id];
       delete avatarActivityRef.current[id];
       delete framesRef.current[id];
       delete frameQueuesRef.current[id];
       delete avatarStatesRef.current[id];
       delete paneStatusRef.current[id];
-      const backgroundIds = backgroundTerminalIdsRef.current[id] ?? [];
       if (backgroundIds.length > 0) {
         for (const backgroundId of backgroundIds) {
           delete pendingFrameUpdatesRef.current[backgroundId];
