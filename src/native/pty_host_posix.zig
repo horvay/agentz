@@ -152,11 +152,6 @@ fn writeCursorState(writer: *std.Io.Writer, term: *ghostty_vt.Terminal) !void {
     formatter.extra = .none;
     formatter.extra.screen.cursor = true;
     try formatter.format(writer);
-    const cursor = term.screens.active.cursor;
-    try writer.print("\x1b[{d};{d}H", .{
-        @as(usize, @intCast(cursor.y)) + 1,
-        @as(usize, @intCast(cursor.x)) + 1,
-    });
 }
 
 fn formatRow(
