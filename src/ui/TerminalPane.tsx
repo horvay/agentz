@@ -319,6 +319,18 @@ export function TerminalPane({
     }, 0);
   };
 
+  const syncInputViewportToServer = () => {
+    if (IS_WINDOWS) {
+      syncViewportSizeToServer({ immediate: true });
+      return;
+    }
+    syncViewportSizeToServer({
+      requestSnapshot: true,
+      forceSnapshot: true,
+      snapshotDelayMs: RESIZE_SNAPSHOT_DELAY_MS,
+    });
+  };
+
   const applyFrame = (frame: TerminalFrame, done: () => void) => {
     const terminal = terminalRef.current;
     const screen = screenRef.current;
@@ -558,7 +570,7 @@ export function TerminalPane({
       if (enterSequence) {
         event.preventDefault();
         userInputHandlerRef.current(id);
-        syncViewportSizeToServer({ immediate: IS_WINDOWS });
+        syncInputViewportToServer();
         rpc.send({ type: "input", id, data: enterSequence, encoding: "utf8" });
         return false;
       }
@@ -639,12 +651,12 @@ export function TerminalPane({
 
     const dataSubscription = terminal.onData((data) => {
       userInputHandlerRef.current(id);
-      syncViewportSizeToServer({ immediate: IS_WINDOWS });
+      syncInputViewportToServer();
       rpc.send({ type: "input", id, data, encoding: "utf8" });
     });
     const binarySubscription = terminal.onBinary((data) => {
       userInputHandlerRef.current(id);
-      syncViewportSizeToServer({ immediate: IS_WINDOWS });
+      syncInputViewportToServer();
       rpc.send({ type: "input", id, data, encoding: "binary" });
     });
     const resizeSubscription = terminal.onResize(({ cols, rows }) => {
