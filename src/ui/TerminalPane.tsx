@@ -200,6 +200,7 @@ export function TerminalPane({
   const processingFramesRef = useRef(false);
   const lastAppliedSeqRef = useRef(0);
   const lastModeStateKeyRef = useRef<string | null>(null);
+  const lastCursorRowRef = useRef<number | null>(null);
   const enhancedEnterModeRef = useRef<EnhancedEnterMode>("none");
   const skipNextActiveFocusRef = useRef(false);
   const pointerInteractionRef = useRef<{ x: number; y: number; moved: boolean; bypassFocus: boolean } | null>(null);
@@ -365,6 +366,16 @@ export function TerminalPane({
       });
     }
 
+    const refreshCursorRows = () => {
+      const nextCursorRow = frame.cursorRow;
+      const previousCursorRow = lastCursorRowRef.current;
+      lastCursorRowRef.current = nextCursorRow ?? previousCursorRow;
+      if (nextCursorRow == null) return;
+      const refreshStart = Math.max(0, Math.min(previousCursorRow ?? nextCursorRow, nextCursorRow) - 1);
+      const refreshEnd = Math.max(0, Math.max(previousCursorRow ?? nextCursorRow, nextCursorRow) - 1);
+      terminal.refresh(refreshStart, refreshEnd);
+    };
+
     if (frame.cols > 0 && frame.rows > 0 && (frame.cols !== terminal.cols || frame.rows !== terminal.rows)) {
       terminal.resize(frame.cols, frame.rows);
     }
@@ -378,6 +389,7 @@ export function TerminalPane({
     if (frame.screenMode === "full") {
       if (payloadWithModes.length === 0) {
         syncTerminalCursor(terminal, screen, frame);
+        refreshCursorRows();
         lastModeStateKeyRef.current = nextModeStateKey;
         if (TERMINAL_DEBUG) {
           console.log("[terminal-pane] applyFrame full empty payload", { id, seq: frame.seq });
@@ -390,6 +402,7 @@ export function TerminalPane({
         // Re-enter and clear the alt buffer in place so redraws do not visibly flash.
         terminal.write(`\u001b[?1049h\u001b[H\u001b[2J${payloadWithModes}`, () => {
           syncTerminalCursor(terminal, screen, frame);
+          refreshCursorRows();
           lastModeStateKeyRef.current = nextModeStateKey;
           if (TERMINAL_DEBUG) {
             console.log("[terminal-pane] applyFrame full alt complete", { id, seq: frame.seq });
@@ -403,6 +416,7 @@ export function TerminalPane({
         // leave the pane visibly blank between rapid shell updates on Windows.
         terminal.write(`\u001b[?1049l\u001b[H\u001b[2J\u001b[3J${payloadWithModes}`, () => {
           syncTerminalCursor(terminal, screen, frame);
+          refreshCursorRows();
           lastModeStateKeyRef.current = nextModeStateKey;
           if (TERMINAL_DEBUG) {
             console.log("[terminal-pane] applyFrame full primary complete", { id, seq: frame.seq });
@@ -415,6 +429,7 @@ export function TerminalPane({
       terminal.reset();
       terminal.write(payloadWithModes, () => {
         syncTerminalCursor(terminal, screen, frame);
+        refreshCursorRows();
         lastModeStateKeyRef.current = nextModeStateKey;
         if (TERMINAL_DEBUG) {
           console.log("[terminal-pane] applyFrame full complete", { id, seq: frame.seq });
@@ -427,6 +442,7 @@ export function TerminalPane({
 
     if (payloadWithModes.length === 0) {
       syncTerminalCursor(terminal, screen, frame);
+      refreshCursorRows();
       lastModeStateKeyRef.current = nextModeStateKey;
       if (TERMINAL_DEBUG) {
         console.log("[terminal-pane] applyFrame patch empty payload", { id, seq: frame.seq });
@@ -437,6 +453,7 @@ export function TerminalPane({
 
     terminal.write(payloadWithModes, () => {
       syncTerminalCursor(terminal, screen, frame);
+      refreshCursorRows();
       lastModeStateKeyRef.current = nextModeStateKey;
       if (TERMINAL_DEBUG) {
         console.log("[terminal-pane] applyFrame patch complete", { id, seq: frame.seq });
@@ -716,6 +733,7 @@ export function TerminalPane({
       processingFramesRef.current = false;
       lastAppliedSeqRef.current = 0;
       lastModeStateKeyRef.current = null;
+      lastCursorRowRef.current = null;
       enhancedEnterModeRef.current = "none";
       lastSentSizeRef.current = null;
       if (resizeSyncTimeoutRef.current != null) {
