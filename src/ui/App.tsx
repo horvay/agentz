@@ -305,14 +305,30 @@ function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalF
     typeof next.renderVt === "string" ||
     typeof next.renderPatchVt === "string" ||
     next.renderPatchBytes instanceof Uint8Array;
+  const mergedScreenMode = next.screenMode ?? (carriesRenderablePayload ? undefined : existing.screenMode);
+  const mergedRenderVt =
+    next.screenMode === "full" || typeof next.renderVt === "string"
+      ? next.renderVt
+      : carriesRenderablePayload
+        ? undefined
+        : existing.renderVt;
+  const mergedScreenRows =
+    next.screenMode === "full" || next.screenRows?.length
+      ? next.screenRows
+      : carriesRenderablePayload
+        ? undefined
+        : existing.screenRows;
   return {
     ...existing,
     seq: carriesRenderablePayload ? next.seq : existing.seq,
     cols: next.cols,
     rows: next.rows,
     cwd: next.cwd ?? existing.cwd,
+    screenMode: mergedScreenMode,
+    screenRows: mergedScreenRows,
     vt: next.vt || existing.vt,
     previewLines: mergePreviewLines(existing.previewLines, next.previewLines),
+    renderVt: mergedRenderVt,
     renderPatchKind: next.renderPatchKind,
     renderPatchVt: next.renderPatchVt,
     renderPatchBytes: next.renderPatchBytes,
