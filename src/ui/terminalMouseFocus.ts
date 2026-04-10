@@ -4,3 +4,7 @@ export function shouldBypassPaneFocusForMouseSelection(
 ): boolean {
   return event.button === 0 && event.shiftKey && mouseTrackingMode !== undefined && mouseTrackingMode !== "none";
 }
+
+export function shouldDeferViewportSyncForMouseDown(event: Pick<MouseEvent, "button">): boolean {
+  return event.button === 0;
+}

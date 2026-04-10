@@ -18,7 +18,7 @@ import {
   updateEnhancedEnterMode,
 } from "./terminalKeyboardProtocol";
 import { createTerminalUrlLinkProvider, isModifierLinkActivation } from "./terminalLinks";
-import { shouldBypassPaneFocusForMouseSelection } from "./terminalMouseFocus";
+import { shouldBypassPaneFocusForMouseSelection, shouldDeferViewportSyncForMouseDown } from "./terminalMouseFocus";
 import { prependTerminalModePrefix, terminalModeStateKey } from "./terminalModes";
 import { inspectAvatarState } from "./avatarState";
 import { DEBUG_LOGS_ENABLED } from "./debugLogs";
@@ -203,6 +203,7 @@ export function TerminalPane({
   const lastCursorRowRef = useRef<number | null>(null);
   const enhancedEnterModeRef = useRef<EnhancedEnterMode>("none");
   const skipNextActiveFocusRef = useRef(false);
+  const skipNextActiveViewportSyncRef = useRef(false);
   const pointerInteractionRef = useRef<{ x: number; y: number; moved: boolean; bypassFocus: boolean } | null>(null);
   const shortcutsRef = useRef(shortcuts);
   const shortcutHandlerRef = useRef(onShortcut);
@@ -272,9 +273,10 @@ export function TerminalPane({
     terminalRef.current?.focus();
   };
 
-  const claimViewportControl = () => {
+  const claimViewportControl = ({ syncViewport = true }: { syncViewport?: boolean } = {}) => {
     hasViewportControlRef.current = true;
     rpc.send({ type: "focus-terminal", id });
+    if (!syncViewport) return;
     syncViewportSizeToServer({
       immediate: IS_WINDOWS,
       requestSnapshot: true,
@@ -769,7 +771,10 @@ export function TerminalPane({
 
   useEffect(() => {
     if (active) {
-      if (autoClaimViewport || document.hasFocus()) {
+      if (skipNextActiveViewportSyncRef.current) {
+        skipNextActiveViewportSyncRef.current = false;
+        claimViewportControl({ syncViewport: false });
+      } else if (autoClaimViewport || document.hasFocus()) {
         claimViewportControl();
       }
       if (skipNextActiveFocusRef.current) {
@@ -810,13 +815,17 @@ export function TerminalPane({
             terminalRef.current?.modes.mouseTrackingMode,
             event,
           );
+          const deferViewportSync = shouldDeferViewportSyncForMouseDown(event);
           pointerInteractionRef.current = {
             x: event.clientX,
             y: event.clientY,
             moved: false,
             bypassFocus,
           };
-          claimViewportControl();
+          if (!active && deferViewportSync) {
+            skipNextActiveViewportSyncRef.current = true;
+          }
+          claimViewportControl({ syncViewport: !deferViewportSync });
           if (bypassFocus) return;
           if (!active) onActivate(id);
           if (!active && event.button === 0) {
