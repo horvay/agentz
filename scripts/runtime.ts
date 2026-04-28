@@ -99,5 +99,9 @@ export function resolveBundledZig(rootDir = process.cwd()): string {
   if (process.platform === "linux" && existsSync(bundledLinuxZig)) {
     return bundledLinuxZig;
   }
+  const bundledWindowsZig = join(rootDir, ".tools", "zig-x86_64-windows-0.15.2", "zig.exe");
+  if (process.platform === "win32" && existsSync(bundledWindowsZig)) {
+    return bundledWindowsZig;
+  }
   return "zig";
 }

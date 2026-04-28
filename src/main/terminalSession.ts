@@ -38,6 +38,10 @@ function quotePowerShellArg(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+function quotePowerShellDoubleQuotedString(value: string): string {
+  return `"${value.replace(/`/g, "``").replace(/\$/g, "`$").replace(/"/g, '`"')}"`;
+}
+
 function stripWrappingQuotes(value: string): string {
   return value.replace(/^"+|"+$/g, "").trim();
 }
@@ -112,13 +116,52 @@ function resolveWindowsPowerShellCommand(env: NodeJS.ProcessEnv = process.env): 
   return "powershell.exe";
 }
 
-function resolveWindowsLaunchCommand(
+function isPowerShellCommand(command: string): boolean {
+  const normalized = stripWrappingQuotes(command).replace(/\//g, "\\").toLowerCase();
+  return (
+    normalized.endsWith("\\pwsh.exe") ||
+    normalized.endsWith("\\powershell.exe") ||
+    normalized === "pwsh.exe" ||
+    normalized === "powershell.exe"
+  );
+}
+
+function powerShellCwdPromptHook(): string {
+  const escape = "\x1b";
+  const oscPrefix = quotePowerShellDoubleQuotedString(`${escape}]7;`);
+  const bell = quotePowerShellDoubleQuotedString("\x07");
+  return [
+    "$global:__agentzOriginalPrompt = if (Test-Path Function:\\prompt) { ${function:prompt} } else { $null }",
+    "function global:prompt {",
+    "  $agentzPath = $ExecutionContext.SessionState.Path.CurrentLocation.ProviderPath",
+    "  if ($agentzPath) {",
+    "    try {",
+    "      $agentzUri = [System.Uri]::new($agentzPath).AbsoluteUri",
+    `      [Console]::Write(${oscPrefix} + $agentzUri + ${bell})`,
+    "    } catch {}",
+    "  }",
+    "  if ($global:__agentzOriginalPrompt) {",
+    "    & $global:__agentzOriginalPrompt",
+    "  } else {",
+    "    'PS ' + $ExecutionContext.SessionState.Path.CurrentLocation + ('>' * ($nestedPromptLevel + 1)) + ' '",
+    "  }",
+    "}",
+  ].join("; ");
+}
+
+export function resolveWindowsLaunchCommand(
   resolvedCommand: string,
   args: string[],
   explicitCommand: boolean,
   env: NodeJS.ProcessEnv = process.env,
 ): { command: string; args: string[] } {
   if (!explicitCommand) {
+    if (isPowerShellCommand(resolvedCommand) && args.length === 0) {
+      return {
+        command: resolvedCommand,
+        args: ["-NoLogo", "-NoExit", "-Command", powerShellCwdPromptHook()],
+      };
+    }
     return { command: resolvedCommand, args };
   }
 
@@ -503,11 +546,15 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
         return;
       }
       if (message.type === "cwd") {
+        const previousCwd = this.cwd;
         if (typeof message.cwd === "string" && message.cwd.length > 0) {
           this.cwd = message.cwd;
         }
         for (const resolve of this.pendingCwdResolvers) resolve(this.cwd);
         this.pendingCwdResolvers.clear();
+        if (this.cwd !== previousCwd) {
+          cb(this.snapshot("", undefined, undefined, undefined, this.lastPreviewLines, this.lastAltScreen));
+        }
         return;
       }
       if (message.type === "busy") {

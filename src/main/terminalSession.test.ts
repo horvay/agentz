@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { buildTerminalHostEnv, resolveLaunchCwd, resolveTerminalCommand } from "./terminalSession";
+import {
+  buildTerminalHostEnv,
+  resolveLaunchCwd,
+  resolveTerminalCommand,
+  resolveWindowsLaunchCommand,
+} from "./terminalSession";
 
 describe("resolveTerminalCommand", () => {
   test("falls back when SHELL points at a missing executable", () => {
@@ -71,6 +76,27 @@ describe("buildTerminalHostEnv", () => {
     const env = buildTerminalHostEnv("opencode", "opencode", { SHELL: "/definitely/missing-shell" }, "linux");
 
     expect(env.SHELL).toBe("/definitely/missing-shell");
+  });
+});
+
+describe("resolveWindowsLaunchCommand", () => {
+  test("installs an OSC cwd prompt hook for default PowerShell sessions", () => {
+    const launch = resolveWindowsLaunchCommand("pwsh.exe", [], false);
+
+    expect(launch.command).toBe("pwsh.exe");
+    expect(launch.args).toContain("-NoExit");
+    expect(launch.args.join(" ")).toContain("]7;");
+    expect(launch.args.join(" ")).toContain("function global:prompt");
+  });
+
+  test("does not wrap explicit commands with the interactive prompt hook", () => {
+    const launch = resolveWindowsLaunchCommand("opencode", [], true, {
+      PATH: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    });
+
+    expect(launch.command.toLowerCase()).toContain("powershell");
+    expect(launch.args.join(" ")).not.toContain("function global:prompt");
   });
 });
 
