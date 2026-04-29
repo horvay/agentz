@@ -414,9 +414,9 @@ export function TerminalPane({
         return;
       }
       if (typeof payloadWithModes === "string") {
-        // Keep primary-screen full restores atomic too. Resetting xterm first can
-        // leave the pane visibly blank between rapid shell updates on Windows.
-        terminal.write(`\u001b[?1049l\u001b[H\u001b[2J\u001b[3J${payloadWithModes}`, () => {
+        // Keep primary-screen authoritative redraws non-destructive. A hard RIS
+        // reset is correct but visibly flashes on every Codex prompt repaint.
+        terminal.write(`\u001b[?1049l\u001b[?25l\u001b[r\u001b[H${payloadWithModes}\u001b[?25h`, () => {
           syncTerminalCursor(terminal, screen, frame);
           refreshCursorRows();
           lastModeStateKeyRef.current = nextModeStateKey;
@@ -834,6 +834,10 @@ export function TerminalPane({
         }}
         onFocusCapture={() => {
           if (!active) return;
+          if (pointerInteractionRef.current) {
+            claimViewportControl({ syncViewport: false });
+            return;
+          }
           claimViewportControl();
         }}
         onMouseMoveCapture={(event) => {

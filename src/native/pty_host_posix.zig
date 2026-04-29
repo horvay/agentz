@@ -226,29 +226,18 @@ fn joinRows(alloc: std.mem.Allocator, rows: []const []u8) ![]u8 {
     return try alloc.dupe(u8, builder.writer.buffered());
 }
 
-fn buildFullVt(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal, _: []const []u8) ![]u8 {
+fn buildFullVt(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal, render_rows: []const []u8) ![]u8 {
     var builder: std.Io.Writer.Allocating = .init(alloc);
     defer builder.deinit();
 
     try writeModePrefix(&builder.writer, term);
     try writeScrollingRegion(&builder.writer, term);
 
-    var formatter: ghostty_vt.formatter.PageListFormatter = .init(&term.screens.active.pages, .vt);
-    try formatter.format(&builder.writer);
-
-    try writeCursorState(&builder.writer, term);
-    return try alloc.dupe(u8, builder.writer.buffered());
-}
-
-fn buildFullScrollbackVt(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal) ![]u8 {
-    var builder: std.Io.Writer.Allocating = .init(alloc);
-    defer builder.deinit();
-
-    try writeModePrefix(&builder.writer, term);
-    try writeScrollingRegion(&builder.writer, term);
-
-    var formatter: ghostty_vt.formatter.PageListFormatter = .init(&term.screens.active.pages, .vt);
-    try formatter.format(&builder.writer);
+    for (render_rows, 0..) |row_vt, row_index| {
+        try builder.writer.print("\x1b[{d};1H\x1b[0m\x1b[2K", .{row_index + 1});
+        if (row_vt.len == 0) continue;
+        try builder.writer.writeAll(row_vt);
+    }
 
     try writeCursorState(&builder.writer, term);
     return try alloc.dupe(u8, builder.writer.buffered());
@@ -459,7 +448,9 @@ fn emitFrame(
             }
         }
 
-        if (alt_screen and dirty_rows > 0) {
+        if (!alt_screen and pending_vt_bytes.items.len > 0) {
+            use_full = true;
+        } else if (alt_screen and dirty_rows > 0) {
             use_full = true;
         } else if (pending_vt_bytes.items.len == 0 and dirty_rows > 4) {
             use_full = true;
@@ -515,9 +506,6 @@ fn emitFrame(
 
     const vt = if (use_full) blk: {
         mode = .full;
-        if (!alt_screen) {
-            break :blk try buildFullScrollbackVt(alloc, term);
-        }
         break :blk try buildFullVt(alloc, term, current_render_rows.items);
     } else blk: {
         mode = .patch;
