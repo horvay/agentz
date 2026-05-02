@@ -52,8 +52,8 @@ describe("createRemoteAccessController", () => {
     });
     expect(pairing.session.pendingPairing).toBe(true);
 
-    expect(controller.approvePairing(pairing.requestId)).toBe(true);
-    const approved = controller.getPairingStatus(pairing.requestId);
+    expect(controller.approvePairing(pairing.requestId!)).toBe(true);
+    const approved = controller.getPairingStatus(pairing.requestId!);
     expect(approved?.status).toBe("approved");
     expect(approved?.deviceToken).toBeString();
     expect(approved?.token).toBeString();
@@ -61,7 +61,7 @@ describe("createRemoteAccessController", () => {
     const restored = controller.startPairing(passcode, "Safari on MacBook", {
       remoteAddress: "10.0.0.9",
       userAgent: "Safari",
-    }, approved?.deviceToken);
+    }, approved?.deviceToken!);
     expect(restored.session.authenticated).toBe(true);
     expect(restored.session.deviceLabel).toBe("Safari on MacBook");
     expect(restored.token).toBeString();
@@ -76,16 +76,16 @@ describe("createRemoteAccessController", () => {
     const pairing = controller.startPairing(passcode, "Edge on Surface", {
       remoteAddress: "10.0.0.12",
     });
-    controller.approvePairing(pairing.requestId);
-    const approved = controller.getPairingStatus(pairing.requestId);
-    const revokedSessions = controller.forgetDeviceToken(approved?.deviceToken);
+    controller.approvePairing(pairing.requestId!);
+    const approved = controller.getPairingStatus(pairing.requestId!);
+    const revokedSessions = controller.forgetDeviceToken(approved?.deviceToken!);
 
     expect(revokedSessions.length).toBeGreaterThan(0);
     expect(controller.getState(true).approvedDevices).toHaveLength(0);
     const passcodeAgain = controller.getState(true).passcode!;
     const nextAttempt = controller.startPairing(passcodeAgain, "Edge on Surface", {
       remoteAddress: "10.0.0.12",
-    }, approved?.deviceToken);
+    }, approved?.deviceToken!);
     expect(nextAttempt.session.pendingPairing).toBe(true);
   });
 
@@ -97,20 +97,20 @@ describe("createRemoteAccessController", () => {
     const pairing = controller.startPairing(passcode, "Chrome on iPad", {
       remoteAddress: "10.0.0.25",
     });
-    controller.approvePairing(pairing.requestId);
-    const approved = controller.getPairingStatus(pairing.requestId);
+    controller.approvePairing(pairing.requestId!);
+    const approved = controller.getPairingStatus(pairing.requestId!);
 
     controller.setEnabled(false);
     expect(controller.getState(true).approvedDevices).toHaveLength(1);
     expect(() => controller.startPairing(passcode, "Chrome on iPad", {
       remoteAddress: "10.0.0.25",
-    }, approved?.deviceToken)).toThrow();
+    }, approved?.deviceToken!)).toThrow();
 
     controller.setEnabled(true);
     const nextPasscode = controller.getState(true).passcode!;
     const restored = controller.startPairing(nextPasscode, "Chrome on iPad", {
       remoteAddress: "10.0.0.25",
-    }, approved?.deviceToken);
+    }, approved?.deviceToken!);
     expect(restored?.session.authenticated).toBe(true);
     expect(restored?.session.deviceLabel).toBe("Chrome on iPad");
   });

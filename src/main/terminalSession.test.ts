@@ -66,6 +66,18 @@ describe("buildTerminalHostEnv", () => {
     expect(env.FORCE_COLOR).toBeUndefined();
   });
 
+  test("enables pi hardware cursor by default", () => {
+    const env = buildTerminalHostEnv("/bin/sh", undefined, {}, "linux");
+
+    expect(env.PI_HARDWARE_CURSOR).toBe("1");
+  });
+
+  test("keeps an explicit pi hardware cursor preference", () => {
+    const env = buildTerminalHostEnv("/bin/sh", undefined, { PI_HARDWARE_CURSOR: "0" }, "linux");
+
+    expect(env.PI_HARDWARE_CURSOR).toBe("0");
+  });
+
   test("replaces an invalid SHELL when launching the default shell", () => {
     const env = buildTerminalHostEnv("/bin/sh", undefined, { SHELL: "/definitely/missing-shell" }, "linux");
 

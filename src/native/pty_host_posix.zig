@@ -448,9 +448,7 @@ fn emitFrame(
             }
         }
 
-        if (!alt_screen and pending_vt_bytes.items.len > 0) {
-            use_full = true;
-        } else if (alt_screen and dirty_rows > 0) {
+        if (alt_screen and dirty_rows > 0) {
             use_full = true;
         } else if (pending_vt_bytes.items.len == 0 and dirty_rows > 4) {
             use_full = true;

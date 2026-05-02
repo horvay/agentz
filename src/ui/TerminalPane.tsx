@@ -211,6 +211,7 @@ export function TerminalPane({
   const userInputHandlerRef = useRef(onUserInput);
   const currentFrameRef = useRef(currentFrame);
   const hasViewportControlRef = useRef(autoClaimViewport && active);
+  const autoFollowScrollRef = useRef(true);
 
   shortcutsRef.current = shortcuts;
   shortcutHandlerRef.current = onShortcut;
@@ -323,6 +324,8 @@ export function TerminalPane({
   };
 
   const syncInputViewportToServer = () => {
+    autoFollowScrollRef.current = true;
+    terminalRef.current?.scrollToBottom();
     if (IS_WINDOWS) {
       syncViewportSizeToServer({ immediate: true });
       return;
@@ -332,6 +335,17 @@ export function TerminalPane({
       forceSnapshot: true,
       snapshotDelayMs: RESIZE_SNAPSHOT_DELAY_MS,
     });
+  };
+
+  const scrollPrimaryViewport = (deltaY: number) => {
+    const terminal = terminalRef.current;
+    const frame = currentFrameRef.current;
+    if (!terminal || frame?.altScreen === true || deltaY === 0) return false;
+
+    const lineDelta = Math.max(1, Math.ceil(Math.abs(deltaY) / 18));
+    terminal.scrollLines(deltaY > 0 ? lineDelta : -lineDelta);
+    autoFollowScrollRef.current = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+    return true;
   };
 
   const applyFrame = (frame: TerminalFrame, done: () => void) => {
@@ -423,7 +437,9 @@ export function TerminalPane({
           if (TERMINAL_DEBUG) {
             console.log("[terminal-pane] applyFrame full primary complete", { id, seq: frame.seq });
           }
-          terminal.scrollToBottom();
+          if (autoFollowScrollRef.current) {
+            terminal.scrollToBottom();
+          }
           done();
         });
         return;
@@ -436,7 +452,9 @@ export function TerminalPane({
         if (TERMINAL_DEBUG) {
           console.log("[terminal-pane] applyFrame full complete", { id, seq: frame.seq });
         }
-        terminal.scrollToBottom();
+        if (autoFollowScrollRef.current) {
+          terminal.scrollToBottom();
+        }
         done();
       });
       return;
@@ -684,6 +702,9 @@ export function TerminalPane({
         snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
       });
     });
+    const scrollSubscription = terminal.onScroll((viewportY) => {
+      autoFollowScrollRef.current = viewportY >= terminal.buffer.active.baseY;
+    });
 
     terminal.open(screen);
     const linkProviderDisposable = terminal.registerLinkProvider(linkProvider);
@@ -727,6 +748,7 @@ export function TerminalPane({
       dataSubscription.dispose();
       binarySubscription.dispose();
       resizeSubscription.dispose();
+      scrollSubscription.dispose();
       linkProviderDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
@@ -737,6 +759,7 @@ export function TerminalPane({
       lastModeStateKeyRef.current = null;
       lastCursorRowRef.current = null;
       enhancedEnterModeRef.current = "none";
+      autoFollowScrollRef.current = true;
       lastSentSizeRef.current = null;
       if (resizeSyncTimeoutRef.current != null) {
         window.clearTimeout(resizeSyncTimeoutRef.current);
@@ -848,6 +871,11 @@ export function TerminalPane({
           if (distanceX >= 3 || distanceY >= 3) {
             interaction.moved = true;
           }
+        }}
+        onWheelCapture={(event) => {
+          if (!scrollPrimaryViewport(event.deltaY)) return;
+          event.preventDefault();
+          event.stopPropagation();
         }}
         onClick={(event) => {
           const interaction = pointerInteractionRef.current;

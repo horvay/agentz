@@ -238,6 +238,9 @@ export function buildTerminalHostEnv(
   if (!nextEnv.TERM || nextEnv.TERM.trim().length === 0) {
     nextEnv.TERM = "xterm-256color";
   }
+  if (!nextEnv.PI_HARDWARE_CURSOR || nextEnv.PI_HARDWARE_CURSOR.trim().length === 0) {
+    nextEnv.PI_HARDWARE_CURSOR = "1";
+  }
   if (!nextEnv.COLORTERM || nextEnv.COLORTERM.trim().length === 0) {
     nextEnv.COLORTERM = "truecolor";
   }

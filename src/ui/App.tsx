@@ -2359,7 +2359,7 @@ function DashboardApp({
                     <div className="mobile-avatar-card" style={paneAccentStyles[activePane]}>
                       <div className="mobile-avatar-frame">
                         {avatarSrc
-                          ? <img className="mobile-avatar-image" src={avatarSrc} alt={avatar?.name ?? paneTitle(activeAvatarIndex)} />
+                          ? <img className="mobile-avatar-image" src={avatarSrc} alt={avatar?.label ?? paneTitle(activeAvatarIndex)} />
                           : <div className="mobile-avatar-fallback">{paneTitle(activeAvatarIndex).slice(-1)}</div>}
                       </div>
                       <div className="mobile-pane-status">

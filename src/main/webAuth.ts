@@ -321,7 +321,7 @@ export function createRemoteAccessController(options: CreateRemoteAccessControll
         emit();
         return {
           token: session.token,
-          deviceToken,
+          deviceToken: deviceToken ?? undefined,
           session: session.session,
         };
       }

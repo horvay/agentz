@@ -10,7 +10,7 @@ async function renderHtml(writes: string[]): Promise<string> {
     allowProposedApi: true,
   });
   const serializer = new SerializeAddon();
-  terminal.loadAddon(serializer);
+  terminal.loadAddon(serializer as unknown as Parameters<typeof terminal.loadAddon>[0]);
 
   for (const chunk of writes) {
     await new Promise<void>((resolve) => terminal.write(chunk, resolve));
