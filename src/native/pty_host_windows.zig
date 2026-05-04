@@ -243,6 +243,8 @@ fn isAltScreen(term: *ghostty_vt.Terminal) bool {
 }
 
 fn hasVirtualKittyPlacements(term: *ghostty_vt.Terminal) bool {
+    if (!@hasField(@TypeOf(term.screens.active.kitty_images), "placements")) return false;
+
     var it = term.screens.active.kitty_images.placements.iterator();
     while (it.next()) |entry| {
         switch (entry.value_ptr.location) {
@@ -509,6 +511,8 @@ fn appendKittyImageScene(
     image_removed_ids: *std.ArrayList(u32),
     image_placements: *std.ArrayList(ImagePlacementPayload),
 ) !void {
+    if (!@hasField(@TypeOf(term.screens.active.kitty_images), "placements")) return;
+
     var current_versions = ImageVersionMap.init(alloc);
     defer current_versions.deinit();
 
@@ -568,45 +572,47 @@ fn appendKittyImageScene(
         }
     }
 
-    if (has_virtual and term.cols > 0 and term.rows > 0 and pixel_width > 0 and pixel_height > 0 and @hasDecl(ghostty_vt.kitty.graphics, "unicode")) {
-        const cell_width: u32 = @max(1, @as(u32, pixel_width) / @as(u32, @intCast(term.cols)));
-        const cell_height: u32 = @max(1, @as(u32, pixel_height) / @as(u32, @intCast(term.rows)));
-        const top = term.screens.active.pages.getTopLeft(.viewport);
-        const bot = term.screens.active.pages.getBottomRight(.viewport) orelse top;
-        var virtual_it = ghostty_vt.kitty.graphics.unicode.placementIterator(top, bot);
-        while (virtual_it.next()) |virtual_p| {
-            const image = storage.imageById(virtual_p.image_id) orelse continue;
-            const render_p = virtual_p.renderPlacement(storage, &image, cell_width, cell_height) catch continue;
-            if (render_p.dest_width == 0 or render_p.dest_height == 0) continue;
-            const point = term.screens.active.pages.pointFromPin(.screen, render_p.top_left) orelse continue;
-            try image_placements.append(alloc, .{
-                .image_id = virtual_p.image_id,
-                .screen_x = @intCast(point.screen.x),
-                .screen_y = point.screen.y,
-                .z = -1,
-                .cell_offset_x = @intCast(render_p.offset_x),
-                .cell_offset_y = @intCast(render_p.offset_y),
-                .source_x = @intCast(render_p.source_x),
-                .source_y = @intCast(render_p.source_y),
-                .source_width = @intCast(render_p.source_width),
-                .source_height = @intCast(render_p.source_height),
-                .columns = @intCast(virtual_p.width),
-                .rows = @intCast(virtual_p.height),
-                .pixel_width = @intCast(render_p.dest_width),
-                .pixel_height = @intCast(render_p.dest_height),
-            });
+    if (has_virtual and term.cols > 0 and term.rows > 0 and pixel_width > 0 and pixel_height > 0) {
+        if (@hasDecl(ghostty_vt.kitty.graphics, "unicode")) {
+            const cell_width: u32 = @max(1, @as(u32, pixel_width) / @as(u32, @intCast(term.cols)));
+            const cell_height: u32 = @max(1, @as(u32, pixel_height) / @as(u32, @intCast(term.rows)));
+            const top = term.screens.active.pages.getTopLeft(.viewport);
+            const bot = term.screens.active.pages.getBottomRight(.viewport) orelse top;
+            var virtual_it = ghostty_vt.kitty.graphics.unicode.placementIterator(top, bot);
+            while (virtual_it.next()) |virtual_p| {
+                const image = storage.imageById(virtual_p.image_id) orelse continue;
+                const render_p = virtual_p.renderPlacement(storage, &image, cell_width, cell_height) catch continue;
+                if (render_p.dest_width == 0 or render_p.dest_height == 0) continue;
+                const point = term.screens.active.pages.pointFromPin(.screen, render_p.top_left) orelse continue;
+                try image_placements.append(alloc, .{
+                    .image_id = virtual_p.image_id,
+                    .screen_x = @intCast(point.screen.x),
+                    .screen_y = point.screen.y,
+                    .z = -1,
+                    .cell_offset_x = @intCast(render_p.offset_x),
+                    .cell_offset_y = @intCast(render_p.offset_y),
+                    .source_x = @intCast(render_p.source_x),
+                    .source_y = @intCast(render_p.source_y),
+                    .source_width = @intCast(render_p.source_width),
+                    .source_height = @intCast(render_p.source_height),
+                    .columns = @intCast(virtual_p.width),
+                    .rows = @intCast(virtual_p.height),
+                    .pixel_width = @intCast(render_p.dest_width),
+                    .pixel_height = @intCast(render_p.dest_height),
+                });
 
-            if (!current_versions.contains(image.id)) {
-                try current_versions.put(image.id, image.transmit_time);
-                const previous = previous_versions.get(image.id);
-                if (force_full or previous == null or previous.?.order(image.transmit_time) != .eq) {
-                    try image_payloads.append(alloc, .{
-                        .id = image.id,
-                        .width = @intCast(image.width),
-                        .height = @intCast(image.height),
-                        .format = imageFormatByte(image.format),
-                        .data = image.data,
-                    });
+                if (!current_versions.contains(image.id)) {
+                    try current_versions.put(image.id, image.transmit_time);
+                    const previous = previous_versions.get(image.id);
+                    if (force_full or previous == null or previous.?.order(image.transmit_time) != .eq) {
+                        try image_payloads.append(alloc, .{
+                            .id = image.id,
+                            .width = @intCast(image.width),
+                            .height = @intCast(image.height),
+                            .format = imageFormatByte(image.format),
+                            .data = image.data,
+                        });
+                    }
                 }
             }
         }
