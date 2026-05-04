@@ -202,10 +202,17 @@ const HostStreamHandler = struct {
         self.apc.deinit();
     }
 
-    pub fn vt(self: *HostStreamHandler, comptime action: ghostty_vt.StreamAction.Tag, value: ghostty_vt.StreamAction.Value(action)) !void {
+    pub fn vt(self: *HostStreamHandler, comptime action: ghostty_vt.StreamAction.Tag, value: ghostty_vt.StreamAction.Value(action)) anyerror!void {
         switch (action) {
             .apc_start => self.apc.start(),
-            .apc_put => self.apc.feed(self.alloc, value),
+            .apc_put => {
+                const result = self.apc.feed(self.alloc, value);
+                switch (@typeInfo(@TypeOf(result))) {
+                    .error_union => try result,
+                    .void => {},
+                    else => @compileError("unexpected APC feed return type"),
+                }
+            },
             .apc_end => {
                 var cmd = self.apc.end() orelse return;
                 defer cmd.deinit(self.alloc);
@@ -219,7 +226,12 @@ const HostStreamHandler = struct {
             },
             else => {
                 var readonly = self.terminal.vtHandler();
-                try readonly.vt(action, value);
+                const result = readonly.vt(action, value);
+                switch (@typeInfo(@TypeOf(result))) {
+                    .error_union => try result,
+                    .void => {},
+                    else => @compileError("unexpected vt handler return type"),
+                }
             },
         }
     }
