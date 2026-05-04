@@ -90,25 +90,20 @@ const ImagePlacementPayload = struct {
     pixel_height: u16 = 0,
 };
 
-const TerminalReadonlyHandler = @TypeOf(ghostty_vt.Terminal.vtHandler(@as(*ghostty_vt.Terminal, undefined)));
-
 const HostStreamHandler = struct {
     alloc: std.mem.Allocator,
     terminal: *ghostty_vt.Terminal,
-    readonly: TerminalReadonlyHandler,
     apc: ghostty_vt.apc.Handler = .{},
 
     pub fn init(alloc: std.mem.Allocator, terminal: *ghostty_vt.Terminal) HostStreamHandler {
         return .{
             .alloc = alloc,
             .terminal = terminal,
-            .readonly = terminal.vtHandler(),
         };
     }
 
     pub fn deinit(self: *HostStreamHandler) void {
         self.apc.deinit();
-        self.readonly.deinit();
     }
 
     pub fn vt(self: *HostStreamHandler, comptime action: ghostty_vt.StreamAction.Tag, value: ghostty_vt.StreamAction.Value(action)) !void {
@@ -126,7 +121,10 @@ const HostStreamHandler = struct {
                     },
                 }
             },
-            else => try self.readonly.vt(action, value),
+            else => {
+                var readonly = self.terminal.vtHandler();
+                try readonly.vt(action, value);
+            },
         }
     }
 };
