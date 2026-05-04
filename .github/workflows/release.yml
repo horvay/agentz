@@ -72,7 +72,7 @@ jobs:
           git -C deps/ghostty checkout 913c12097bad2feb8977853cf1a60c137a968b50
 
       - name: Build native host
-        run: cd src/native && zig build -Doptimize=ReleaseFast
+        run: bun run native:build:host
 
       - name: Validate macOS signing secrets
         env:
@@ -166,7 +166,7 @@ jobs:
           git -C deps/ghostty checkout 913c12097bad2feb8977853cf1a60c137a968b50
 
       - name: Build native host
-        run: cd src/native && zig build -Doptimize=ReleaseFast
+        run: bun run native:build:host
 
       - name: Build Linux release
         run: bun run release:stable
@@ -223,7 +223,7 @@ jobs:
 
       - name: Build native host
         shell: bash
-        run: cd src/native && zig build -Doptimize=ReleaseFast
+        run: bun run native:build:host
 
       - name: Build Windows release
         shell: bash

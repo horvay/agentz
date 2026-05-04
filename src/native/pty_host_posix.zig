@@ -118,7 +118,9 @@ const HostStreamHandler = struct {
                 defer cmd.deinit(self.alloc);
                 switch (cmd) {
                     .kitty => |*kitty_cmd| {
-                        _ = self.terminal.kittyGraphics(self.alloc, kitty_cmd);
+                        if (@hasDecl(ghostty_vt.kitty.graphics, "Command")) {
+                            _ = self.terminal.kittyGraphics(self.alloc, kitty_cmd);
+                        }
                     },
                 }
             },
