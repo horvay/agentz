@@ -6,6 +6,10 @@ const textEncoder = new TextEncoder();
 type RenderPatchKind = NonNullable<TerminalFrame["renderPatchKind"]>;
 type RenderPayload = string | Uint8Array;
 
+function hasImagePayload(frame: TerminalFrame): boolean {
+  return frame.imageDefinitions !== undefined || frame.imageRemovedIds !== undefined || frame.imagePlacements !== undefined;
+}
+
 function mergeScreenRows(
   current: TerminalFrame["screenRows"],
   next: TerminalFrame["screenRows"],
@@ -70,10 +74,18 @@ function trimQueuedFrames(frames: TerminalFrame[]): TerminalFrame[] {
 export function coalesceQueuedRenderFrames(existing: TerminalFrame[], nextFrame: TerminalFrame): TerminalFrame[] {
   if (nextFrame.renderVt || nextFrame.screenMode === "full") return [nextFrame];
 
+  if (hasImagePayload(nextFrame)) {
+    return trimQueuedFrames([...existing, nextFrame]);
+  }
+
   if (nextFrame.altScreen === true && nextFrame.renderPatchKind === "alt-row-update") {
     const queue = existing.filter((queued) => queued.renderPatchKind !== "cursor-only");
     const last = queue[queue.length - 1];
-    if (last?.altScreen === true && last.renderPatchKind === "alt-row-update") {
+    if (
+      last?.altScreen === true &&
+      last.renderPatchKind === "alt-row-update" &&
+      !hasImagePayload(last)
+    ) {
       return trimQueuedFrames([...queue.slice(0, -1), mergeRenderFrames(last, nextFrame)]);
     }
     return trimQueuedFrames([...queue, nextFrame]);

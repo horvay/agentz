@@ -1,7 +1,7 @@
 import type { TerminalFrame } from "../shared/protocol";
 import type { AvatarVisualState } from "./avatarCatalog";
 
-export type AgentKind = "opencode" | "codex" | "claude" | null;
+export type AgentKind = "opencode" | "codex" | "claude" | "pi" | null;
 
 export interface AvatarInspection {
   state: AvatarVisualState;
@@ -77,6 +77,14 @@ function isClaudeSession(recent: string, full: string): boolean {
   );
 }
 
+function isPiSession(recent: string, full: string): boolean {
+  const headers = ["[context]", "[skills]", "[prompts]", "[extensions]", "[themes]"];
+  const headerMatches = headers.filter((marker) => full.includes(marker) || recent.includes(marker)).length;
+  if (headerMatches >= 3) return true;
+
+  return /\$\d+(?:\.\d+)? \(sub\).*?\d+(?:\.\d+)?%\/\d+[kmg] \(auto\)/.test(recent);
+}
+
 function hasCodexWorkingText(recent: string): boolean {
   return recent.includes("working (");
 }
@@ -149,7 +157,16 @@ export function inspectAvatarState(frame?: TerminalFrame): AvatarInspection {
   const opencodeSession = isOpencodeSession(full) || standaloneOpencodeQuestion;
   const codexSession = isCodexSession(recent, full);
   const claudeSession = isClaudeSession(recent, full);
-  const agent: AgentKind = opencodeSession ? "opencode" : codexSession ? "codex" : claudeSession ? "claude" : null;
+  const piSession = isPiSession(recent, full);
+  const agent: AgentKind = opencodeSession
+    ? "opencode"
+    : codexSession
+      ? "codex"
+      : claudeSession
+        ? "claude"
+        : piSession
+          ? "pi"
+          : null;
   const opencodeBusyFooter = opencodeSession && hasOpencodeBusyFooter(frame);
 
   const codexQuestionMarkers = [

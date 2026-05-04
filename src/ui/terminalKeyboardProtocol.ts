@@ -1,5 +1,7 @@
+import type { AgentKind } from "./avatarState";
+
 const textDecoder = new TextDecoder();
-const ENHANCED_KEYBOARD_SEQUENCE = /\u001b\[(?:(?:>(\d+)u)|(<u)|(?:>4;(\d+)m))/g;
+const ENHANCED_KEYBOARD_SEQUENCE = /\u001b\[(?:(?:>(\d+)u)|(?:=(\d+);1u)|(<u)|(?:>4;(\d+)m))/g;
 
 export type EnhancedEnterMode = "none" | "kitty" | "modify-other-keys";
 
@@ -14,15 +16,15 @@ export function updateEnhancedEnterMode(
   let next = current;
   const text = payloadText(payload);
   for (const match of text.matchAll(ENHANCED_KEYBOARD_SEQUENCE)) {
-    if (match[1] != null) {
-      next = Number(match[1]) > 0 ? "kitty" : "none";
+    if (match[1] != null || match[2] != null) {
+      next = Number(match[1] ?? match[2] ?? "0") > 0 ? "kitty" : "none";
       continue;
     }
-    if (match[2] != null) {
+    if (match[3] != null) {
       next = "none";
       continue;
     }
-    next = Number(match[3] ?? "0") > 0 ? "modify-other-keys" : "none";
+    next = Number(match[4] ?? "0") > 0 ? "modify-other-keys" : "none";
   }
   return next;
 }
@@ -61,4 +63,16 @@ export function modifiedEnterNewlineFallback(
   if (!event.shiftKey && !event.ctrlKey && !event.metaKey) return null;
   if (event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey) return null;
   return "\n";
+}
+
+export function resolveModifiedEnterSequence(
+  event: Pick<KeyboardEvent, "key" | "code" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey">,
+  mode: EnhancedEnterMode,
+  agent: AgentKind,
+): string | null {
+  return (
+    modifiedEnterSequence(event, mode) ??
+    (agent === "pi" ? modifiedEnterSequence(event, "modify-other-keys") : null) ??
+    ((agent === "opencode" || agent === "codex") ? modifiedEnterNewlineFallback(event) : null)
+  );
 }

@@ -222,6 +222,9 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     renderPatchKind: frame.renderPatchKind,
     renderPatchVt: frame.renderPatchVt,
     renderPatchBytes: frame.renderPatchBytes,
+    imageDefinitions: frame.imageDefinitions,
+    imageRemovedIds: frame.imageRemovedIds,
+    imagePlacements: frame.imagePlacements,
     chunk: frame.chunk.slice(-MAX_ACTIVITY_CHUNK_CHARS),
     vt: frame.vt.slice(-MAX_ACTIVITY_VT_CHARS),
     previewLines: frame.previewLines,
@@ -267,6 +270,9 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     renderPatchVt: frame.renderPatchVt,
     renderPatchBytes: frame.renderPatchBytes,
     renderPatchKind: frame.renderPatchKind,
+    imageDefinitions: frame.imageDefinitions,
+    imageRemovedIds: frame.imageRemovedIds,
+    imagePlacements: frame.imagePlacements,
     altScreen: frame.altScreen,
     chunk: frame.chunk,
     vt: "",
@@ -298,13 +304,23 @@ function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalF
   if (!existing) return next;
   const isCursorOnly = next.renderPatchKind === "cursor-only";
   const isMetadataOnly =
-    !next.renderVt && !next.renderPatchVt && !next.renderPatchBytes && !next.screenRows?.length && !next.chunk;
+    !next.renderVt &&
+    !next.renderPatchVt &&
+    !next.renderPatchBytes &&
+    !next.screenRows?.length &&
+    next.imageDefinitions === undefined &&
+    next.imageRemovedIds === undefined &&
+    next.imagePlacements === undefined &&
+    !next.chunk;
   if (!isCursorOnly && !isMetadataOnly) return next;
   const carriesRenderablePayload =
     next.screenMode === "full" ||
     typeof next.renderVt === "string" ||
     typeof next.renderPatchVt === "string" ||
-    next.renderPatchBytes instanceof Uint8Array;
+    next.renderPatchBytes instanceof Uint8Array ||
+    next.imageDefinitions !== undefined ||
+    next.imageRemovedIds !== undefined ||
+    next.imagePlacements !== undefined;
   const mergedScreenMode = next.screenMode ?? (carriesRenderablePayload ? undefined : existing.screenMode);
   const mergedRenderVt =
     next.screenMode === "full" || typeof next.renderVt === "string"
@@ -332,6 +348,9 @@ function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalF
     renderPatchKind: next.renderPatchKind,
     renderPatchVt: next.renderPatchVt,
     renderPatchBytes: next.renderPatchBytes,
+    imageDefinitions: next.imageDefinitions ?? existing.imageDefinitions,
+    imageRemovedIds: next.imageRemovedIds,
+    imagePlacements: next.imagePlacements ?? existing.imagePlacements,
     altScreen: next.altScreen ?? existing.altScreen,
     cursorVisible: next.cursorVisible ?? existing.cursorVisible,
     cursorStyle: next.cursorStyle ?? existing.cursorStyle,
@@ -841,8 +860,6 @@ function DashboardApp({
     }
     return [...ids];
   }, [activePane, backgroundTerminalIds, livePaneIds, visibleSessionIds]);
-  const livePaneIdSet = useMemo(() => new Set(livePaneIds), [livePaneIds]);
-  const renderableSessionIdSet = useMemo(() => new Set(renderableSessionIds), [renderableSessionIds]);
   renderableSessionIdsRef.current = renderableSessionIds;
   activeSessionIdRef.current = activeSessionId;
 
@@ -2219,7 +2236,7 @@ function DashboardApp({
             sessionId={id}
             rpc={rpc}
             index={index}
-            live={livePaneIdSet.has(id)}
+            live={true}
             active={activeSessionId === id}
             autoClaimViewport={autoClaimViewport || pendingViewportClaimSessionId === id}
             accentStyle={paneAccentStyles[id]}
@@ -2257,7 +2274,7 @@ function DashboardApp({
               sessionId={id}
               rpc={rpc}
               index={index}
-              live={renderableSessionIdSet.has(id)}
+              live={true}
               active={activeSessionId === id}
               autoClaimViewport={autoClaimViewport || pendingViewportClaimSessionId === id}
               accentStyle={paneAccentStyles[id]}
@@ -2275,7 +2292,7 @@ function DashboardApp({
               sessionId={backgroundLayerSessionId}
               rpc={rpc}
               index={index}
-              live={renderableSessionIdSet.has(backgroundLayerSessionId)}
+              live={true}
               active={activeSessionId === backgroundLayerSessionId}
               autoClaimViewport={autoClaimViewport || pendingViewportClaimSessionId === backgroundLayerSessionId}
               accentStyle={paneAccentStyles[id]}
@@ -2299,9 +2316,7 @@ function DashboardApp({
     handlePaneShortcut,
     handlePaneTextPasteRegister,
     handlePaneUserInput,
-    livePaneIdSet,
     paneAccentStyles,
-    renderableSessionIdSet,
     rpc,
     activatePaneFromUi,
     shortcuts,

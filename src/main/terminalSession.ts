@@ -3,11 +3,17 @@ import { accessSync, constants as fsConstants, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 
-import type { TerminalFrame, TerminalScreenRow } from "../shared/protocol";
+import type {
+  TerminalFrame,
+  TerminalImageDefinition,
+  TerminalImageFormat,
+  TerminalImagePlacement,
+  TerminalScreenRow,
+} from "../shared/protocol";
 
 const MAX_ACTIVITY_TEXT_CHARS = 4_000;
 const MAX_PREVIEW_LINES = 200;
-const MAX_HOST_PACKET_BYTES = 16 * 1024 * 1024;
+const MAX_HOST_PACKET_BYTES = 384 * 1024 * 1024;
 const WORKER_INPUT_BATCH_MS = 8;
 const DEFAULT_UNIX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const HOST_PACKET_FRAME = 1;
@@ -293,6 +299,9 @@ interface HostFrameMessage {
   vtBytes?: Uint8Array;
   plain: string;
   screenRows: TerminalScreenRow[];
+  imageDefinitions: TerminalImageDefinition[];
+  imageRemovedIds: number[];
+  imagePlacements: TerminalImagePlacement[];
   cols: number;
   rows: number;
   altScreen: boolean;
@@ -355,6 +364,13 @@ function decodeMouseFormat(value: number): HostFrameMessage["mouseFormat"] {
   return "x10";
 }
 
+function decodeTerminalImageFormat(value: number): TerminalImageFormat {
+  if (value === 0) return "gray";
+  if (value === 1) return "gray-alpha";
+  if (value === 2) return "rgb";
+  return "rgba";
+}
+
 function decodeUtf8(bytes: Uint8Array<ArrayBufferLike>): string {
   return utf8Decoder.decode(bytes);
 }
@@ -383,20 +399,99 @@ function decodeHostPacket(kind: number, payload: Uint8Array<ArrayBufferLike>): H
     const vtBytes = mode === "patch" ? payload.slice(vtStart, plainStart) : undefined;
     let offset = plainEnd;
     const screenRows: TerminalScreenRow[] = [];
-    if (payload.byteLength - offset >= 2) {
-      const rowCount = view.getUint16(offset, true);
+    if (payload.byteLength - offset < 2) return null;
+    const rowCount = view.getUint16(offset, true);
+    offset += 2;
+    for (let index = 0; index < rowCount; index += 1) {
+      if (payload.byteLength - offset < 6) return null;
+      const rowIndex = view.getUint16(offset, true);
       offset += 2;
-      for (let index = 0; index < rowCount; index += 1) {
-        if (payload.byteLength - offset < 6) return null;
-        const rowIndex = view.getUint16(offset, true);
-        offset += 2;
-        const rowLength = view.getUint32(offset, true);
-        offset += 4;
-        const rowEnd = offset + rowLength;
-        if (rowEnd > payload.byteLength) return null;
-        screenRows.push({ index: rowIndex, text: decodeUtf8(payload.subarray(offset, rowEnd)) });
-        offset = rowEnd;
-      }
+      const rowLength = view.getUint32(offset, true);
+      offset += 4;
+      const rowEnd = offset + rowLength;
+      if (rowEnd > payload.byteLength) return null;
+      screenRows.push({ index: rowIndex, text: decodeUtf8(payload.subarray(offset, rowEnd)) });
+      offset = rowEnd;
+    }
+    if (payload.byteLength - offset < 2) return null;
+    const imageDefinitionCount = view.getUint16(offset, true);
+    offset += 2;
+    const imageDefinitions: TerminalImageDefinition[] = [];
+    for (let index = 0; index < imageDefinitionCount; index += 1) {
+      if (payload.byteLength - offset < 13) return null;
+      const imageId = view.getUint32(offset, true);
+      offset += 4;
+      const width = view.getUint16(offset, true);
+      offset += 2;
+      const height = view.getUint16(offset, true);
+      offset += 2;
+      const format = decodeTerminalImageFormat(payload[offset++] ?? 3);
+      const dataLength = view.getUint32(offset, true);
+      offset += 4;
+      const dataEnd = offset + dataLength;
+      if (dataEnd > payload.byteLength) return null;
+      imageDefinitions.push({ id: imageId, width, height, format, data: payload.slice(offset, dataEnd) });
+      offset = dataEnd;
+    }
+    if (payload.byteLength - offset < 2) return null;
+    const imageRemovedCount = view.getUint16(offset, true);
+    offset += 2;
+    const imageRemovedIds: number[] = [];
+    for (let index = 0; index < imageRemovedCount; index += 1) {
+      if (payload.byteLength - offset < 4) return null;
+      imageRemovedIds.push(view.getUint32(offset, true));
+      offset += 4;
+    }
+    if (payload.byteLength - offset < 2) return null;
+    const imagePlacementCount = view.getUint16(offset, true);
+    offset += 2;
+    const imagePlacements: TerminalImagePlacement[] = [];
+    for (let index = 0; index < imagePlacementCount; index += 1) {
+      if (payload.byteLength - offset < 34) return null;
+      const imageId = view.getUint32(offset, true);
+      offset += 4;
+      const screenX = view.getUint16(offset, true);
+      offset += 2;
+      const screenY = view.getUint32(offset, true);
+      offset += 4;
+      const z = view.getInt32(offset, true);
+      offset += 4;
+      const cellOffsetX = view.getUint16(offset, true);
+      offset += 2;
+      const cellOffsetY = view.getUint16(offset, true);
+      offset += 2;
+      const sourceX = view.getUint16(offset, true);
+      offset += 2;
+      const sourceY = view.getUint16(offset, true);
+      offset += 2;
+      const sourceWidth = view.getUint16(offset, true);
+      offset += 2;
+      const sourceHeight = view.getUint16(offset, true);
+      offset += 2;
+      const columns = view.getUint16(offset, true);
+      offset += 2;
+      const rowsForPlacement = view.getUint16(offset, true);
+      offset += 2;
+      const pixelWidth = view.getUint16(offset, true);
+      offset += 2;
+      const pixelHeight = view.getUint16(offset, true);
+      offset += 2;
+      imagePlacements.push({
+        imageId,
+        screenX,
+        screenY,
+        z,
+        cellOffsetX,
+        cellOffsetY,
+        sourceX,
+        sourceY,
+        sourceWidth,
+        sourceHeight,
+        columns,
+        rows: rowsForPlacement,
+        pixelWidth: pixelWidth || undefined,
+        pixelHeight: pixelHeight || undefined,
+      });
     }
     return {
       type: "frame",
@@ -405,6 +500,9 @@ function decodeHostPacket(kind: number, payload: Uint8Array<ArrayBufferLike>): H
       vtBytes,
       plain: decodeUtf8(payload.subarray(plainStart, plainEnd)),
       screenRows,
+      imageDefinitions,
+      imageRemovedIds,
+      imagePlacements,
       cols,
       rows,
       altScreen: (flags & 1) !== 0,
@@ -463,7 +561,7 @@ interface TerminalSessionBackend {
   setFlowPaused(paused: boolean): void;
   setFrameInterval(intervalMs: number, previewOnly?: boolean): void;
   requestSnapshot(): void;
-  resize(cols: number, rows: number): void;
+  resize(cols: number, rows: number, pixelWidth?: number, pixelHeight?: number): void;
   getCwd(): Promise<string | undefined>;
   kill(): void;
 }
@@ -587,6 +685,12 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
       }
       this.cols = Math.max(2, Math.trunc(message.cols ?? this.cols));
       this.rows = Math.max(2, Math.trunc(message.rows ?? this.rows));
+      const imageDefinitions = message.imageDefinitions.length > 0 ? message.imageDefinitions : undefined;
+      const imageRemovedIds = message.imageRemovedIds.length > 0 ? message.imageRemovedIds : undefined;
+      const imagePlacements =
+        message.imagePlacements.length > 0 || message.mode === "full" || imageDefinitions || imageRemovedIds
+          ? message.imagePlacements
+          : undefined;
       this.frameHandler(
         this.snapshot(
           "",
@@ -598,6 +702,9 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
           message.mode === "patch" ? renderedVt : undefined,
           message.mode === "patch" ? message.vtBytes : undefined,
           message.patchKind,
+          imageDefinitions,
+          imageRemovedIds,
+          imagePlacements,
           message.cursorVisible,
           message.cursorStyle,
           message.cursorBlink,
@@ -642,8 +749,9 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
     const pumpStderr = (value: Uint8Array<ArrayBufferLike>) => {
       if (!value.byteLength) return;
       const decoded = stderrDecoder.decode(value, { stream: true });
-      if (decoded.trim()) {
-        console.error(`[terminal:${this.id}:native-host] ${decoded.trim()}`);
+      const trimmed = decoded.trim();
+      if (trimmed) {
+        console.error(`[terminal:${this.id}:native-host] ${trimmed}`);
       }
     };
 
@@ -697,7 +805,7 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
     this.sendHost({ type: "snapshot" });
   }
 
-  resize(cols: number, rows: number): void {
+  resize(cols: number, rows: number, pixelWidth?: number, pixelHeight?: number): void {
     this.cols = Math.max(cols, 2);
     this.rows = Math.max(rows, 2);
     this.flushPendingWorkerInput();
@@ -705,6 +813,8 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
       type: "resize",
       cols: this.cols,
       rows: this.rows,
+      pixel_width: pixelWidth,
+      pixel_height: pixelHeight,
     });
   }
 
@@ -741,6 +851,9 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
     renderPatchVt?: string,
     renderPatchBytes?: Uint8Array,
     renderPatchKind?: "cursor-only" | "row-update" | "alt-row-update",
+    imageDefinitions?: TerminalImageDefinition[],
+    imageRemovedIds?: number[],
+    imagePlacements?: TerminalImagePlacement[],
     cursorVisible?: boolean,
     cursorStyle?: "block" | "underline" | "bar",
     cursorBlink?: boolean,
@@ -765,6 +878,9 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
       renderPatchVt,
       renderPatchBytes,
       renderPatchKind,
+      imageDefinitions,
+      imageRemovedIds,
+      imagePlacements,
       altScreen,
       chunk: trimActivityText(chunk || this.lastChunk),
       vt: this.lastActivityText,
@@ -878,8 +994,8 @@ export class TerminalSession implements TerminalSessionBackend {
     this.backend.requestSnapshot();
   }
 
-  resize(cols: number, rows: number): void {
-    this.backend.resize(cols, rows);
+  resize(cols: number, rows: number, pixelWidth?: number, pixelHeight?: number): void {
+    this.backend.resize(cols, rows, pixelWidth, pixelHeight);
   }
 
   getCwd(): Promise<string | undefined> {

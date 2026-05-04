@@ -39,6 +39,8 @@ const Command = struct {
     data_b64: ?[]const u8 = null,
     cols: ?u16 = null,
     rows: ?u16 = null,
+    pixel_width: ?u16 = null,
+    pixel_height: ?u16 = null,
     paused: ?bool = null,
     interval_ms: ?u16 = null,
     preview_only: ?bool = null,
@@ -58,9 +60,70 @@ const HostPacketType = enum(u8) {
 };
 
 const OwnedRows = std.ArrayList([]u8);
+const ImageVersionMap = std.AutoHashMap(u32, std.time.Instant);
 const ScreenRowPayload = struct {
     index: u16,
     text: []const u8,
+};
+const ImagePayload = struct {
+    id: u32,
+    width: u16,
+    height: u16,
+    format: u8,
+    data: []const u8,
+};
+const ImagePlacementPayload = struct {
+    image_id: u32,
+    screen_x: u16,
+    screen_y: u32,
+    z: i32,
+    cell_offset_x: u16,
+    cell_offset_y: u16,
+    source_x: u16,
+    source_y: u16,
+    source_width: u16,
+    source_height: u16,
+    columns: u16,
+    rows: u16,
+    pixel_width: u16 = 0,
+    pixel_height: u16 = 0,
+};
+
+const HostStreamHandler = struct {
+    alloc: std.mem.Allocator,
+    terminal: *ghostty_vt.Terminal,
+    readonly: ghostty_vt.ReadonlyHandler,
+    apc: ghostty_vt.apc.Handler = .{},
+
+    pub fn init(alloc: std.mem.Allocator, terminal: *ghostty_vt.Terminal) HostStreamHandler {
+        return .{
+            .alloc = alloc,
+            .terminal = terminal,
+            .readonly = terminal.vtHandler(),
+        };
+    }
+
+    pub fn deinit(self: *HostStreamHandler) void {
+        self.apc.deinit();
+        self.readonly.deinit();
+    }
+
+    pub fn vt(self: *HostStreamHandler, comptime action: ghostty_vt.StreamAction.Tag, value: ghostty_vt.StreamAction.Value(action)) !void {
+        switch (action) {
+            .apc_start => self.apc.start(),
+            .apc_put => self.apc.feed(self.alloc, value),
+            .apc_end => {
+                var cmd = self.apc.end() orelse return;
+                defer cmd.deinit(self.alloc);
+                switch (cmd) {
+                    .kitty => |*kitty_cmd| {
+                        _ = self.terminal.kittyGraphics(self.alloc, kitty_cmd);
+                    },
+                }
+            },
+            else => try self.readonly.vt(action, value),
+        }
+    }
 };
 
 fn nextSliceCompat(stream: anytype, input: []const u8) !void {
@@ -109,6 +172,17 @@ fn isAltScreen(term: *ghostty_vt.Terminal) bool {
         term.modes.get(.alt_screen_legacy);
 }
 
+fn hasVirtualKittyPlacements(term: *ghostty_vt.Terminal) bool {
+    var it = term.screens.active.kitty_images.placements.iterator();
+    while (it.next()) |entry| {
+        switch (entry.value_ptr.location) {
+            .virtual => return true,
+            .pin => {},
+        }
+    }
+    return false;
+}
+
 fn writeModePrefix(writer: *std.Io.Writer, term: *ghostty_vt.Terminal) !void {
     if (term.modes.get(.origin)) {
         try writer.writeAll("\x1b[?6h");
@@ -154,6 +228,37 @@ fn writeCursorState(writer: *std.Io.Writer, term: *ghostty_vt.Terminal) !void {
     try formatter.format(writer);
 }
 
+fn sanitizeTerminalRow(alloc: std.mem.Allocator, row: []const u8) ![]u8 {
+    if (std.mem.indexOfScalar(u8, row, 0xF4) == null) return try alloc.dupe(u8, row);
+
+    var iter: std.unicode.Utf8Iterator = .{ .bytes = row, .i = 0 };
+    var builder: std.ArrayList(u8) = .empty;
+    defer builder.deinit(alloc);
+    var changed = false;
+    var saw_placeholder = false;
+
+    while (iter.nextCodepointSlice()) |slice| {
+        const cp = std.unicode.utf8Decode(slice) catch {
+            try builder.appendSlice(alloc, slice);
+            continue;
+        };
+        if (cp == ghostty_vt.kitty.graphics.unicode.placeholder) {
+            try builder.append(alloc, ' ');
+            changed = true;
+            saw_placeholder = true;
+            continue;
+        }
+        if (saw_placeholder and cp >= 0x0300 and cp <= 0x036F) {
+            changed = true;
+            continue;
+        }
+        try builder.appendSlice(alloc, slice);
+    }
+
+    if (!changed) return try alloc.dupe(u8, row);
+    return try alloc.dupe(u8, builder.items);
+}
+
 fn formatRow(
     alloc: std.mem.Allocator,
     term: *ghostty_vt.Terminal,
@@ -187,7 +292,7 @@ fn formatRow(
     var builder: std.Io.Writer.Allocating = .init(alloc);
     defer builder.deinit();
     try formatter.format(&builder.writer);
-    return try alloc.dupe(u8, builder.writer.buffered());
+    return try sanitizeTerminalRow(alloc, builder.writer.buffered());
 }
 
 fn captureRows(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal, emit: ghostty_vt.formatter.Format) !OwnedRows {
@@ -238,6 +343,20 @@ fn buildFullVt(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal, render_rows
         if (row_vt.len == 0) continue;
         try builder.writer.writeAll(row_vt);
     }
+
+    try writeCursorState(&builder.writer, term);
+    return try alloc.dupe(u8, builder.writer.buffered());
+}
+
+fn buildFullScrollbackVt(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal) ![]u8 {
+    var builder: std.Io.Writer.Allocating = .init(alloc);
+    defer builder.deinit();
+
+    try writeModePrefix(&builder.writer, term);
+    try writeScrollingRegion(&builder.writer, term);
+
+    var formatter: ghostty_vt.formatter.PageListFormatter = .init(&term.screens.active.pages, .vt);
+    try formatter.format(&builder.writer);
 
     try writeCursorState(&builder.writer, term);
     return try alloc.dupe(u8, builder.writer.buffered());
@@ -299,6 +418,144 @@ fn appendI64(buffer: *std.ArrayList(u8), alloc: std.mem.Allocator, value: i64) !
     try appendU64(buffer, alloc, @bitCast(value));
 }
 
+fn imageFormatByte(format: anytype) u8 {
+    return switch (format) {
+        .gray => 0,
+        .gray_alpha => 1,
+        .rgb => 2,
+        .rgba => 3,
+        .png => unreachable,
+    };
+}
+
+fn appendKittyImageScene(
+    alloc: std.mem.Allocator,
+    term: *ghostty_vt.Terminal,
+    pixel_width: u16,
+    pixel_height: u16,
+    force_full: bool,
+    previous_versions: *ImageVersionMap,
+    image_payloads: *std.ArrayList(ImagePayload),
+    image_removed_ids: *std.ArrayList(u32),
+    image_placements: *std.ArrayList(ImagePlacementPayload),
+) !void {
+    var current_versions = ImageVersionMap.init(alloc);
+    defer current_versions.deinit();
+
+    const storage = &term.screens.active.kitty_images;
+    var has_virtual = false;
+    var placement_it = storage.placements.iterator();
+    while (placement_it.next()) |entry| {
+        const placement = entry.value_ptr;
+        switch (placement.location) {
+            .pin => |pin| {
+                const image = storage.imageById(entry.key_ptr.image_id) orelse continue;
+                const point = term.screens.active.pages.pointFromPin(.screen, pin.*) orelse continue;
+
+                const source_x: u32 = @min(image.width, placement.source_x);
+                const source_y: u32 = @min(image.height, placement.source_y);
+                const source_width: u32 = if (placement.source_width > 0)
+                    @min(image.width - source_x, placement.source_width)
+                else
+                    image.width;
+                const source_height: u32 = if (placement.source_height > 0)
+                    @min(image.height - source_y, placement.source_height)
+                else
+                    image.height;
+
+                try image_placements.append(alloc, .{
+                    .image_id = entry.key_ptr.image_id,
+                    .screen_x = @intCast(point.screen.x),
+                    .screen_y = point.screen.y,
+                    .z = placement.z,
+                    .cell_offset_x = @intCast(placement.x_offset),
+                    .cell_offset_y = @intCast(placement.y_offset),
+                    .source_x = @intCast(source_x),
+                    .source_y = @intCast(source_y),
+                    .source_width = @intCast(source_width),
+                    .source_height = @intCast(source_height),
+                    .columns = @intCast(placement.columns),
+                    .rows = @intCast(placement.rows),
+                });
+
+                if (!current_versions.contains(image.id)) {
+                    try current_versions.put(image.id, image.transmit_time);
+                    const previous = previous_versions.get(image.id);
+                    if (force_full or previous == null or previous.?.order(image.transmit_time) != .eq) {
+                        try image_payloads.append(alloc, .{
+                            .id = image.id,
+                            .width = @intCast(image.width),
+                            .height = @intCast(image.height),
+                            .format = imageFormatByte(image.format),
+                            .data = image.data,
+                        });
+                    }
+                }
+            },
+            .virtual => {
+                has_virtual = true;
+            },
+        }
+    }
+
+    if (has_virtual and term.cols > 0 and term.rows > 0 and pixel_width > 0 and pixel_height > 0) {
+        const cell_width: u32 = @max(1, @as(u32, pixel_width) / @as(u32, @intCast(term.cols)));
+        const cell_height: u32 = @max(1, @as(u32, pixel_height) / @as(u32, @intCast(term.rows)));
+        const top = term.screens.active.pages.getTopLeft(.viewport);
+        const bot = term.screens.active.pages.getBottomRight(.viewport) orelse top;
+        var virtual_it = ghostty_vt.kitty.graphics.unicode.placementIterator(top, bot);
+        while (virtual_it.next()) |virtual_p| {
+            const image = storage.imageById(virtual_p.image_id) orelse continue;
+            const render_p = virtual_p.renderPlacement(storage, &image, cell_width, cell_height) catch continue;
+            if (render_p.dest_width == 0 or render_p.dest_height == 0) continue;
+            const point = term.screens.active.pages.pointFromPin(.screen, render_p.top_left) orelse continue;
+            try image_placements.append(alloc, .{
+                .image_id = virtual_p.image_id,
+                .screen_x = @intCast(point.screen.x),
+                .screen_y = point.screen.y,
+                .z = -1,
+                .cell_offset_x = @intCast(render_p.offset_x),
+                .cell_offset_y = @intCast(render_p.offset_y),
+                .source_x = @intCast(render_p.source_x),
+                .source_y = @intCast(render_p.source_y),
+                .source_width = @intCast(render_p.source_width),
+                .source_height = @intCast(render_p.source_height),
+                .columns = @intCast(virtual_p.width),
+                .rows = @intCast(virtual_p.height),
+                .pixel_width = @intCast(render_p.dest_width),
+                .pixel_height = @intCast(render_p.dest_height),
+            });
+
+            if (!current_versions.contains(image.id)) {
+                try current_versions.put(image.id, image.transmit_time);
+                const previous = previous_versions.get(image.id);
+                if (force_full or previous == null or previous.?.order(image.transmit_time) != .eq) {
+                    try image_payloads.append(alloc, .{
+                        .id = image.id,
+                        .width = @intCast(image.width),
+                        .height = @intCast(image.height),
+                        .format = imageFormatByte(image.format),
+                        .data = image.data,
+                    });
+                }
+            }
+        }
+    }
+
+    var previous_it = previous_versions.iterator();
+    while (previous_it.next()) |entry| {
+        if (!current_versions.contains(entry.key_ptr.*)) {
+            try image_removed_ids.append(alloc, entry.key_ptr.*);
+        }
+    }
+
+    previous_versions.clearRetainingCapacity();
+    var current_it = current_versions.iterator();
+    while (current_it.next()) |entry| {
+        try previous_versions.put(entry.key_ptr.*, entry.value_ptr.*);
+    }
+}
+
 fn writePacket(stdout_writer: *std.Io.Writer, kind: HostPacketType, payload: []const u8) !void {
     var header: [5]u8 = .{
         @intFromEnum(kind),
@@ -323,6 +580,9 @@ fn writeFrame(
     vt: []const u8,
     plain: []const u8,
     screen_rows: []const ScreenRowPayload,
+    image_payloads: []const ImagePayload,
+    image_removed_ids: []const u32,
+    image_placements: []const ImagePlacementPayload,
     patch_kind: ?[]const u8,
     term: *ghostty_vt.Terminal,
     alt_screen: bool,
@@ -386,6 +646,36 @@ fn writeFrame(
         try appendU32(&payload, alloc, @intCast(row.text.len));
         try payload.appendSlice(alloc, row.text);
     }
+    try appendU16(&payload, alloc, @intCast(image_payloads.len));
+    for (image_payloads) |image| {
+        try appendU32(&payload, alloc, image.id);
+        try appendU16(&payload, alloc, image.width);
+        try appendU16(&payload, alloc, image.height);
+        try payload.append(alloc, image.format);
+        try appendU32(&payload, alloc, @intCast(image.data.len));
+        try payload.appendSlice(alloc, image.data);
+    }
+    try appendU16(&payload, alloc, @intCast(image_removed_ids.len));
+    for (image_removed_ids) |image_id| {
+        try appendU32(&payload, alloc, image_id);
+    }
+    try appendU16(&payload, alloc, @intCast(image_placements.len));
+    for (image_placements) |placement| {
+        try appendU32(&payload, alloc, placement.image_id);
+        try appendU16(&payload, alloc, placement.screen_x);
+        try appendU32(&payload, alloc, placement.screen_y);
+        try appendI32(&payload, alloc, placement.z);
+        try appendU16(&payload, alloc, placement.cell_offset_x);
+        try appendU16(&payload, alloc, placement.cell_offset_y);
+        try appendU16(&payload, alloc, placement.source_x);
+        try appendU16(&payload, alloc, placement.source_y);
+        try appendU16(&payload, alloc, placement.source_width);
+        try appendU16(&payload, alloc, placement.source_height);
+        try appendU16(&payload, alloc, placement.columns);
+        try appendU16(&payload, alloc, placement.rows);
+        try appendU16(&payload, alloc, placement.pixel_width);
+        try appendU16(&payload, alloc, placement.pixel_height);
+    }
     try writePacket(stdout_writer, .frame, payload.items);
 }
 
@@ -395,6 +685,9 @@ fn emitFrame(
     term: *ghostty_vt.Terminal,
     previous_render_rows: *OwnedRows,
     previous_alt_screen: *bool,
+    previous_image_versions: *ImageVersionMap,
+    pixel_width: u16,
+    pixel_height: u16,
     pending_vt_bytes: *std.ArrayList(u8),
     has_snapshot: *bool,
     force_full: bool,
@@ -417,7 +710,24 @@ fn emitFrame(
             try screen_rows.append(alloc, .{ .index = @intCast(idx), .text = row });
         }
 
-        try writeFrame(alloc, stdout_writer, .full, "", plain, screen_rows.items, null, term, alt_screen);
+        const no_images = [_]ImagePayload{};
+        const no_removed = [_]u32{};
+        const no_placements = [_]ImagePlacementPayload{};
+        try writeFrame(
+            alloc,
+            stdout_writer,
+            .full,
+            "",
+            plain,
+            screen_rows.items,
+            &no_images,
+            &no_removed,
+            &no_placements,
+            null,
+            term,
+            alt_screen,
+        );
+        previous_image_versions.clearRetainingCapacity();
         previous_alt_screen.* = alt_screen;
         pending_vt_bytes.clearRetainingCapacity();
         has_snapshot.* = true;
@@ -502,19 +812,54 @@ fn emitFrame(
         }
     }
 
+    const has_virtual_kitty = hasVirtualKittyPlacements(term);
     const vt = if (use_full) blk: {
         mode = .full;
+        if (!alt_screen and !has_virtual_kitty) {
+            break :blk try buildFullScrollbackVt(alloc, term);
+        }
         break :blk try buildFullVt(alloc, term, current_render_rows.items);
     } else blk: {
         mode = .patch;
-        if (!alt_screen and pending_vt_bytes.items.len > 0) {
+        if (!alt_screen and pending_vt_bytes.items.len > 0 and !has_virtual_kitty) {
             break :blk try alloc.dupe(u8, pending_vt_bytes.items);
         }
         break :blk try buildPatchVt(alloc, term, previous_render_rows.items, current_render_rows.items);
     };
     defer alloc.free(vt);
 
-    try writeFrame(alloc, stdout_writer, mode, vt, plain, screen_rows.items, patch_kind, term, alt_screen);
+    var image_payloads: std.ArrayList(ImagePayload) = .empty;
+    defer image_payloads.deinit(alloc);
+    var image_removed_ids: std.ArrayList(u32) = .empty;
+    defer image_removed_ids.deinit(alloc);
+    var image_placements: std.ArrayList(ImagePlacementPayload) = .empty;
+    defer image_placements.deinit(alloc);
+    try appendKittyImageScene(
+        alloc,
+        term,
+        pixel_width,
+        pixel_height,
+        mode == .full,
+        previous_image_versions,
+        &image_payloads,
+        &image_removed_ids,
+        &image_placements,
+    );
+
+    try writeFrame(
+        alloc,
+        stdout_writer,
+        mode,
+        vt,
+        plain,
+        screen_rows.items,
+        image_payloads.items,
+        image_removed_ids.items,
+        image_placements.items,
+        patch_kind,
+        term,
+        alt_screen,
+    );
     replaceOwnedRows(alloc, previous_render_rows, &current_render_rows);
     previous_alt_screen.* = alt_screen;
     pending_vt_bytes.clearRetainingCapacity();
@@ -527,6 +872,9 @@ fn maybeEmitPendingFrame(
     term: *ghostty_vt.Terminal,
     previous_render_rows: *OwnedRows,
     previous_alt_screen: *bool,
+    previous_image_versions: *ImageVersionMap,
+    pixel_width: u16,
+    pixel_height: u16,
     pending_vt_bytes: *std.ArrayList(u8),
     has_snapshot: *bool,
     pending_frame: *bool,
@@ -548,6 +896,9 @@ fn maybeEmitPendingFrame(
         term,
         previous_render_rows,
         previous_alt_screen,
+        previous_image_versions,
+        pixel_width,
+        pixel_height,
         pending_vt_bytes,
         has_snapshot,
         force_full,
@@ -683,12 +1034,20 @@ fn decodeInput(alloc: std.mem.Allocator, encoded: []const u8) ![]u8 {
     return decoded;
 }
 
-fn applyResize(master_fd: c_int, term: *ghostty_vt.Terminal, alloc: std.mem.Allocator, cols: u16, rows: u16) !void {
+fn applyResize(
+    master_fd: c_int,
+    term: *ghostty_vt.Terminal,
+    alloc: std.mem.Allocator,
+    cols: u16,
+    rows: u16,
+    pixel_width: u16,
+    pixel_height: u16,
+) !void {
     var winsize = c.struct_winsize{
         .ws_row = rows,
         .ws_col = cols,
-        .ws_xpixel = 0,
-        .ws_ypixel = 0,
+        .ws_xpixel = pixel_width,
+        .ws_ypixel = pixel_height,
     };
     if (c.ioctl(master_fd, c.TIOCSWINSZ, &winsize) != 0) {
         return error.ResizeIoctlFailed;
@@ -753,7 +1112,7 @@ pub fn main() !void {
     });
     defer term.deinit(alloc);
 
-    var stream = term.vtStream();
+    var stream: ghostty_vt.Stream(HostStreamHandler) = .init(HostStreamHandler.init(alloc, &term));
     defer stream.deinit();
 
     var previous_render_rows: OwnedRows = .empty;
@@ -762,6 +1121,8 @@ pub fn main() !void {
         previous_render_rows.deinit(alloc);
     }
     var previous_alt_screen = false;
+    var previous_image_versions = ImageVersionMap.init(alloc);
+    defer previous_image_versions.deinit();
     var pending_vt_bytes = std.ArrayList(u8).empty;
     defer pending_vt_bytes.deinit(alloc);
     var has_snapshot = false;
@@ -776,11 +1137,13 @@ pub fn main() !void {
     var exec_spec = try ExecSpec.init(alloc, startup);
     defer exec_spec.deinit(alloc);
 
+    var current_pixel_width: u16 = 0;
+    var current_pixel_height: u16 = 0;
     var winsize = c.struct_winsize{
         .ws_row = startup.rows,
         .ws_col = startup.cols,
-        .ws_xpixel = 0,
-        .ws_ypixel = 0,
+        .ws_xpixel = current_pixel_width,
+        .ws_ypixel = current_pixel_height,
     };
     const child = try spawnChild(cwd_z, &exec_spec, &winsize);
     const master_fd = child.master_fd;
@@ -809,6 +1172,9 @@ pub fn main() !void {
         &term,
         &previous_render_rows,
         &previous_alt_screen,
+        &previous_image_versions,
+        current_pixel_width,
+        current_pixel_height,
         &pending_vt_bytes,
         &has_snapshot,
         true,
@@ -898,6 +1264,7 @@ pub fn main() !void {
                             if (next_preview_only != preview_only) {
                                 preview_only = next_preview_only;
                                 freeOwnedRows(alloc, &previous_render_rows);
+                                previous_image_versions.clearRetainingCapacity();
                                 pending_vt_bytes.clearRetainingCapacity();
                                 has_snapshot = false;
                             }
@@ -908,6 +1275,9 @@ pub fn main() !void {
                                     &term,
                                     &previous_render_rows,
                                     &previous_alt_screen,
+                                    &previous_image_versions,
+                                    current_pixel_width,
+                                    current_pixel_height,
                                     &pending_vt_bytes,
                                     &has_snapshot,
                                     &pending_frame,
@@ -924,13 +1294,18 @@ pub fn main() !void {
                         if (std.mem.eql(u8, cmd.type, "resize")) {
                             const next_cols = cmd.cols orelse startup.cols;
                             const next_rows = cmd.rows orelse startup.rows;
-                            applyResize(master_fd, &term, alloc, next_cols, next_rows) catch {};
+                            current_pixel_width = cmd.pixel_width orelse current_pixel_width;
+                            current_pixel_height = cmd.pixel_height orelse current_pixel_height;
+                            applyResize(master_fd, &term, alloc, next_cols, next_rows, current_pixel_width, current_pixel_height) catch {};
                             try emitFrame(
                                 alloc,
                                 stdout_writer,
                                 &term,
                                 &previous_render_rows,
                                 &previous_alt_screen,
+                                &previous_image_versions,
+                                current_pixel_width,
+                                current_pixel_height,
                                 &pending_vt_bytes,
                                 &has_snapshot,
                                 true,
@@ -949,6 +1324,9 @@ pub fn main() !void {
                                 &term,
                                 &previous_render_rows,
                                 &previous_alt_screen,
+                                &previous_image_versions,
+                                current_pixel_width,
+                                current_pixel_height,
                                 &pending_vt_bytes,
                                 &has_snapshot,
                                 true,
@@ -998,6 +1376,9 @@ pub fn main() !void {
                         &term,
                         &previous_render_rows,
                         &previous_alt_screen,
+                        &previous_image_versions,
+                        current_pixel_width,
+                        current_pixel_height,
                         &pending_vt_bytes,
                         &has_snapshot,
                         &pending_frame,
@@ -1020,6 +1401,9 @@ pub fn main() !void {
             &term,
             &previous_render_rows,
             &previous_alt_screen,
+            &previous_image_versions,
+            current_pixel_width,
+            current_pixel_height,
             &pending_vt_bytes,
             &has_snapshot,
             &pending_frame,

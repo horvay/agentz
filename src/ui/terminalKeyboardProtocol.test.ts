@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   modifiedEnterSequence,
   modifiedEnterNewlineFallback,
+  resolveModifiedEnterSequence,
   updateEnhancedEnterMode,
 } from "./terminalKeyboardProtocol";
 
@@ -23,6 +24,10 @@ function keyboardEvent(
 describe("updateEnhancedEnterMode", () => {
   test("enables kitty keyboard protocol when requested by the app", () => {
     expect(updateEnhancedEnterMode("none", "\u001b[>1u")).toBe("kitty");
+  });
+
+  test("enables kitty keyboard protocol when the renderer replays exact kitty state", () => {
+    expect(updateEnhancedEnterMode("none", "\u001b[=7;1u")).toBe("kitty");
   });
 
   test("disables kitty keyboard protocol when the app resets it", () => {
@@ -81,5 +86,15 @@ describe("modifiedEnterNewlineFallback", () => {
 
   test("does not remap plain enter", () => {
     expect(modifiedEnterNewlineFallback(keyboardEvent())).toBeNull();
+  });
+});
+
+describe("resolveModifiedEnterSequence", () => {
+  test("falls back to modifyOtherKeys for pi when keyboard mode state is not mirrored", () => {
+    expect(resolveModifiedEnterSequence(keyboardEvent({ shiftKey: true }), "none", "pi")).toBe("\u001b[27;2;13~");
+  });
+
+  test("keeps opencode on the literal newline fallback", () => {
+    expect(resolveModifiedEnterSequence(keyboardEvent({ shiftKey: true }), "none", "opencode")).toBe("\n");
   });
 });

@@ -81,6 +81,71 @@ describe("coalesceQueuedRenderFrames", () => {
 
     expect(queue.map((entry) => entry.seq)).toEqual([3]);
   });
+
+  test("does not merge image scene updates into text patch coalescing", () => {
+    const queue = coalesceQueuedRenderFrames(
+      [frame(1, { altScreen: true, renderPatchKind: "alt-row-update", renderPatchVt: "row" })],
+      frame(2, {
+        altScreen: true,
+        renderPatchKind: "alt-row-update",
+        renderPatchVt: "next",
+        imagePlacements: [
+          {
+            imageId: 2,
+            screenX: 4,
+            screenY: 7,
+            z: 1,
+            cellOffsetX: 0,
+            cellOffsetY: 0,
+            sourceX: 0,
+            sourceY: 0,
+            sourceWidth: 30,
+            sourceHeight: 20,
+            columns: 0,
+            rows: 0,
+          },
+        ],
+      }),
+    );
+
+    expect(queue.map((entry) => entry.seq)).toEqual([1, 2]);
+  });
+
+  test("does not let an image-only patch replace the overflow queue by itself", () => {
+    let queue = [frame(1, { renderPatchKind: "row-update", renderPatchVt: "row-1" })];
+    for (let seq = 2; seq <= MAX_FRAME_QUEUE_PER_PANE + 3; seq += 1) {
+      queue = coalesceQueuedRenderFrames(
+        queue,
+        frame(
+          seq,
+          seq === MAX_FRAME_QUEUE_PER_PANE + 3
+            ? {
+                imagePlacements: [
+                  {
+                    imageId: 4,
+                    screenX: 1,
+                    screenY: 2,
+                    z: 0,
+                    cellOffsetX: 0,
+                    cellOffsetY: 0,
+                    sourceX: 0,
+                    sourceY: 0,
+                    sourceWidth: 20,
+                    sourceHeight: 20,
+                    columns: 0,
+                    rows: 0,
+                  },
+                ],
+              }
+            : { chunk: `chunk-${seq}` },
+        ),
+      );
+    }
+
+    expect(queue).toHaveLength(MAX_FRAME_QUEUE_PER_PANE);
+    expect(queue.map((entry) => entry.seq)).toContain(MAX_FRAME_QUEUE_PER_PANE + 3);
+    expect(queue[0]?.seq).toBeLessThan(MAX_FRAME_QUEUE_PER_PANE + 3);
+  });
 });
 
 describe("coalesceTerminalRenderQueue", () => {

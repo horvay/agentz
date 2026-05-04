@@ -197,6 +197,40 @@ describe("detectAvatarState", () => {
     expect(state).toBe("idle");
   });
 
+  test("detects pi from its startup panels", () => {
+    const inspection = inspectAvatarState(
+      frameFromText(
+        [
+          "[Context]",
+          "  ~/.pi/agent/AGENTS.md, AGENTS.md",
+          "[Skills]",
+          "  impeccable",
+          "[Prompts]",
+          "  /implement, /implement-and-review",
+          "[Extensions]",
+          "  firecrawl-search.ts, mcp-playwright.ts",
+        ].join("\n"),
+      ),
+    );
+
+    expect(inspection.agent).toBe("pi");
+    expect(inspection.state).toBe("idle");
+  });
+
+  test("detects pi from its status footer after startup", () => {
+    const inspection = inspectAvatarState(
+      frameFromText(
+        [
+          "~/work/agentz (master)",
+          "$0.000 (sub) 0.0%/400k (auto)                    (github-copilot) gpt-5.4 • high",
+        ].join("\n"),
+      ),
+    );
+
+    expect(inspection.agent).toBe("pi");
+    expect(inspection.state).toBe("idle");
+  });
+
   test("defaults a non-agent shell to idle even when shellBusy is true", () => {
     const state = resolveAvatarDisplayState(
       {

@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import { Terminal } from "xterm";
 
-import type { TerminalFrame } from "../shared/protocol";
+import type { TerminalFrame, TerminalImageDefinition, TerminalImagePlacement } from "../shared/protocol";
 import type { DashboardShortcuts } from "../shared/config";
 import type { RpcClient } from "./rpcClient";
 import { doesEventMatchShortcut } from "./shortcuts";
@@ -11,17 +11,13 @@ import {
   isExplicitPasteShortcutEvent,
   isPasteShortcutEvent,
 } from "./terminalClipboardShortcuts";
-import {
-  type EnhancedEnterMode,
-  modifiedEnterNewlineFallback,
-  modifiedEnterSequence,
-  updateEnhancedEnterMode,
-} from "./terminalKeyboardProtocol";
+import { type EnhancedEnterMode, resolveModifiedEnterSequence, updateEnhancedEnterMode } from "./terminalKeyboardProtocol";
 import { createTerminalUrlLinkProvider, isModifierLinkActivation } from "./terminalLinks";
 import { shouldBypassPaneFocusForMouseSelection, shouldDeferViewportSyncForMouseDown } from "./terminalMouseFocus";
 import { prependTerminalModePrefix, terminalModeStateKey } from "./terminalModes";
 import { inspectAvatarState } from "./avatarState";
 import { DEBUG_LOGS_ENABLED } from "./debugLogs";
+import { drawRectForTerminalImagePlacement, terminalImageLayerForZ } from "./terminalImages";
 
 const RESIZE_DEBOUNCE_MS = 40;
 const RESIZE_SNAPSHOT_DELAY_MS = 140;
@@ -88,7 +84,10 @@ function hasRenderablePayload(frame: TerminalFrame | undefined): frame is Termin
     frame.screenMode === "full" ||
     typeof frame.renderVt === "string" ||
     typeof frame.renderPatchVt === "string" ||
-    frame.renderPatchBytes instanceof Uint8Array
+    frame.renderPatchBytes instanceof Uint8Array ||
+    frame.imageDefinitions !== undefined ||
+    frame.imageRemovedIds !== undefined ||
+    frame.imagePlacements !== undefined
   );
 }
 
@@ -173,6 +172,137 @@ function measuredCellSize(terminal: Terminal): { width: number; height: number }
   return { width, height };
 }
 
+interface CachedTerminalImage {
+  image: TerminalImageDefinition;
+  source: HTMLCanvasElement;
+}
+
+function rgbaPixelsForImageDefinition(image: TerminalImageDefinition): Uint8ClampedArray {
+  const pixelCount = image.width * image.height;
+  const rgba = new Uint8ClampedArray(pixelCount * 4);
+  const data = image.data;
+  switch (image.format) {
+    case "gray": {
+      for (let index = 0; index < pixelCount; index += 1) {
+        const gray = data[index] ?? 0;
+        const offset = index * 4;
+        rgba[offset] = gray;
+        rgba[offset + 1] = gray;
+        rgba[offset + 2] = gray;
+        rgba[offset + 3] = 255;
+      }
+      break;
+    }
+    case "gray-alpha": {
+      for (let index = 0; index < pixelCount; index += 1) {
+        const sourceOffset = index * 2;
+        const gray = data[sourceOffset] ?? 0;
+        const alpha = data[sourceOffset + 1] ?? 0;
+        const offset = index * 4;
+        rgba[offset] = gray;
+        rgba[offset + 1] = gray;
+        rgba[offset + 2] = gray;
+        rgba[offset + 3] = alpha;
+      }
+      break;
+    }
+    case "rgb": {
+      for (let index = 0; index < pixelCount; index += 1) {
+        const sourceOffset = index * 3;
+        const offset = index * 4;
+        rgba[offset] = data[sourceOffset] ?? 0;
+        rgba[offset + 1] = data[sourceOffset + 1] ?? 0;
+        rgba[offset + 2] = data[sourceOffset + 2] ?? 0;
+        rgba[offset + 3] = 255;
+      }
+      break;
+    }
+    case "rgba":
+      return new Uint8ClampedArray(data);
+  }
+  return rgba;
+}
+
+function cacheCanvasForTerminalImage(image: TerminalImageDefinition): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Failed to create terminal image canvas context");
+  }
+  const pixels = rgbaPixelsForImageDefinition(image);
+  const copy = new Uint8ClampedArray(pixels.length);
+  copy.set(pixels);
+  context.putImageData(new ImageData(copy, image.width, image.height), 0, 0);
+  return canvas;
+}
+
+function syncImageLayerCanvas(canvas: HTMLCanvasElement | null, width: number, height: number): CanvasRenderingContext2D | null {
+  if (!canvas || width <= 0 || height <= 0) return null;
+  const dpr = window.devicePixelRatio || 1;
+  const pixelWidth = Math.max(1, Math.round(width * dpr));
+  const pixelHeight = Math.max(1, Math.round(height * dpr));
+  if (canvas.width !== pixelWidth) {
+    canvas.width = pixelWidth;
+  }
+  if (canvas.height !== pixelHeight) {
+    canvas.height = pixelHeight;
+  }
+  if (canvas.style.width !== `${width}px`) {
+    canvas.style.width = `${width}px`;
+  }
+  if (canvas.style.height !== `${height}px`) {
+    canvas.style.height = `${height}px`;
+  }
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, width, height);
+  return context;
+}
+
+function renderTerminalImageLayers(
+  terminal: Terminal | null,
+  screen: HTMLDivElement | null,
+  backCanvas: HTMLCanvasElement | null,
+  frontCanvas: HTMLCanvasElement | null,
+  imageCache: Map<number, CachedTerminalImage>,
+  placements: TerminalImagePlacement[],
+) {
+  const width = screen?.clientWidth ?? 0;
+  const height = screen?.clientHeight ?? 0;
+  const backContext = syncImageLayerCanvas(backCanvas, width, height);
+  const frontContext = syncImageLayerCanvas(frontCanvas, width, height);
+  if (!terminal || !screen || !backContext || !frontContext) return;
+  const cell = measuredCellSize(terminal);
+  if (!cell) return;
+  const viewportY = terminal.buffer.active.viewportY;
+  const sortedPlacements = [...placements].sort(
+    (a, b) => a.z - b.z || a.screenY - b.screenY || a.screenX - b.screenX || a.imageId - b.imageId,
+  );
+  for (const placement of sortedPlacements) {
+    const cached = imageCache.get(placement.imageId);
+    if (!cached) continue;
+    const rect = drawRectForTerminalImagePlacement(placement, cached.image, cell, viewportY);
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (rect.x >= width || rect.y >= height || rect.x + rect.width <= 0 || rect.y + rect.height <= 0) continue;
+    const context = terminalImageLayerForZ(placement.z) === "back" ? backContext : frontContext;
+    context.imageSmoothingEnabled = true;
+    context.drawImage(
+      cached.source,
+      rect.sourceX,
+      rect.sourceY,
+      rect.sourceWidth,
+      rect.sourceHeight,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+    );
+  }
+}
+
 export function TerminalPane({
   id,
   rpc,
@@ -190,11 +320,14 @@ export function TerminalPane({
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
+  const xtermHostRef = useRef<HTMLDivElement>(null);
+  const imageBackCanvasRef = useRef<HTMLCanvasElement>(null);
+  const imageFrontCanvasRef = useRef<HTMLCanvasElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const resizeSyncTimeoutRef = useRef<number | null>(null);
   const snapshotSyncTimeoutRef = useRef<number | null>(null);
   const focusTimeoutRef = useRef<number | null>(null);
-  const lastSentSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const lastSentSizeRef = useRef<{ cols: number; rows: number; pixelWidth: number; pixelHeight: number } | null>(null);
   const pendingFramesRef = useRef<TerminalFrame[]>([]);
   const pendingFrameStartRef = useRef(0);
   const processingFramesRef = useRef(false);
@@ -212,12 +345,45 @@ export function TerminalPane({
   const currentFrameRef = useRef(currentFrame);
   const hasViewportControlRef = useRef(autoClaimViewport && active);
   const autoFollowScrollRef = useRef(true);
+  const imageCacheRef = useRef<Map<number, CachedTerminalImage>>(new Map());
+  const imagePlacementsRef = useRef<TerminalImagePlacement[]>([]);
 
   shortcutsRef.current = shortcuts;
   shortcutHandlerRef.current = onShortcut;
   framesQueuedHandlerRef.current = onFramesQueued;
   userInputHandlerRef.current = onUserInput;
   currentFrameRef.current = currentFrame;
+
+  const renderImageScene = () => {
+    renderTerminalImageLayers(
+      terminalRef.current,
+      screenRef.current,
+      imageBackCanvasRef.current,
+      imageFrontCanvasRef.current,
+      imageCacheRef.current,
+      imagePlacementsRef.current,
+    );
+  };
+
+  const applyImageFrame = (frame: TerminalFrame) => {
+    if (frame.screenMode === "full") {
+      imageCacheRef.current.clear();
+      imagePlacementsRef.current = [];
+    }
+    for (const imageId of frame.imageRemovedIds ?? []) {
+      imageCacheRef.current.delete(imageId);
+    }
+    for (const image of frame.imageDefinitions ?? []) {
+      imageCacheRef.current.set(image.id, {
+        image,
+        source: cacheCanvasForTerminalImage(image),
+      });
+    }
+    if (frame.imagePlacements) {
+      imagePlacementsRef.current = frame.imagePlacements;
+    }
+    renderImageScene();
+  };
 
   const sendResizeSync = (
     cols: number,
@@ -228,11 +394,18 @@ export function TerminalPane({
       snapshotDelayMs = 0,
     }: { requestSnapshot?: boolean; forceSnapshot?: boolean; snapshotDelayMs?: number } = {},
   ) => {
+    const pixelWidth = Math.max(0, Math.round(screenRef.current?.clientWidth ?? 0));
+    const pixelHeight = Math.max(0, Math.round(screenRef.current?.clientHeight ?? 0));
     const previous = lastSentSizeRef.current;
-    const sizeChanged = !previous || previous.cols !== cols || previous.rows !== rows;
+    const sizeChanged =
+      !previous ||
+      previous.cols !== cols ||
+      previous.rows !== rows ||
+      previous.pixelWidth !== pixelWidth ||
+      previous.pixelHeight !== pixelHeight;
     if (sizeChanged) {
-      lastSentSizeRef.current = { cols, rows };
-      rpc.send({ type: "resize", id, cols, rows });
+      lastSentSizeRef.current = { cols, rows, pixelWidth, pixelHeight };
+      rpc.send({ type: "resize", id, cols, rows, pixelWidth, pixelHeight });
     }
     if (requestSnapshot && (forceSnapshot || sizeChanged)) {
       if (snapshotSyncTimeoutRef.current != null) {
@@ -402,28 +575,29 @@ export function TerminalPane({
     const shouldSyncModes =
       lastModeStateKeyRef.current !== nextModeStateKey || (frame.screenMode === "full" && frame.altScreen !== true);
     const payloadWithModes = shouldSyncModes ? prependTerminalModePrefix(payload, frame) : payload;
+    const finalizeFrame = (message: string, scrollToBottom = false) => {
+      syncTerminalCursor(terminal, screen, frame);
+      refreshCursorRows();
+      lastModeStateKeyRef.current = nextModeStateKey;
+      applyImageFrame(frame);
+      if (TERMINAL_DEBUG) {
+        console.log(message, { id, seq: frame.seq });
+      }
+      if (scrollToBottom && autoFollowScrollRef.current) {
+        terminal.scrollToBottom();
+      }
+      done();
+    };
     if (frame.screenMode === "full") {
       if (payloadWithModes.length === 0) {
-        syncTerminalCursor(terminal, screen, frame);
-        refreshCursorRows();
-        lastModeStateKeyRef.current = nextModeStateKey;
-        if (TERMINAL_DEBUG) {
-          console.log("[terminal-pane] applyFrame full empty payload", { id, seq: frame.seq });
-        }
-        done();
+        finalizeFrame("[terminal-pane] applyFrame full empty payload");
         return;
       }
       if (frame.altScreen && typeof payloadWithModes === "string") {
         // Full alternate-screen frames are authoritative snapshots of the active TUI.
         // Re-enter and clear the alt buffer in place so redraws do not visibly flash.
         terminal.write(`\u001b[?1049h\u001b[H\u001b[2J${payloadWithModes}`, () => {
-          syncTerminalCursor(terminal, screen, frame);
-          refreshCursorRows();
-          lastModeStateKeyRef.current = nextModeStateKey;
-          if (TERMINAL_DEBUG) {
-            console.log("[terminal-pane] applyFrame full alt complete", { id, seq: frame.seq });
-          }
-          done();
+          finalizeFrame("[terminal-pane] applyFrame full alt complete");
         });
         return;
       }
@@ -431,54 +605,24 @@ export function TerminalPane({
         // Keep primary-screen authoritative redraws non-destructive. A hard RIS
         // reset is correct but visibly flashes on every Codex prompt repaint.
         terminal.write(`\u001b[?1049l\u001b[?25l\u001b[r\u001b[H${payloadWithModes}\u001b[?25h`, () => {
-          syncTerminalCursor(terminal, screen, frame);
-          refreshCursorRows();
-          lastModeStateKeyRef.current = nextModeStateKey;
-          if (TERMINAL_DEBUG) {
-            console.log("[terminal-pane] applyFrame full primary complete", { id, seq: frame.seq });
-          }
-          if (autoFollowScrollRef.current) {
-            terminal.scrollToBottom();
-          }
-          done();
+          finalizeFrame("[terminal-pane] applyFrame full primary complete", true);
         });
         return;
       }
       terminal.reset();
       terminal.write(payloadWithModes, () => {
-        syncTerminalCursor(terminal, screen, frame);
-        refreshCursorRows();
-        lastModeStateKeyRef.current = nextModeStateKey;
-        if (TERMINAL_DEBUG) {
-          console.log("[terminal-pane] applyFrame full complete", { id, seq: frame.seq });
-        }
-        if (autoFollowScrollRef.current) {
-          terminal.scrollToBottom();
-        }
-        done();
+        finalizeFrame("[terminal-pane] applyFrame full complete", true);
       });
       return;
     }
 
     if (payloadWithModes.length === 0) {
-      syncTerminalCursor(terminal, screen, frame);
-      refreshCursorRows();
-      lastModeStateKeyRef.current = nextModeStateKey;
-      if (TERMINAL_DEBUG) {
-        console.log("[terminal-pane] applyFrame patch empty payload", { id, seq: frame.seq });
-      }
-      done();
+      finalizeFrame("[terminal-pane] applyFrame patch empty payload");
       return;
     }
 
     terminal.write(payloadWithModes, () => {
-      syncTerminalCursor(terminal, screen, frame);
-      refreshCursorRows();
-      lastModeStateKeyRef.current = nextModeStateKey;
-      if (TERMINAL_DEBUG) {
-        console.log("[terminal-pane] applyFrame patch complete", { id, seq: frame.seq });
-      }
-      done();
+      finalizeFrame("[terminal-pane] applyFrame patch complete");
     });
   };
 
@@ -579,11 +723,12 @@ export function TerminalPane({
 
   useEffect(() => {
     const screen = screenRef.current;
+    const xtermHost = xtermHostRef.current;
     const stage = stageRef.current;
-    if (!screen || !stage) return;
+    if (!screen || !xtermHost || !stage) return;
 
     const terminal = new Terminal({
-      allowTransparency: false,
+      allowTransparency: true,
       convertEol: false,
       cursorBlink: true,
       cursorStyle: "block",
@@ -601,9 +746,7 @@ export function TerminalPane({
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
       const agent = inspectAvatarState(currentFrameRef.current).agent;
-      const enterSequence =
-        modifiedEnterSequence(event, enhancedEnterModeRef.current) ??
-        ((agent === "opencode" || agent === "codex") ? modifiedEnterNewlineFallback(event) : null);
+      const enterSequence = resolveModifiedEnterSequence(event, enhancedEnterModeRef.current, agent);
       if (enterSequence) {
         event.preventDefault();
         userInputHandlerRef.current(id);
@@ -704,9 +847,10 @@ export function TerminalPane({
     });
     const scrollSubscription = terminal.onScroll((viewportY) => {
       autoFollowScrollRef.current = viewportY >= terminal.buffer.active.baseY;
+      renderImageScene();
     });
 
-    terminal.open(screen);
+    terminal.open(xtermHost);
     const linkProviderDisposable = terminal.registerLinkProvider(linkProvider);
     terminalRef.current = terminal;
     if (TERMINAL_DEBUG) {
@@ -719,6 +863,7 @@ export function TerminalPane({
         window.requestAnimationFrame(resizeTerminalToStage);
         return;
       }
+      renderImageScene();
       if (!hasViewportControlRef.current) {
         return;
       }
@@ -752,6 +897,9 @@ export function TerminalPane({
       linkProviderDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
+      imageCacheRef.current.clear();
+      imagePlacementsRef.current = [];
+      renderImageScene();
       pendingFramesRef.current = [];
       pendingFrameStartRef.current = 0;
       processingFramesRef.current = false;
@@ -889,7 +1037,11 @@ export function TerminalPane({
         }}
         role="presentation"
       >
-        <div ref={screenRef} className="terminal-screen terminal-screen-xterm" />
+        <div ref={screenRef} className="terminal-screen terminal-screen-xterm">
+          <canvas ref={imageBackCanvasRef} className="terminal-image-layer terminal-image-layer-back" />
+          <div ref={xtermHostRef} className="terminal-xterm-host" />
+          <canvas ref={imageFrontCanvasRef} className="terminal-image-layer terminal-image-layer-front" />
+        </div>
       </div>
     </section>
   );

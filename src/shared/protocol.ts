@@ -8,6 +8,33 @@ export interface TerminalScreenRow {
   text: string;
 }
 
+export type TerminalImageFormat = "gray" | "gray-alpha" | "rgb" | "rgba";
+
+export interface TerminalImageDefinition {
+  id: number;
+  width: number;
+  height: number;
+  format: TerminalImageFormat;
+  data: Uint8Array;
+}
+
+export interface TerminalImagePlacement {
+  imageId: number;
+  screenX: number;
+  screenY: number;
+  z: number;
+  cellOffsetX: number;
+  cellOffsetY: number;
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  columns: number;
+  rows: number;
+  pixelWidth?: number;
+  pixelHeight?: number;
+}
+
 export interface PaneLaunchConfig {
   command?: string;
   args?: string[];
@@ -47,6 +74,9 @@ export interface TerminalFrame {
   // Binary VT patch for direct xterm writes when the host has raw PTY bytes.
   renderPatchBytes?: Uint8Array;
   renderPatchKind?: "cursor-only" | "row-update" | "alt-row-update";
+  imageDefinitions?: TerminalImageDefinition[];
+  imageRemovedIds?: number[];
+  imagePlacements?: TerminalImagePlacement[];
   // Whether Ghostty VT is currently on alternate screen buffer.
   altScreen?: boolean;
   chunk: string;
@@ -152,6 +182,20 @@ function decodeMouseFormat(value: number): TerminalFrame["mouseFormat"] {
   return undefined;
 }
 
+function encodeTerminalImageFormat(value: TerminalImageFormat): number {
+  if (value === "gray") return 0;
+  if (value === "gray-alpha") return 1;
+  if (value === "rgb") return 2;
+  return 3;
+}
+
+function decodeTerminalImageFormat(value: number): TerminalImageFormat {
+  if (value === 0) return "gray";
+  if (value === 1) return "gray-alpha";
+  if (value === 2) return "rgb";
+  return "rgba";
+}
+
 function encodeScreenMode(value: TerminalFrame["screenMode"]): number {
   if (value === undefined) return 255;
   return value === "full" ? 0 : 1;
@@ -196,6 +240,20 @@ function readRequiredString(view: DataView, source: Uint8Array, offset: number):
   offset += 4;
   const nextOffset = offset + length;
   return [textDecoder.decode(source.subarray(offset, nextOffset)), nextOffset];
+}
+
+function writeRequiredBytes(view: DataView, target: Uint8Array, offset: number, bytes: Uint8Array): number {
+  view.setUint32(offset, bytes.byteLength, true);
+  offset += 4;
+  target.set(bytes, offset);
+  return offset + bytes.byteLength;
+}
+
+function readRequiredBytes(view: DataView, source: Uint8Array, offset: number): [Uint8Array, number] {
+  const length = view.getUint32(offset, true);
+  offset += 4;
+  const nextOffset = offset + length;
+  return [source.slice(offset, nextOffset), nextOffset];
 }
 
 function writeOptionalBytes(
@@ -246,6 +304,16 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
     index: row.index,
     textBytes: encodeRequiredString(row.text),
   }));
+  const imageFlags =
+    (frame.imageDefinitions !== undefined ? 1 : 0) |
+    (frame.imageRemovedIds !== undefined ? 1 << 1 : 0) |
+    (frame.imagePlacements !== undefined ? 1 << 2 : 0);
+  const imageDefinitions = (frame.imageDefinitions ?? []).map((image) => ({
+    ...image,
+    dataBytes: image.data,
+  }));
+  const imageRemovedIds = frame.imageRemovedIds ?? [];
+  const imagePlacements = frame.imagePlacements ?? [];
   const renderVt = encodeOptionalString(frame.renderVt);
   const renderPatchVt = encodeOptionalString(frame.renderPatchVt);
   const renderPatchBytes = frame.renderPatchBytes ?? null;
@@ -266,12 +334,18 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
     { presence: 0, values: 0 },
   );
 
-  const fixedBytes = 1 + 2 + 2 + 4 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 2 + 8 + 4 * 7 + 2 + 1 + 2;
+  const fixedBytes = 1 + 2 + 2 + 4 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 2 + 8 + 4 * 7 + 2 + 1 + 2 + 1 + 2 + 2 + 2;
   const previewBytes = previewLines.reduce((sum, line) => sum + 4 + line.byteLength, 0);
   const screenRowBytes = encodedScreenRows.reduce(
     (sum, row) => sum + 2 + 4 + row.textBytes.byteLength,
     0,
   );
+  const imageDefinitionBytes = imageDefinitions.reduce(
+    (sum, image) => sum + 4 + 2 + 2 + 1 + 4 + image.dataBytes.byteLength,
+    0,
+  );
+  const imageRemovedBytes = imageRemovedIds.length * 4;
+  const imagePlacementBytes = imagePlacements.length * (4 + 2 + 4 + 4 + 2 * 10);
   const totalBytes =
     fixedBytes +
     id.byteLength +
@@ -282,7 +356,10 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
     chunk.byteLength +
     vt.byteLength +
     previewBytes +
-    screenRowBytes;
+    screenRowBytes +
+    imageDefinitionBytes +
+    imageRemovedBytes +
+    imagePlacementBytes;
 
   const packet = new Uint8Array(totalBytes);
   const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
@@ -326,6 +403,57 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
     view.setUint16(offset, row.index, true);
     offset += 2;
     offset = writeRequiredString(view, packet, offset, row.textBytes);
+  }
+  packet[offset++] = imageFlags;
+  view.setUint16(offset, imageDefinitions.length, true);
+  offset += 2;
+  for (const image of imageDefinitions) {
+    view.setUint32(offset, image.id, true);
+    offset += 4;
+    view.setUint16(offset, image.width, true);
+    offset += 2;
+    view.setUint16(offset, image.height, true);
+    offset += 2;
+    packet[offset++] = encodeTerminalImageFormat(image.format);
+    offset = writeRequiredBytes(view, packet, offset, image.dataBytes);
+  }
+  view.setUint16(offset, imageRemovedIds.length, true);
+  offset += 2;
+  for (const imageId of imageRemovedIds) {
+    view.setUint32(offset, imageId, true);
+    offset += 4;
+  }
+  view.setUint16(offset, imagePlacements.length, true);
+  offset += 2;
+  for (const placement of imagePlacements) {
+    view.setUint32(offset, placement.imageId, true);
+    offset += 4;
+    view.setUint16(offset, placement.screenX, true);
+    offset += 2;
+    view.setUint32(offset, placement.screenY, true);
+    offset += 4;
+    view.setInt32(offset, placement.z, true);
+    offset += 4;
+    view.setUint16(offset, placement.cellOffsetX, true);
+    offset += 2;
+    view.setUint16(offset, placement.cellOffsetY, true);
+    offset += 2;
+    view.setUint16(offset, placement.sourceX, true);
+    offset += 2;
+    view.setUint16(offset, placement.sourceY, true);
+    offset += 2;
+    view.setUint16(offset, placement.sourceWidth, true);
+    offset += 2;
+    view.setUint16(offset, placement.sourceHeight, true);
+    offset += 2;
+    view.setUint16(offset, placement.columns, true);
+    offset += 2;
+    view.setUint16(offset, placement.rows, true);
+    offset += 2;
+    view.setUint16(offset, placement.pixelWidth ?? 0, true);
+    offset += 2;
+    view.setUint16(offset, placement.pixelHeight ?? 0, true);
+    offset += 2;
   }
 
   return packet;
@@ -393,6 +521,78 @@ export function decodeTerminalFramePacket(packet: ArrayBuffer | Uint8Array): Ter
     screenRows.push({ index: rowIndex, text });
     offset = nextOffset;
   }
+  const imageFlags = bytes[offset++] ?? 0;
+  const imageDefinitionCount = view.getUint16(offset, true);
+  offset += 2;
+  const imageDefinitions: TerminalImageDefinition[] = [];
+  for (let index = 0; index < imageDefinitionCount; index += 1) {
+    const imageId = view.getUint32(offset, true);
+    offset += 4;
+    const width = view.getUint16(offset, true);
+    offset += 2;
+    const height = view.getUint16(offset, true);
+    offset += 2;
+    const format = decodeTerminalImageFormat(bytes[offset++] ?? 3);
+    const [data, nextOffset] = readRequiredBytes(view, bytes, offset);
+    offset = nextOffset;
+    imageDefinitions.push({ id: imageId, width, height, format, data });
+  }
+  const imageRemovedCount = view.getUint16(offset, true);
+  offset += 2;
+  const imageRemovedIds: number[] = [];
+  for (let index = 0; index < imageRemovedCount; index += 1) {
+    imageRemovedIds.push(view.getUint32(offset, true));
+    offset += 4;
+  }
+  const imagePlacementCount = view.getUint16(offset, true);
+  offset += 2;
+  const imagePlacements: TerminalImagePlacement[] = [];
+  for (let index = 0; index < imagePlacementCount; index += 1) {
+    const imageId = view.getUint32(offset, true);
+    offset += 4;
+    const screenX = view.getUint16(offset, true);
+    offset += 2;
+    const screenY = view.getUint32(offset, true);
+    offset += 4;
+    const z = view.getInt32(offset, true);
+    offset += 4;
+    const cellOffsetX = view.getUint16(offset, true);
+    offset += 2;
+    const cellOffsetY = view.getUint16(offset, true);
+    offset += 2;
+    const sourceX = view.getUint16(offset, true);
+    offset += 2;
+    const sourceY = view.getUint16(offset, true);
+    offset += 2;
+    const sourceWidth = view.getUint16(offset, true);
+    offset += 2;
+    const sourceHeight = view.getUint16(offset, true);
+    offset += 2;
+    const columns = view.getUint16(offset, true);
+    offset += 2;
+    const rowsForPlacement = view.getUint16(offset, true);
+    offset += 2;
+    const pixelWidth = view.getUint16(offset, true);
+    offset += 2;
+    const pixelHeight = view.getUint16(offset, true);
+    offset += 2;
+    imagePlacements.push({
+      imageId,
+      screenX,
+      screenY,
+      z,
+      cellOffsetX,
+      cellOffsetY,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      columns,
+      rows: rowsForPlacement,
+      pixelWidth: pixelWidth || undefined,
+      pixelHeight: pixelHeight || undefined,
+    });
+  }
 
   const frame: TerminalFrame = {
     id,
@@ -406,6 +606,9 @@ export function decodeTerminalFramePacket(packet: ArrayBuffer | Uint8Array): Ter
     renderPatchVt,
     renderPatchBytes,
     renderPatchKind,
+    imageDefinitions: (imageFlags & 1) !== 0 ? imageDefinitions : undefined,
+    imageRemovedIds: (imageFlags & (1 << 1)) !== 0 ? imageRemovedIds : undefined,
+    imagePlacements: (imageFlags & (1 << 2)) !== 0 ? imagePlacements : undefined,
     chunk,
     vt,
     previewLines,
@@ -441,6 +644,8 @@ export type ClientMessage =
       id: TerminalId;
       cols: number;
       rows: number;
+      pixelWidth?: number;
+      pixelHeight?: number;
     }
   | {
       type: "focus-terminal";

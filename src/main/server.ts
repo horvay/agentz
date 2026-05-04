@@ -595,7 +595,7 @@ export function startTerminalRpcServer(
           }
           case "resize": {
             if (canResizeTerminal(parsed.id, ws)) {
-              terminals.get(parsed.id)?.resize(parsed.cols, parsed.rows);
+              terminals.get(parsed.id)?.resize(parsed.cols, parsed.rows, parsed.pixelWidth, parsed.pixelHeight);
             }
             break;
           }
