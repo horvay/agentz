@@ -60,6 +60,7 @@ const HostPacketType = enum(u8) {
 };
 
 const OwnedRows = std.ArrayList([]u8);
+const KITTY_GRAPHICS_PLACEHOLDER: u21 = 0x10EEEE;
 const ImageVersionMap = std.AutoHashMap(u32, std.time.Instant);
 const ScreenRowPayload = struct {
     index: u16,
@@ -242,7 +243,7 @@ fn sanitizeTerminalRow(alloc: std.mem.Allocator, row: []const u8) ![]u8 {
             try builder.appendSlice(alloc, slice);
             continue;
         };
-        if (cp == ghostty_vt.kitty.graphics.unicode.placeholder) {
+        if (cp == KITTY_GRAPHICS_PLACEHOLDER) {
             try builder.append(alloc, ' ');
             changed = true;
             saw_placeholder = true;
@@ -498,7 +499,7 @@ fn appendKittyImageScene(
         }
     }
 
-    if (has_virtual and term.cols > 0 and term.rows > 0 and pixel_width > 0 and pixel_height > 0) {
+    if (has_virtual and term.cols > 0 and term.rows > 0 and pixel_width > 0 and pixel_height > 0 and @hasDecl(ghostty_vt.kitty.graphics, "unicode")) {
         const cell_width: u32 = @max(1, @as(u32, pixel_width) / @as(u32, @intCast(term.cols)));
         const cell_height: u32 = @max(1, @as(u32, pixel_height) / @as(u32, @intCast(term.rows)));
         const top = term.screens.active.pages.getTopLeft(.viewport);
