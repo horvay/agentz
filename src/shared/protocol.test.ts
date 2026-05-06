@@ -18,6 +18,9 @@ describe("terminal frame binary packet", () => {
       renderVt: "\u001b[Hhello",
       renderPatchVt: undefined,
       renderPatchKind: undefined,
+      frameCause: "attach",
+      renderEpoch: 2,
+      coversPtySeq: 41,
       imageDefinitions: [
         {
           id: 5,
@@ -80,6 +83,8 @@ describe("terminal frame binary packet", () => {
       previewLines: [],
       renderPatchVt: "\u001b[4;12H",
       renderPatchKind: "cursor-only",
+      frameCause: "pty",
+      renderEpoch: 3,
       imagePlacements: [
         {
           imageId: 9,

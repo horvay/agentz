@@ -29,6 +29,7 @@ import {
 } from "./folderAccent";
 import { folderLabel, resolveNewPaneCwd, resolvePaneCwdFromFrame } from "./paneCwd";
 import { coalesceQueuedRenderFrames } from "./renderQueues";
+import { splitTerminalFrameEvents } from "./terminalFrameEvents";
 import { doesEventMatchShortcut } from "./shortcuts";
 import { selectLivePaneIds } from "./livePaneSelection";
 import { recoverTerminalLayout } from "./terminalRecovery";
@@ -220,6 +221,9 @@ function compactFrameForActivity(frame: TerminalFrame): TerminalFrame {
     screenRows: frame.screenRows,
     renderVt: frame.renderVt,
     renderPatchKind: frame.renderPatchKind,
+    frameCause: frame.frameCause,
+    renderEpoch: frame.renderEpoch,
+    coversPtySeq: frame.coversPtySeq,
     renderPatchVt: frame.renderPatchVt,
     renderPatchBytes: frame.renderPatchBytes,
     imageDefinitions: frame.imageDefinitions,
@@ -270,6 +274,9 @@ function compactFrameForRender(frame: TerminalFrame): TerminalFrame {
     renderPatchVt: frame.renderPatchVt,
     renderPatchBytes: frame.renderPatchBytes,
     renderPatchKind: frame.renderPatchKind,
+    frameCause: frame.frameCause,
+    renderEpoch: frame.renderEpoch,
+    coversPtySeq: frame.coversPtySeq,
     imageDefinitions: frame.imageDefinitions,
     imageRemovedIds: frame.imageRemovedIds,
     imagePlacements: frame.imagePlacements,
@@ -346,6 +353,9 @@ function mergeActivityFrame(existing: TerminalFrame | undefined, next: TerminalF
     previewLines: mergePreviewLines(existing.previewLines, next.previewLines),
     renderVt: mergedRenderVt,
     renderPatchKind: next.renderPatchKind,
+    frameCause: next.frameCause ?? existing.frameCause,
+    renderEpoch: next.renderEpoch ?? existing.renderEpoch,
+    coversPtySeq: next.coversPtySeq ?? existing.coversPtySeq,
     renderPatchVt: next.renderPatchVt,
     renderPatchBytes: next.renderPatchBytes,
     imageDefinitions: next.imageDefinitions ?? existing.imageDefinitions,
@@ -1669,8 +1679,9 @@ function DashboardApp({
       setStatus("Connected");
     });
     const disposeFrame = rpc.onFrame((frame) => {
+      const events = splitTerminalFrameEvents(frame);
       const activityFrame = compactFrameForActivity(frame);
-      const renderFrame = compactFrameForRender(frame);
+      const renderFrame = events.render ? compactFrameForRender(events.render.frame) : null;
       const pending = pendingFrameUpdatesRef.current[frame.id];
       const baseActivityFrame = pending?.activityFrame ?? framesRef.current[frame.id];
       const shouldQueueRenderFrames = renderableSessionIdsRef.current.includes(frame.id);
@@ -1679,7 +1690,7 @@ function DashboardApp({
         : [];
       pendingFrameUpdatesRef.current[frame.id] = {
         activityFrame: mergeActivityFrame(baseActivityFrame, activityFrame),
-        renderFrames: shouldQueueRenderFrames ? coalesceQueuedRenderFrames(baseRenderFrames, renderFrame) : [],
+        renderFrames: shouldQueueRenderFrames && renderFrame ? coalesceQueuedRenderFrames(baseRenderFrames, renderFrame) : baseRenderFrames,
       };
       if (pendingFrameFlushRafRef.current == null) {
         pendingFrameFlushRafRef.current = window.requestAnimationFrame(flushPendingFrames);

@@ -332,6 +332,7 @@ export function TerminalPane({
   const pendingFrameStartRef = useRef(0);
   const processingFramesRef = useRef(false);
   const lastAppliedSeqRef = useRef(0);
+  const lastRenderEpochRef = useRef<number | null>(null);
   const lastModeStateKeyRef = useRef<string | null>(null);
   const lastCursorRowRef = useRef<number | null>(null);
   const enhancedEnterModeRef = useRef<EnhancedEnterMode>("none");
@@ -503,11 +504,7 @@ export function TerminalPane({
       syncViewportSizeToServer({ immediate: true });
       return;
     }
-    syncViewportSizeToServer({
-      requestSnapshot: true,
-      forceSnapshot: true,
-      snapshotDelayMs: RESIZE_SNAPSHOT_DELAY_MS,
-    });
+    syncViewportSizeToServer();
   };
 
   const scrollPrimaryViewport = (deltaY: number) => {
@@ -604,7 +601,7 @@ export function TerminalPane({
       if (typeof payloadWithModes === "string") {
         // Keep primary-screen authoritative redraws non-destructive. A hard RIS
         // reset is correct but visibly flashes on every Codex prompt repaint.
-        terminal.write(`\u001b[?1049l\u001b[?25l\u001b[r\u001b[H${payloadWithModes}\u001b[?25h`, () => {
+        terminal.write(`\u001b[?1049l\u001b[?25l\u001b[r\u001b[H${payloadWithModes}\u001b[J\u001b[?25h`, () => {
           finalizeFrame("[terminal-pane] applyFrame full primary complete", true);
         });
         return;
@@ -657,6 +654,9 @@ export function TerminalPane({
     processingFramesRef.current = true;
     applyFrame(nextFrame, () => {
       lastAppliedSeqRef.current = Math.max(lastAppliedSeqRef.current, nextFrame.seq);
+      if (nextFrame.renderEpoch != null) {
+        lastRenderEpochRef.current = Math.max(lastRenderEpochRef.current ?? 0, nextFrame.renderEpoch);
+      }
       processingFramesRef.current = false;
       compactPendingFrames();
       if (pendingFrameStartRef.current < pendingFramesRef.current.length) {
@@ -670,8 +670,28 @@ export function TerminalPane({
   };
 
   const enqueueFrames = (frames: TerminalFrame[]) => {
-    const highestQueuedSeq = pendingFramesRef.current[pendingFramesRef.current.length - 1]?.seq ?? lastAppliedSeqRef.current;
-    const nextFrames = frames.filter((frame) => hasRenderablePayload(frame) && frame.seq > highestQueuedSeq);
+    let highestQueuedSeq = pendingFramesRef.current[pendingFramesRef.current.length - 1]?.seq ?? lastAppliedSeqRef.current;
+    let currentEpoch = lastRenderEpochRef.current;
+    const nextFrames: TerminalFrame[] = [];
+    for (const frame of frames) {
+      if (!hasRenderablePayload(frame)) continue;
+      if (currentEpoch != null && frame.renderEpoch != null && frame.renderEpoch < currentEpoch) continue;
+      if (frame.renderEpoch != null && frame.renderEpoch > (currentEpoch ?? 0)) {
+        pendingFramesRef.current = [];
+        pendingFrameStartRef.current = 0;
+        lastAppliedSeqRef.current = 0;
+        lastRenderEpochRef.current = frame.renderEpoch;
+        currentEpoch = frame.renderEpoch;
+        highestQueuedSeq = 0;
+        nextFrames.length = 0;
+        nextFrames.push(frame);
+        highestQueuedSeq = frame.seq;
+        continue;
+      }
+      if (frame.seq <= highestQueuedSeq) continue;
+      nextFrames.push(frame);
+      highestQueuedSeq = frame.seq;
+    }
     if (nextFrames.length === 0) return;
     if (TERMINAL_DEBUG) {
       console.log("[terminal-pane] enqueueFrames", {
@@ -687,7 +707,11 @@ export function TerminalPane({
 
   const prioritizeFullFrame = (frame: TerminalFrame) => {
     if (!hasRenderablePayload(frame)) return;
-    if (frame.seq <= lastAppliedSeqRef.current) return;
+    if (frame.renderEpoch != null && frame.renderEpoch < (lastRenderEpochRef.current ?? 0)) return;
+    if (
+      frame.seq <= lastAppliedSeqRef.current &&
+      (frame.renderEpoch == null || frame.renderEpoch === lastRenderEpochRef.current)
+    ) return;
     if (TERMINAL_DEBUG) {
       console.log("[terminal-pane] prioritizeFullFrame", {
         id,
@@ -698,6 +722,10 @@ export function TerminalPane({
     }
     pendingFramesRef.current = [frame];
     pendingFrameStartRef.current = 0;
+    if (frame.renderEpoch != null && frame.renderEpoch !== lastRenderEpochRef.current) {
+      lastAppliedSeqRef.current = 0;
+      lastRenderEpochRef.current = frame.renderEpoch;
+    }
     drainFrameQueue();
   };
 
@@ -904,6 +932,7 @@ export function TerminalPane({
       pendingFrameStartRef.current = 0;
       processingFramesRef.current = false;
       lastAppliedSeqRef.current = 0;
+      lastRenderEpochRef.current = null;
       lastModeStateKeyRef.current = null;
       lastCursorRowRef.current = null;
       enhancedEnterModeRef.current = "none";
