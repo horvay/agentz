@@ -781,6 +781,7 @@ fn emitFrame(
     pending_vt_bytes: *std.ArrayList(u8),
     has_snapshot: *bool,
     force_full: bool,
+    include_scrollback: bool,
     preview_only: bool,
 ) !void {
     const alt_screen = isAltScreen(term);
@@ -905,7 +906,7 @@ fn emitFrame(
     const has_virtual_kitty = hasVirtualKittyPlacements(term);
     const vt = if (use_full) blk: {
         mode = .full;
-        if (!alt_screen and !has_virtual_kitty) {
+        if (include_scrollback and !alt_screen and !has_virtual_kitty) {
             break :blk try buildFullScrollbackVt(alloc, term);
         }
         break :blk try buildFullVt(alloc, term, current_render_rows.items);
@@ -992,6 +993,7 @@ fn maybeEmitPendingFrame(
         pending_vt_bytes,
         has_snapshot,
         force_full,
+        false,
         preview_only,
     );
     pending_frame.* = false;
@@ -1607,6 +1609,7 @@ pub fn main() !void {
         &pending_vt_bytes,
         &has_snapshot,
         true,
+        true,
         preview_only,
     );
     last_frame_emit_ms = std.time.milliTimestamp();
@@ -1717,6 +1720,7 @@ pub fn main() !void {
                                 &pending_vt_bytes,
                                 &has_snapshot,
                                 true,
+                                false,
                                 preview_only,
                             );
                             pending_frame = false;
@@ -1737,6 +1741,7 @@ pub fn main() !void {
                                 current_pixel_height,
                                 &pending_vt_bytes,
                                 &has_snapshot,
+                                true,
                                 true,
                                 false,
                             );
