@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
+import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "xterm";
 
 import type { TerminalFrame, TerminalImageDefinition, TerminalImagePlacement } from "../shared/protocol";
@@ -21,6 +22,7 @@ import { drawRectForTerminalImagePlacement, terminalImageLayerForZ } from "./ter
 
 const RESIZE_DEBOUNCE_MS = 40;
 const RESIZE_SNAPSHOT_DELAY_MS = 140;
+const SWITCH_REDRAW_SNAPSHOT_DELAY_MS = 180;
 const TERMINAL_FONT_SIZE = 14;
 const TERMINAL_LINE_HEIGHT = 1;
 const TERMINAL_SCROLLBACK = 5_000;
@@ -324,6 +326,7 @@ export function TerminalPane({
   const imageBackCanvasRef = useRef<HTMLCanvasElement>(null);
   const imageFrontCanvasRef = useRef<HTMLCanvasElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
   const resizeSyncTimeoutRef = useRef<number | null>(null);
   const snapshotSyncTimeoutRef = useRef<number | null>(null);
   const focusTimeoutRef = useRef<number | null>(null);
@@ -332,6 +335,7 @@ export function TerminalPane({
   const pendingFrameStartRef = useRef(0);
   const processingFramesRef = useRef(false);
   const lastAppliedSeqRef = useRef(0);
+  const lastRenderEpochRef = useRef<number | null>(null);
   const lastModeStateKeyRef = useRef<string | null>(null);
   const lastCursorRowRef = useRef<number | null>(null);
   const enhancedEnterModeRef = useRef<EnhancedEnterMode>("none");
@@ -397,17 +401,12 @@ export function TerminalPane({
     const pixelWidth = Math.max(0, Math.round(screenRef.current?.clientWidth ?? 0));
     const pixelHeight = Math.max(0, Math.round(screenRef.current?.clientHeight ?? 0));
     const previous = lastSentSizeRef.current;
-    const sizeChanged =
-      !previous ||
-      previous.cols !== cols ||
-      previous.rows !== rows ||
-      previous.pixelWidth !== pixelWidth ||
-      previous.pixelHeight !== pixelHeight;
-    if (sizeChanged) {
+    const gridChanged = !previous || previous.cols !== cols || previous.rows !== rows;
+    if (gridChanged) {
       lastSentSizeRef.current = { cols, rows, pixelWidth, pixelHeight };
       rpc.send({ type: "resize", id, cols, rows, pixelWidth, pixelHeight });
     }
-    if (requestSnapshot && (forceSnapshot || sizeChanged)) {
+    if (requestSnapshot && (forceSnapshot || gridChanged)) {
       if (snapshotSyncTimeoutRef.current != null) {
         window.clearTimeout(snapshotSyncTimeoutRef.current);
       }
@@ -451,12 +450,7 @@ export function TerminalPane({
     hasViewportControlRef.current = true;
     rpc.send({ type: "focus-terminal", id });
     if (!syncViewport) return;
-    syncViewportSizeToServer({
-      immediate: IS_WINDOWS,
-      requestSnapshot: true,
-      forceSnapshot: true,
-      snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
-    });
+    syncViewportSizeToServer({ immediate: IS_WINDOWS });
   };
 
   const syncViewportSizeToServer = (
@@ -468,16 +462,21 @@ export function TerminalPane({
     }: { immediate?: boolean; requestSnapshot?: boolean; forceSnapshot?: boolean; snapshotDelayMs?: number } = {},
   ) => {
     const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
     const screen = screenRef.current;
-    if (!terminal || !screen) return;
-    const screenWidth = screen.clientWidth;
-    const screenHeight = screen.clientHeight;
-    if (screenWidth <= 0 || screenHeight <= 0) return;
-    const cell = measuredCellSize(terminal);
-    if (!cell) return;
-    const nextCols = Math.max(2, Math.floor(screenWidth / cell.width));
-    const nextRows = Math.max(1, Math.floor(screenHeight / cell.height));
-    queueResizeSync(nextCols, nextRows, {
+    if (!terminal || !fitAddon || !screen) return;
+    if (screen.clientWidth <= 0 || screen.clientHeight <= 0) return;
+
+    try {
+      fitAddon.fit();
+    } catch (error) {
+      if (TERMINAL_DEBUG) {
+        console.warn("[terminal-pane] fit failed", { id, error });
+      }
+      return;
+    }
+
+    queueResizeSync(terminal.cols, terminal.rows, {
       immediate,
       requestSnapshot,
       forceSnapshot,
@@ -499,15 +498,38 @@ export function TerminalPane({
   const syncInputViewportToServer = () => {
     autoFollowScrollRef.current = true;
     terminalRef.current?.scrollToBottom();
-    if (IS_WINDOWS) {
-      syncViewportSizeToServer({ immediate: true });
+    syncViewportSizeToServer({ immediate: IS_WINDOWS });
+  };
+
+  const redrawVisibleTerminal = ({ requestSnapshot = false }: { requestSnapshot?: boolean } = {}) => {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    const screen = screenRef.current;
+    if (!terminal || !fitAddon || !screen) return;
+    if (screen.clientWidth <= 0 || screen.clientHeight <= 0) return;
+
+    try {
+      fitAddon.fit();
+    } catch (error) {
+      if (TERMINAL_DEBUG) {
+        console.warn("[terminal-pane] redraw fit failed", { id, error });
+      }
       return;
     }
-    syncViewportSizeToServer({
-      requestSnapshot: true,
-      forceSnapshot: true,
-      snapshotDelayMs: RESIZE_SNAPSHOT_DELAY_MS,
-    });
+
+    autoFollowScrollRef.current = true;
+    terminal.scrollToBottom();
+    terminal.refresh(0, Math.max(0, terminal.rows - 1));
+    renderImageScene();
+    if (!requestSnapshot || document.visibilityState === "hidden") return;
+
+    if (snapshotSyncTimeoutRef.current != null) {
+      window.clearTimeout(snapshotSyncTimeoutRef.current);
+    }
+    snapshotSyncTimeoutRef.current = window.setTimeout(() => {
+      snapshotSyncTimeoutRef.current = null;
+      rpc.send({ type: "snapshot", id });
+    }, SWITCH_REDRAW_SNAPSHOT_DELAY_MS);
   };
 
   const scrollPrimaryViewport = (deltaY: number) => {
@@ -657,6 +679,9 @@ export function TerminalPane({
     processingFramesRef.current = true;
     applyFrame(nextFrame, () => {
       lastAppliedSeqRef.current = Math.max(lastAppliedSeqRef.current, nextFrame.seq);
+      if (nextFrame.renderEpoch != null) {
+        lastRenderEpochRef.current = Math.max(lastRenderEpochRef.current ?? 0, nextFrame.renderEpoch);
+      }
       processingFramesRef.current = false;
       compactPendingFrames();
       if (pendingFrameStartRef.current < pendingFramesRef.current.length) {
@@ -670,8 +695,28 @@ export function TerminalPane({
   };
 
   const enqueueFrames = (frames: TerminalFrame[]) => {
-    const highestQueuedSeq = pendingFramesRef.current[pendingFramesRef.current.length - 1]?.seq ?? lastAppliedSeqRef.current;
-    const nextFrames = frames.filter((frame) => hasRenderablePayload(frame) && frame.seq > highestQueuedSeq);
+    let highestQueuedSeq = pendingFramesRef.current[pendingFramesRef.current.length - 1]?.seq ?? lastAppliedSeqRef.current;
+    let currentEpoch = lastRenderEpochRef.current;
+    const nextFrames: TerminalFrame[] = [];
+    for (const frame of frames) {
+      if (!hasRenderablePayload(frame)) continue;
+      if (currentEpoch != null && frame.renderEpoch != null && frame.renderEpoch < currentEpoch) continue;
+      if (frame.renderEpoch != null && frame.renderEpoch > (currentEpoch ?? 0)) {
+        pendingFramesRef.current = [];
+        pendingFrameStartRef.current = 0;
+        lastAppliedSeqRef.current = 0;
+        lastRenderEpochRef.current = frame.renderEpoch;
+        currentEpoch = frame.renderEpoch;
+        highestQueuedSeq = 0;
+        nextFrames.length = 0;
+        nextFrames.push(frame);
+        highestQueuedSeq = frame.seq;
+        continue;
+      }
+      if (frame.seq <= highestQueuedSeq) continue;
+      nextFrames.push(frame);
+      highestQueuedSeq = frame.seq;
+    }
     if (nextFrames.length === 0) return;
     if (TERMINAL_DEBUG) {
       console.log("[terminal-pane] enqueueFrames", {
@@ -687,7 +732,11 @@ export function TerminalPane({
 
   const prioritizeFullFrame = (frame: TerminalFrame) => {
     if (!hasRenderablePayload(frame)) return;
-    if (frame.seq <= lastAppliedSeqRef.current) return;
+    if (frame.renderEpoch != null && frame.renderEpoch < (lastRenderEpochRef.current ?? 0)) return;
+    if (
+      frame.seq <= lastAppliedSeqRef.current &&
+      (frame.renderEpoch == null || frame.renderEpoch === lastRenderEpochRef.current)
+    ) return;
     if (TERMINAL_DEBUG) {
       console.log("[terminal-pane] prioritizeFullFrame", {
         id,
@@ -698,6 +747,10 @@ export function TerminalPane({
     }
     pendingFramesRef.current = [frame];
     pendingFrameStartRef.current = 0;
+    if (frame.renderEpoch != null && frame.renderEpoch !== lastRenderEpochRef.current) {
+      lastAppliedSeqRef.current = 0;
+      lastRenderEpochRef.current = frame.renderEpoch;
+    }
     drainFrameQueue();
   };
 
@@ -742,6 +795,8 @@ export function TerminalPane({
       smoothScrollDuration: 0,
       theme: TERMINAL_THEME,
     });
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
     const linkProvider = createTerminalUrlLinkProvider(terminal, openExternalUrl);
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
@@ -853,6 +908,7 @@ export function TerminalPane({
     terminal.open(xtermHost);
     const linkProviderDisposable = terminal.registerLinkProvider(linkProvider);
     terminalRef.current = terminal;
+    fitAddonRef.current = fitAddon;
     if (TERMINAL_DEBUG) {
       console.log("[terminal-pane] terminal mounted", { id });
     }
@@ -865,6 +921,9 @@ export function TerminalPane({
       }
       renderImageScene();
       if (!hasViewportControlRef.current) {
+        try {
+          fitAddon.fit();
+        } catch {}
         return;
       }
       syncViewportSizeToServer({
@@ -897,6 +956,7 @@ export function TerminalPane({
       linkProviderDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
+      fitAddonRef.current = null;
       imageCacheRef.current.clear();
       imagePlacementsRef.current = [];
       renderImageScene();
@@ -904,6 +964,7 @@ export function TerminalPane({
       pendingFrameStartRef.current = 0;
       processingFramesRef.current = false;
       lastAppliedSeqRef.current = 0;
+      lastRenderEpochRef.current = null;
       lastModeStateKeyRef.current = null;
       lastCursorRowRef.current = null;
       enhancedEnterModeRef.current = "none";
@@ -952,6 +1013,7 @@ export function TerminalPane({
         skipNextActiveFocusRef.current = false;
         return;
       }
+      window.requestAnimationFrame(() => redrawVisibleTerminal({ requestSnapshot: true }));
       scheduleTerminalFocus();
       return () => {
         if (focusTimeoutRef.current != null) {
@@ -970,6 +1032,7 @@ export function TerminalPane({
     if (!active) return;
     const onWindowFocus = () => {
       claimViewportControl();
+      window.requestAnimationFrame(() => redrawVisibleTerminal({ requestSnapshot: true }));
       scheduleTerminalFocus();
     };
     window.addEventListener("focus", onWindowFocus);

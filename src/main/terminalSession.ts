@@ -586,6 +586,8 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
   private flowPaused = false;
   private frameIntervalMs = 0;
   private previewOnly = false;
+  private renderEpoch = 1;
+  private pendingFullFrameCause: TerminalFrame["frameCause"] | null = "attach";
   private pendingWorkerInput: { data: string; encoding: "utf8" | "binary" }[] = [];
   private workerInputTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -654,7 +656,33 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
         for (const resolve of this.pendingCwdResolvers) resolve(this.cwd);
         this.pendingCwdResolvers.clear();
         if (this.cwd !== previousCwd) {
-          cb(this.snapshot("", undefined, undefined, undefined, this.lastPreviewLines, this.lastAltScreen));
+          cb(
+            this.snapshot(
+              "",
+              undefined,
+              undefined,
+              undefined,
+              this.lastPreviewLines,
+              this.lastAltScreen,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              "metadata",
+            ),
+          );
         }
         return;
       }
@@ -664,7 +692,33 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
         if (nextBusy === this.shellBusy && nextBusyAtMs === this.shellBusyAtMs) return;
         this.shellBusy = nextBusy;
         this.shellBusyAtMs = nextBusyAtMs;
-        cb(this.snapshot("", undefined, undefined, undefined, this.lastPreviewLines, this.lastAltScreen));
+        cb(
+          this.snapshot(
+            "",
+            undefined,
+            undefined,
+            undefined,
+            this.lastPreviewLines,
+            this.lastAltScreen,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            "metadata",
+          ),
+        );
         return;
       }
       if (!this.frameHandler) return;
@@ -691,6 +745,7 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
         message.imagePlacements.length > 0 || message.mode === "full" || imageDefinitions || imageRemovedIds
           ? message.imagePlacements
           : undefined;
+      const frameCause = message.mode === "full" ? this.consumePendingFullFrameCause() : "pty";
       this.frameHandler(
         this.snapshot(
           "",
@@ -715,6 +770,7 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
           message.focusEvent,
           message.mouseAlternateScroll,
           message.bracketedPasteMode,
+          frameCause,
         ),
       );
     };
@@ -801,6 +857,7 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
 
   requestSnapshot(): void {
     if (this.hasExited) return;
+    this.pendingFullFrameCause = "snapshot";
     this.flushPendingWorkerInput();
     this.sendHost({ type: "snapshot" });
   }
@@ -808,6 +865,8 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
   resize(cols: number, rows: number, pixelWidth?: number, pixelHeight?: number): void {
     this.cols = Math.max(cols, 2);
     this.rows = Math.max(rows, 2);
+    this.pendingFullFrameCause = "resize";
+    this.renderEpoch += 1;
     this.flushPendingWorkerInput();
     this.sendHost({
       type: "resize",
@@ -864,6 +923,7 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
     focusEvent?: boolean,
     mouseAlternateScroll?: boolean,
     bracketedPasteMode?: boolean,
+    frameCause?: TerminalFrame["frameCause"],
   ): TerminalFrame {
     this.seq += 1;
     return {
@@ -878,6 +938,9 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
       renderPatchVt,
       renderPatchBytes,
       renderPatchKind,
+      frameCause,
+      renderEpoch: this.renderEpoch,
+      coversPtySeq: frameCause === "snapshot" || frameCause === "resize" || frameCause === "attach" ? this.seq : undefined,
       imageDefinitions,
       imageRemovedIds,
       imagePlacements,
@@ -898,6 +961,12 @@ class NativeTerminalSessionBackend implements TerminalSessionBackend {
       shellBusy: this.shellBusy,
       shellBusyAtMs: this.shellBusyAtMs,
     };
+  }
+
+  private consumePendingFullFrameCause() {
+    const cause = this.pendingFullFrameCause ?? "pty";
+    this.pendingFullFrameCause = null;
+    return cause;
   }
 
   private sendHost(message: object): void {

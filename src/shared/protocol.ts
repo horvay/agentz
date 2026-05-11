@@ -59,6 +59,8 @@ export interface AppUpdateStatus {
   message: string;
 }
 
+export type TerminalFrameCause = "pty" | "snapshot" | "resize" | "attach" | "metadata" | "preview";
+
 export interface TerminalFrame {
   id: TerminalId;
   cols: number;
@@ -74,6 +76,9 @@ export interface TerminalFrame {
   // Binary VT patch for direct xterm writes when the host has raw PTY bytes.
   renderPatchBytes?: Uint8Array;
   renderPatchKind?: "cursor-only" | "row-update" | "alt-row-update";
+  frameCause?: TerminalFrameCause;
+  renderEpoch?: number;
+  coversPtySeq?: number;
   imageDefinitions?: TerminalImageDefinition[];
   imageRemovedIds?: number[];
   imagePlacements?: TerminalImagePlacement[];
@@ -179,6 +184,26 @@ function decodeMouseFormat(value: number): TerminalFrame["mouseFormat"] {
   if (value === 2) return "sgr";
   if (value === 3) return "urxvt";
   if (value === 4) return "sgr-pixels";
+  return undefined;
+}
+
+function encodeFrameCause(value: TerminalFrame["frameCause"]): number {
+  if (value === undefined) return 255;
+  if (value === "pty") return 0;
+  if (value === "snapshot") return 1;
+  if (value === "resize") return 2;
+  if (value === "attach") return 3;
+  if (value === "metadata") return 4;
+  return 5;
+}
+
+function decodeFrameCause(value: number): TerminalFrame["frameCause"] {
+  if (value === 0) return "pty";
+  if (value === 1) return "snapshot";
+  if (value === 2) return "resize";
+  if (value === 3) return "attach";
+  if (value === 4) return "metadata";
+  if (value === 5) return "preview";
   return undefined;
 }
 
@@ -334,7 +359,7 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
     { presence: 0, values: 0 },
   );
 
-  const fixedBytes = 1 + 2 + 2 + 4 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 2 + 8 + 4 * 7 + 2 + 1 + 2 + 1 + 2 + 2 + 2;
+  const fixedBytes = 1 + 2 + 2 + 4 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 2 + 8 + 4 * 9 + 2 + 1 + 2 + 1 + 2 + 2 + 2;
   const previewBytes = previewLines.reduce((sum, line) => sum + 4 + line.byteLength, 0);
   const screenRowBytes = encodedScreenRows.reduce(
     (sum, row) => sum + 2 + 4 + row.textBytes.byteLength,
@@ -378,12 +403,17 @@ export function encodeTerminalFramePacket(frame: TerminalFrame): Uint8Array {
   packet[offset++] = encodePatchKind(frame.renderPatchKind);
   packet[offset++] = encodeMouseTrackingMode(frame.mouseTrackingMode);
   packet[offset++] = encodeMouseFormat(frame.mouseFormat);
+  packet[offset++] = encodeFrameCause(frame.frameCause);
   view.setUint16(offset, frame.cursorRow ?? OPTIONAL_U16_SENTINEL, true);
   offset += 2;
   view.setUint16(offset, frame.cursorCol ?? OPTIONAL_U16_SENTINEL, true);
   offset += 2;
   view.setFloat64(offset, frame.shellBusyAtMs ?? Number.NaN, true);
   offset += 8;
+  view.setUint32(offset, frame.renderEpoch ?? 0, true);
+  offset += 4;
+  view.setUint32(offset, frame.coversPtySeq ?? 0, true);
+  offset += 4;
   offset = writeRequiredString(view, packet, offset, id);
   offset = writeOptionalString(view, packet, offset, cwd);
   offset = writeOptionalString(view, packet, offset, renderVt);
@@ -481,12 +511,17 @@ export function decodeTerminalFramePacket(packet: ArrayBuffer | Uint8Array): Ter
   const renderPatchKind = decodePatchKind(bytes[offset++]);
   const mouseTrackingMode = decodeMouseTrackingMode(bytes[offset++]);
   const mouseFormat = decodeMouseFormat(bytes[offset++]);
+  const frameCause = decodeFrameCause(bytes[offset++]);
   const rawCursorRow = view.getUint16(offset, true);
   offset += 2;
   const rawCursorCol = view.getUint16(offset, true);
   offset += 2;
   const rawShellBusyAtMs = view.getFloat64(offset, true);
   offset += 8;
+  const rawRenderEpoch = view.getUint32(offset, true);
+  offset += 4;
+  const rawCoversPtySeq = view.getUint32(offset, true);
+  offset += 4;
 
   const [id, afterId] = readRequiredString(view, bytes, offset);
   offset = afterId;
@@ -606,6 +641,9 @@ export function decodeTerminalFramePacket(packet: ArrayBuffer | Uint8Array): Ter
     renderPatchVt,
     renderPatchBytes,
     renderPatchKind,
+    frameCause,
+    renderEpoch: rawRenderEpoch === 0 ? undefined : rawRenderEpoch,
+    coversPtySeq: rawCoversPtySeq === 0 ? undefined : rawCoversPtySeq,
     imageDefinitions: (imageFlags & 1) !== 0 ? imageDefinitions : undefined,
     imageRemovedIds: (imageFlags & (1 << 1)) !== 0 ? imageRemovedIds : undefined,
     imagePlacements: (imageFlags & (1 << 2)) !== 0 ? imagePlacements : undefined,

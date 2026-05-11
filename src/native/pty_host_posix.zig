@@ -786,6 +786,11 @@ fn emitFrame(
         }
     }
 
+    const has_virtual_kitty = hasVirtualKittyPlacements(term);
+    if (use_full and previous_alt_screen.* and !alt_screen and pending_vt_bytes.items.len > 0 and !has_virtual_kitty) {
+        use_full = false;
+    }
+
     const patch_kind: ?[]const u8 = if (use_full)
         null
     else if (dirty_rows == 0)
@@ -833,7 +838,6 @@ fn emitFrame(
         }
     }
 
-    const has_virtual_kitty = hasVirtualKittyPlacements(term);
     const vt = if (use_full) blk: {
         mode = .full;
         if (!alt_screen and !has_virtual_kitty) {
