@@ -32,6 +32,7 @@
 		"xterm": "^5.3.0"
 	},
 	"devDependencies": {
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/bun": "latest",
 		"@types/node": "^22.15.21",
 		"@types/react": "^18.3.12",
@@ -43,6 +44,7 @@
 		"electron": "^35.2.0",
 		"electron-builder": "^25.1.8",
 		"electronmon": "^2.0.2",
+		"playwright": "^1.59.1",
 		"postcss": "^8.4.49",
 		"tailwindcss": "^3.4.16",
 		"typescript": "^5.7.2",

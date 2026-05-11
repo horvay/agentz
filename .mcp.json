@@ -8,6 +8,13 @@
         "--headless",
         "--user-data-dir=.playwright-mcp"
       ]
+    },
+    "playwright-electron": {
+      "command": "bun",
+      "args": [
+        "run",
+        "tools/mcp-playwright-electron.ts"
+      ]
     }
   }
 }
