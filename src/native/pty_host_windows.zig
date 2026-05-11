@@ -208,7 +208,7 @@ const HostStreamHandler = struct {
             .apc_put => {
                 const result = self.apc.feed(self.alloc, value);
                 switch (@typeInfo(@TypeOf(result))) {
-                    .error_union => try result,
+                    .error_union => result catch return,
                     .void => {},
                     else => @compileError("unexpected APC feed return type"),
                 }
@@ -228,7 +228,7 @@ const HostStreamHandler = struct {
                 var readonly = self.terminal.vtHandler();
                 const result = readonly.vt(action, value);
                 switch (@typeInfo(@TypeOf(result))) {
-                    .error_union => try result,
+                    .error_union => result catch return,
                     .void => {},
                     else => @compileError("unexpected vt handler return type"),
                 }

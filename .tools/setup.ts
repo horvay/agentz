@@ -6,6 +6,7 @@ const ZIG_VERSION = "0.15.2";
 
 const TARGETS: Record<string, string> = {
   "linux-x64": `zig-x86_64-linux-${ZIG_VERSION}`,
+  "win32-x64": `zig-x86_64-windows-${ZIG_VERSION}`,
   "darwin-x64": `zig-x86_64-macos-${ZIG_VERSION}`,
   "darwin-arm64": `zig-aarch64-macos-${ZIG_VERSION}`,
 };
@@ -25,14 +26,23 @@ if (existsSync(zigDir)) {
   process.exit(0);
 }
 
-const url = `https://ziglang.org/download/${ZIG_VERSION}/${target}.tar.xz`;
-const tarball = join(toolsDir, `zig-${ZIG_VERSION}.tar.xz`);
+const archiveExt = process.platform === "win32" ? "zip" : "tar.xz";
+const url = `https://ziglang.org/download/${ZIG_VERSION}/${target}.${archiveExt}`;
+const tarball = join(toolsDir, `zig-${ZIG_VERSION}.${archiveExt}`);
 
 console.log(`Downloading ${url} ...`);
-await $`curl -fSL -o ${tarball} ${url}`;
+if (process.platform === "win32") {
+  await $`curl --ssl-no-revoke -fSL -o ${tarball} ${url}`;
+} else {
+  await $`curl -fSL -o ${tarball} ${url}`;
+}
 
 console.log("Extracting...");
-await $`tar -xf ${tarball} -C ${toolsDir}`;
+if (process.platform === "win32") {
+  await $`powershell -NoProfile -Command Expand-Archive -LiteralPath ${tarball} -DestinationPath ${toolsDir}`;
+} else {
+  await $`tar -xf ${tarball} -C ${toolsDir}`;
+}
 
 console.log("Cleaning up tarball...");
 await $`rm ${tarball}`;
