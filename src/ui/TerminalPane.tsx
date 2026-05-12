@@ -589,6 +589,9 @@ export function TerminalPane({
 
     if (frame.cols > 0 && frame.rows > 0 && (frame.cols !== terminal.cols || frame.rows !== terminal.rows)) {
       terminal.resize(frame.cols, frame.rows);
+      if (autoFollowScrollRef.current) {
+        terminal.scrollToBottom();
+      }
     }
 
     const payload = framePayload(frame);
