@@ -21,7 +21,6 @@ import { DEBUG_LOGS_ENABLED } from "./debugLogs";
 import { drawRectForTerminalImagePlacement, terminalImageLayerForZ } from "./terminalImages";
 
 const RESIZE_DEBOUNCE_MS = 40;
-const RESIZE_SNAPSHOT_DELAY_MS = 140;
 const SWITCH_REDRAW_SNAPSHOT_DELAY_MS = 180;
 const TERMINAL_FONT_SIZE = 14;
 const TERMINAL_LINE_HEIGHT = 1;
@@ -349,6 +348,7 @@ export function TerminalPane({
   const currentFrameRef = useRef(currentFrame);
   const hasViewportControlRef = useRef(autoClaimViewport && active);
   const autoFollowScrollRef = useRef(true);
+  const resizingToBottomRef = useRef(false);
   const imageCacheRef = useRef<Map<number, CachedTerminalImage>>(new Map());
   const imagePlacementsRef = useRef<TerminalImagePlacement[]>([]);
 
@@ -467,13 +467,21 @@ export function TerminalPane({
     if (!terminal || !fitAddon || !screen) return;
     if (screen.clientWidth <= 0 || screen.clientHeight <= 0) return;
 
+    const shouldStayAtBottom = autoFollowScrollRef.current;
     try {
+      resizingToBottomRef.current = shouldStayAtBottom;
       fitAddon.fit();
+      if (shouldStayAtBottom) {
+        terminal.scrollToBottom();
+        autoFollowScrollRef.current = true;
+      }
     } catch (error) {
       if (TERMINAL_DEBUG) {
         console.warn("[terminal-pane] fit failed", { id, error });
       }
       return;
+    } finally {
+      resizingToBottomRef.current = false;
     }
 
     queueResizeSync(terminal.cols, terminal.rows, {
@@ -898,13 +906,14 @@ export function TerminalPane({
       rpc.send({ type: "input", id, data, encoding: "binary" });
     });
     const resizeSubscription = terminal.onResize(({ cols, rows }) => {
-      queueResizeSync(cols, rows, {
-        requestSnapshot: true,
-        snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
-      });
+      queueResizeSync(cols, rows);
     });
     const scrollSubscription = terminal.onScroll((viewportY) => {
-      autoFollowScrollRef.current = viewportY >= terminal.buffer.active.baseY;
+      if (resizingToBottomRef.current) {
+        autoFollowScrollRef.current = true;
+      } else {
+        autoFollowScrollRef.current = viewportY >= terminal.buffer.active.baseY;
+      }
       renderImageScene();
     });
 
@@ -931,8 +940,6 @@ export function TerminalPane({
       }
       syncViewportSizeToServer({
         immediate: IS_WINDOWS,
-        requestSnapshot: true,
-        snapshotDelayMs: IS_WINDOWS ? 0 : RESIZE_SNAPSHOT_DELAY_MS,
       });
     };
 

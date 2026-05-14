@@ -1325,23 +1325,11 @@ pub fn main() !void {
                             current_pixel_width = cmd.pixel_width orelse current_pixel_width;
                             current_pixel_height = cmd.pixel_height orelse current_pixel_height;
                             applyResize(master_fd, &term, alloc, next_cols, next_rows, current_pixel_width, current_pixel_height) catch {};
-                            try emitFrame(
-                                alloc,
-                                stdout_writer,
-                                &term,
-                                &previous_render_rows,
-                                &previous_alt_screen,
-                                &previous_image_versions,
-                                current_pixel_width,
-                                current_pixel_height,
-                                &pending_vt_bytes,
-                                &has_snapshot,
-                                true,
-                                false,
-                                preview_only,
-                            );
+                            freeOwnedRows(alloc, &previous_render_rows);
+                            previous_image_versions.clearRetainingCapacity();
+                            pending_vt_bytes.clearRetainingCapacity();
+                            has_snapshot = false;
                             pending_frame = false;
-                            last_frame_emit_ms = std.time.milliTimestamp();
                             try stdout_writer.flush();
                             continue;
                         }
