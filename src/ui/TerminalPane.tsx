@@ -616,8 +616,9 @@ export function TerminalPane({
       if (TERMINAL_DEBUG) {
         console.log(message, { id, seq: frame.seq });
       }
-      if (scrollToBottom && autoFollowScrollRef.current) {
+      if (autoFollowScrollRef.current || scrollToBottom) {
         terminal.scrollToBottom();
+        autoFollowScrollRef.current = true;
       }
       done();
     };
@@ -943,13 +944,21 @@ export function TerminalPane({
       });
     };
 
-    window.requestAnimationFrame(resizeTerminalToStage);
+    const scheduleResizeTerminalToStage = () => {
+      window.requestAnimationFrame(() => {
+        resizeTerminalToStage();
+        window.requestAnimationFrame(resizeTerminalToStage);
+        window.setTimeout(resizeTerminalToStage, 80);
+      });
+    };
+
+    scheduleResizeTerminalToStage();
     if (active) {
       scheduleTerminalFocus();
     }
 
     const resizeObserver = new ResizeObserver(() => {
-      window.requestAnimationFrame(resizeTerminalToStage);
+      scheduleResizeTerminalToStage();
     });
     resizeObserver.observe(stage);
 
